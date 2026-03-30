@@ -1,0 +1,34 @@
+{
+  "models": [
+    {
+      "name": "pca",
+      "docker_image": "multiverse-pca:latest",
+      "supported_omics": ["rna"]
+    },
+    {
+      "name": "mofa",
+      "docker_image": "multiverse-mofa:latest",
+      "supported_omics": ["rna", "atac"]
+    },
+    {
+      "name": "multivi",
+      "docker_image": "multiverse-multivi:latest",
+      "supported_omics": ["rna", "atac"]
+    },
+    {
+      "name": "mowgli",
+      "docker_image": "multiverse-mowgli:latest",
+      "supported_omics": ["rna", "atac"]
+    },
+    {
+      "name": "cobolt",
+      "docker_image": "multiverse-cobolt:latest",
+      "supported_omics": ["rna", "atac"]
+    },
+    {
+      "name": "totalvi",
+      "docker_image": "multiverse-totalvi:latest",
+      "supported_omics": ["rna", "adt"]
+    }
+  ]
+}

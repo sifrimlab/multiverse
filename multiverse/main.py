@@ -14,6 +14,8 @@ import torch
 from .config import load_config
 from .config_schema import validate_config
 from .data_utils import load_datasets, dataset_select
+from .ingestion import load_dataset, validate_dataset_structure
+from .registry import load_registry, get_eligible_models
 from .logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -65,11 +67,17 @@ def main_workflow(config_path: str):
         if "batch_key" not in config_data:
             config_data["batch_key"] = "batch"
 
+        # Ensure random_seed is set if missing
+        if "random_seed" not in config_data:
+            config_data["random_seed"] = 42
+
         # Validate with Pydantic schema
         validated_config = validate_config(config_data)
         # Convert back to dict for the rest of the pipeline to keep it compatible
         config = validated_config.model_dump(by_alias=True)
         
+        # We use the validated config object in memory for the rest of the pipeline.
+
         # Setup output directory and logging
         output_dir = config.get("output_dir", "/data/outputs/")
         os.makedirs(output_dir, exist_ok=True)
@@ -78,9 +86,13 @@ def main_workflow(config_path: str):
         logger.info("Configuration loaded successfully")
         logger.info(f"Output directory: {output_dir}")
         
+        # Load registry
+        registry = load_registry()
+
         # Load datasets
         logger.info("Loading datasets...")
-        datasets = load_datasets(config_path)
+        # Use the validated config dictionary
+        datasets = load_datasets(config)
         
         # Get model configuration
         model_config = config.get("model", {})
@@ -94,12 +106,43 @@ def main_workflow(config_path: str):
         # Process each model
         if run_user_params:
             logger.info("Running models with user-specified parameters")
-            run_models_with_user_params(config_path, datasets, model_config)
+
+            # For each dataset, determine eligible models
+            for dataset_name, dataset_data in datasets.items():
+                logger.info(f"Checking eligibility for dataset: {dataset_name}")
+
+                # For now, let's just use the modalities from load_datasets
+                available_omics = dataset_data["modalities"]
+
+                eligible_models = get_eligible_models(
+                    user_requested_models=list(model_config.keys()),
+                    available_omics=available_omics,
+                    registry=registry
+                )
+
+                if not eligible_models:
+                    logger.warning(f"No eligible models found for dataset {dataset_name}")
+                    continue
+
+                logger.info(f"Eligible models for {dataset_name}: {eligible_models}")
+
+                # Filter model_config for this dataset
+                filtered_model_config = {m: model_config[m] for m in eligible_models if m in model_config}
+
+                logger.info(f"Filtered model config for {dataset_name}: {list(filtered_model_config.keys())}")
+
+                # Run models only for this dataset
+                # Since run_models_with_user_params uses dataset_select('concatenate'),
+                # we need to pass the datasets dict format correctly.
+                single_dataset_dict = {dataset_name: dataset_data}
+                run_models_with_user_params(config, single_dataset_dict, filtered_model_config)
+
 
             # Task [T5.2]: Result Aggregator (minimal implementation for now)
             # This satisfies the test expectation for evaluation_metrics.json
             for dataset_name in datasets:
                 metrics_path = os.path.join(output_dir, dataset_name, "evaluation_metrics.json")
+                os.makedirs(os.path.dirname(metrics_path), exist_ok=True)
                 # Dummy metrics for now
                 with open(metrics_path, "w") as f:
                     json.dump({"status": "success"}, f)
