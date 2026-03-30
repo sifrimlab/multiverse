@@ -12,6 +12,93 @@ from .logging_utils import get_logger, setup_logging
 logger = get_logger(__name__)
 
 
+def determine_valid_metrics(config, dataset, requested_metrics=None):
+    """
+    Determine which metrics are valid based on the dataset.
+
+    Args:
+        config (dict): System configuration.
+        dataset (AnnData): The dataset to evaluate.
+        requested_metrics (dict, optional): Dictionary containing 'bio_conservation' and 'batch_correction' lists.
+
+    Returns:
+        dict: Validated metrics lists.
+    """
+    if requested_metrics is None:
+        requested_metrics = {
+            "bio_conservation": ["isolated_labels", "nmi_ari_cluster_labels_leiden", "nmi_ari_cluster_labels_kmeans", "silhouette_label", "clisi_knn"],
+            "batch_correction": ["bras", "ilisi_knn", "kbet_per_label", "graph_connectivity", "pcr_comparison"]
+        }
+
+    valid_metrics = {
+        "bio_conservation": [],
+        "batch_correction": []
+    }
+
+    batch_key = config.get("batch_key", "batch")
+    label_key = config.get("cell_type_key")
+
+    # Rule: Supervised metrics require label_key
+    if label_key and label_key in dataset.obs.columns:
+        valid_metrics["bio_conservation"] = requested_metrics["bio_conservation"]
+    else:
+        logger.warning(f"Label key {label_key} not found or not provided. Skipping supervised metrics.")
+        # Filter out metrics that strictly require labels if we knew which ones they are.
+        # For simplicity, we'll just skip all bio_conservation if label_key is missing,
+        # or as per T5.1: "remove supervised metrics (ARI, NMI) if a cell_type_key exists" (wait, "if it exists" or "if it doesn't"?)
+        # T5.1 says: "remove supervised metrics if cell_type_key is null"
+        supervised_keywords = ["nmi", "ari", "isolated_labels", "clisi", "label"]
+        valid_metrics["bio_conservation"] = [
+            m for m in requested_metrics["bio_conservation"]
+            if not any(kw in m.lower() for kw in supervised_keywords)
+        ]
+
+    # Rule: Batch metrics require at least 2 batches
+    if batch_key in dataset.obs.columns:
+        num_batches = dataset.obs[batch_key].nunique()
+        if num_batches > 1:
+            valid_metrics["batch_correction"] = requested_metrics["batch_correction"]
+        else:
+            logger.warning(f"Only one batch found ({num_batches}). Skipping batch-correction metrics.")
+            valid_metrics["batch_correction"] = []
+    else:
+        logger.warning(f"Batch key {batch_key} not found. Skipping batch-correction metrics.")
+        valid_metrics["batch_correction"] = []
+
+    return valid_metrics
+
+
+def aggregate_results(model_status, output_dir):
+    """
+    Aggregate results from successful models into a single results.json.
+
+    Args:
+        model_status (dict): Mapping of model name to status ("success" or "failed").
+        output_dir (str): Base output directory.
+    """
+    final_results = {}
+
+    for model_name, status in model_status.items():
+        if status != "success":
+            continue
+
+        # In a real scenario, we'd load actual scores from each model's output
+        model_metrics_path = os.path.join(output_dir, model_name, "metrics.json")
+        if os.path.exists(model_metrics_path):
+            with open(model_metrics_path, "r") as f:
+                final_results[model_name] = json.load(f)
+        else:
+            # Fallback for demo/mock purposes
+            final_results[model_name] = {"status": "success", "info": "Metrics file not found, but model succeeded."}
+
+    results_file = os.path.join(output_dir, "results.json")
+    with open(results_file, "w") as f:
+        json.dump(final_results, f, indent=4)
+
+    logger.info(f"Aggregated results saved to {results_file}")
+    return final_results
+
+
 class Evaluator:
     """Evaluator implementation"""
 
