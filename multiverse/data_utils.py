@@ -74,12 +74,15 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
     return anndata
 
 
-def load_datasets(config_path):
+def load_datasets(config_path_or_dict):
     """
     Load all datasets specified in the configuration.
     Returns a dictionary where keys are dataset names, and values are the data objects.
     """
-    config_dict = load_config(config_path)
+    if isinstance(config_path_or_dict, dict):
+        config_dict = config_path_or_dict
+    else:
+        config_dict = load_config(config_path_or_dict)
     datasets = {}
 
     data_config = config_dict.get("data", {})
@@ -110,7 +113,7 @@ def load_datasets(config_path):
                     modality=modality,
                     isProcessed=is_preprocessed,
                     annotation=annotation,
-                    config_path=config_path,
+                    config_path=config_path_or_dict,
                 )
                 ann = ann_loader.preprocessing()
                 list_anndata.append(ann)

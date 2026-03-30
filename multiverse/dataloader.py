@@ -4,12 +4,13 @@ import anndata as ad
 import mudata as md
 import muon as mu
 import os
+from typing import Union
 import numpy as np
 from .config import load_config
 #Output type = anndata, mudata
 
 class DataLoader:
-    def __init__(self, file_path: str = "", modality: str = "", isProcessed=True, annotation: str=None, config_path: str="./config.json"):
+    def __init__(self, file_path: str = "", modality: str = "", isProcessed=True, annotation: str=None, config_path: Union[str, dict]="./config.json"):
         # These attributes should be loaded from the config file
         self.config_path = config_path
 
@@ -140,9 +141,12 @@ class DataLoader:
 
 
 class Preprocessing:
-    def __init__(self, anndata: ad.AnnData, config_path: str="./config.json"):
+    def __init__(self, anndata: ad.AnnData, config_path: Union[str, dict]="./config.json"):
         self.data = anndata
-        self.config = load_config(config_path=config_path).get("preprocess_params")
+        if isinstance(config_path, dict):
+            self.config = config_path.get("preprocess_params")
+        else:
+            self.config = load_config(config_path=config_path).get("preprocess_params")
     
     def rna_preprocessing(self) -> ad.AnnData:
         """
