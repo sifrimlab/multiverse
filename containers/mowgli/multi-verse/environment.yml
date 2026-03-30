@@ -1,0 +1,19 @@
+name: multiverse_mowgli
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - ipykernel
+  - python
+  - pytorch
+  - scanpy
+  - numpy
+  - pandas
+  - matplotlib
+  - pip:
+    - mowgli
+    - scib
+    - muon
+    - jaxlib
+    - louvain

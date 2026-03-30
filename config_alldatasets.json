@@ -1,0 +1,140 @@
+{
+  "_run_user_params": true,
+  "_run_gridsearch": false,
+  "data": {
+    "dataset_Pbmc10k": {
+      "data_path": "data/input/Pbmc10k",
+      "rna": {
+        "file_name": "RNA.h5ad",
+        "is_preprocessed": false,
+        "annotation": "cell_type"
+      },
+      "atac": {
+        "file_name": "ATAC.h5ad",
+        "is_preprocessed": false,
+        "annotation": "cell_type"
+      }
+    }
+  },
+  "model": {
+    "pca": {
+      "n_components": 20,
+      "device": "cpu",
+      "umap_random_state": 1,
+      "umap_color_type": "cell_type",
+      "grid_search_params": {
+        "n_components": [
+          10,
+          15
+        ]
+      }
+    },
+    "mofa": {
+      "device": "cuda:0",
+      "n_factors": 20,
+      "n_iterations": 3,
+      "umap_random_state": 1,
+      "umap_color_type": "cell_type",
+      "grid_search_params": {
+        "n_factors": [
+          10,
+          15
+        ]
+      }
+    },
+    "multivi": {
+      "device": "cuda:0",
+      "max_epochs": 10,
+      "learning_rate": 0.0001,
+      "umap_color_type": "cell_type",
+      "umap_random_state": 1,
+      "grid_search_params": {
+        "learning_rate": [
+          0.01,
+          0.001
+        ],
+        "max_epochs": [
+          100,
+          300
+        ]
+      }
+    },
+    "mowgli": {
+      "device": "cuda",
+      "latent_dimensions": 15,
+      "optimizer": "sgd",
+      "umap_use_representation": "X_mowgli",
+      "learning_rate": 0.01,
+      "tol_inner": 1e-7,
+      "max_iter_inner": 2,
+      "umap_random_state": 1,
+      "umap_color_type": "cell_type",
+      "grid_search_params": {
+        "learning_rate": [
+          0.1,
+          0.001
+        ]
+      }
+    },
+    "cobolt": {
+      "device": "cuda",
+      "latent_dimensions": 15,
+      "umap_use_representation": "X_cobolt",
+      "learning_rate": 0.005,
+      "num_epochs": 2,
+      "umap_random_state": 1,
+      "umap_color_type": "cell_type",
+      "grid_search_params": {}
+    },
+    "totalvi": {
+      "device": "cuda:0",
+      "max_epochs": 10,
+      "learning_rate": 0.0001,
+      "latent_dimensions": 10,
+      "umap_color_type": "cell_type",
+      "umap_random_state": 1,
+      "grid_search_params": {
+        "learning_rate": [
+          0.01,
+          0.001
+        ],
+        "max_epochs": [
+          100,
+          300
+        ]
+      }
+    }
+  },
+  "preprocess_params": {
+    "rna_filtering": {
+      "qc_metric_inplace": true,
+      "qc_metric_log1p": true,
+      "min_genes_by_counts": 500,
+      "max_genes_by_counts": 4500,
+      "max_total_counts_per_cell": 12000,
+      "max_pct_counts_mt": 30,
+      "min_cells_by_counts": 10,
+      "normalization_target_sum": 1e4,
+      "n_top_genes": 2000
+    },
+    "atac_filtering": {
+      "qc_metric_inplace": true,
+      "qc_metric_log1p": true,
+      "min_peaks_by_counts": 1000,
+      "max_peaks_by_counts": 15000,
+      "min_total_counts_per_cell": 1000,
+      "max_total_counts_per_cell": 50000,
+      "max_cells_by_counts": 4000,
+      "max_total_counts_by_gene": 1e4,
+      "normalization_target_sum": 1e4,
+      "n_top_peaks": 10000
+    },
+    "adt_filtering": {
+      "per_cell_normalization": true
+    }
+  },
+  "training": {
+    "device": "gpu"
+  },
+  "output_dir": "./outputs/"
+}

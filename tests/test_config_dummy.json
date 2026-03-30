@@ -1,0 +1,40 @@
+{
+  "_run_user_params": true,
+  "_run_gridsearch": false,
+  "data": {
+    "dataset_test": {
+      "data_path": "/tmp/test_data",
+      "rna": {
+        "file_name": "test_rna.h5ad",
+        "is_preprocessed": true,
+        "annotation": "cell_type"
+      }
+    }
+  },
+  "model": {
+    "pca": {
+      "n_components": 5,
+      "device": "cpu",
+      "umap_random_state": 42,
+      "umap_color_type": "cell_type",
+      "grid_search_params": {}
+    }
+  },
+  "preprocess_params": {
+    "rna_filtering": {
+      "qc_metric_inplace": true,
+      "qc_metric_log1p": true,
+      "min_genes_by_counts": 10,
+      "max_genes_by_counts": 10000,
+      "max_total_counts_per_cell": 50000,
+      "max_pct_counts_mt": 100,
+      "min_cells_by_counts": 1,
+      "normalization_target_sum": 1e4,
+      "n_top_genes": 100
+    }
+  },
+  "training": {
+    "device": "cpu"
+  },
+  "output_dir": "./outputs/"
+}

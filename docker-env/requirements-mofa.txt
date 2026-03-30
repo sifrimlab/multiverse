@@ -1,0 +1,3 @@
+mofapy2==0.7.2
+muon==0.1.7
+louvain==0.8.2

@@ -1,0 +1,5 @@
+scanpy==1.11.4
+muon==0.1.7
+louvain==0.8.2
+scib-metrics
+jax[cuda12]

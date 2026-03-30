@@ -1,0 +1,13 @@
+git+https://github.com/epurdom/cobolt.git#egg=cobolt
+scanpy==1.10.3
+muon==0.1.7
+louvain==0.8.2
+numpy
+scipy
+umap-learn
+python-igraph
+scikit-learn
+xgboost
+pandas
+seaborn
+leidenalg

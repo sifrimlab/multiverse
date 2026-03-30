@@ -1,0 +1,18 @@
+name: multiverse_pca
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - ipykernel
+  - python
+  - pytorch
+  - scanpy
+  - matplotlib
+  - pandas
+  - numpy
+  - pip:
+    - scib
+    - muon
+    - jaxlib
+    - louvain
