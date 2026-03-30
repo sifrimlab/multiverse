@@ -1,0 +1,40 @@
+[project]
+name = "multi-verse"
+version = "0.1.0"
+description = "A package for comparing multimodal data integration methods"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "docker>=6.1.3",
+    "rich>=13.0",
+    "streamlit>=1.30.0",
+    "scvi-tools==1.2.0",
+    "scanpy==1.10.3",
+    "muon==0.1.7",
+    "louvain==0.8.2",
+    "anndata",
+    "mudata",
+    "pandas",
+    "matplotlib",
+    "numpy",
+    "scib-metrics",
+    "pyyaml",
+    "mowgli>=0.1.0",
+    "cobolt>=0.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["multiverse"]
+
+[tool.uv.sources]
+cobolt = { git = "https://github.com/epurdom/cobolt.git" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
