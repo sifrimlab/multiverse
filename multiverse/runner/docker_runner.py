@@ -7,27 +7,35 @@ from ..logging_utils import get_logger
 logger = get_logger(__name__)
 
 
-async def build_images_concurrently(image_tags):
+async def build_images_concurrently(image_tags, status_callback=None):
     """
     Ensure all required Docker images for eligible models are built/pulled concurrently.
 
     Args:
         image_tags (list): List of Docker image tags to pull/build.
+        status_callback (callable, optional): Callback to update status.
+            Called with (image_tag, status).
     """
     client = docker.from_env()
     loop = asyncio.get_running_loop()
 
     def pull_image(tag):
         try:
+            if status_callback:
+                status_callback(tag, "Building/Pulling")
             logger.info(f"Pulling/Building image: {tag}")
             # In a real scenario, this might be client.images.pull(tag)
             # or client.images.build(path=..., tag=tag)
             # For this implementation, we'll use pull as it's more common for "getting" images.
             client.images.pull(tag)
             logger.info(f"Successfully pulled image: {tag}")
+            if status_callback:
+                status_callback(tag, "Ready")
             return True
         except Exception as e:
             logger.error(f"Failed to pull image {tag}: {e}")
+            if status_callback:
+                status_callback(tag, "Failed")
             raise
 
     tasks = [loop.run_in_executor(None, pull_image, tag) for tag in image_tags]
@@ -39,7 +47,7 @@ async def build_images_concurrently(image_tags):
         raise RuntimeError(f"Failed to prepare some Docker images: {failures}")
 
 
-async def run_models_concurrently(models_info, data_path, seed, output_dir):
+async def run_models_concurrently(models_info, data_path, seed, output_dir, status_callback=None):
     """
     Execute eligible models in parallel via Docker.
 
@@ -48,6 +56,8 @@ async def run_models_concurrently(models_info, data_path, seed, output_dir):
         data_path (str): Path to the input dataset (will be mounted RO).
         seed (int): Random seed to inject as environment variable.
         output_dir (str): Base output directory.
+        status_callback (callable, optional): Callback to update status.
+            Called with (model_name, status).
 
     Returns:
         dict: Summary of model runs mapping model name to success status.
@@ -56,6 +66,8 @@ async def run_models_concurrently(models_info, data_path, seed, output_dir):
     loop = asyncio.get_running_loop()
 
     async def run_single_model(model_name, image_tag):
+        if status_callback:
+            status_callback(model_name, "Starting")
         model_output_dir = os.path.join(output_dir, model_name)
         os.makedirs(model_output_dir, exist_ok=True)
 
@@ -74,6 +86,9 @@ async def run_models_concurrently(models_info, data_path, seed, output_dir):
             logger.info(f"Starting container for model: {model_name} using image: {image_tag}")
             container = await loop.run_in_executor(None, lambda: client.containers.run(**run_kwargs))
 
+            if status_callback:
+                status_callback(model_name, "Running")
+
             # Wait for container to finish
             result = await loop.run_in_executor(None, container.wait)
             exit_code = result.get("StatusCode", 1)
@@ -81,8 +96,12 @@ async def run_models_concurrently(models_info, data_path, seed, output_dir):
             logs = await loop.run_in_executor(None, container.logs)
             if exit_code == 0:
                 logger.info(f"Model {model_name} completed successfully.")
+                if status_callback:
+                    status_callback(model_name, "Success")
             else:
                 logger.error(f"Model {model_name} failed with exit code {exit_code}. Logs: {logs.decode('utf-8')[-500:]}")
+                if status_callback:
+                    status_callback(model_name, f"Failed ({exit_code})")
 
             # Clean up
             await loop.run_in_executor(None, container.remove)
@@ -90,6 +109,8 @@ async def run_models_concurrently(models_info, data_path, seed, output_dir):
             return model_name, exit_code == 0
         except Exception as e:
             logger.error(f"Error running model {model_name}: {e}")
+            if status_callback:
+                status_callback(model_name, "Error")
             return model_name, False
 
     tasks = [run_single_model(m["name"], m["image"]) for m in models_info]
