@@ -102,6 +102,33 @@ python -m multiverse.runner.cli --concurrent --input /path/to/data --output /pat
 
 ---
 
+## Migrating Legacy Data
+
+Use the migration utility to convert researcher-centric folders into the standardized
+`store/datasets/<slug>/data/` layout. The workflow is:
+
+1. Recursively discover directories that contain `.h5ad` / `.h5mu` files.
+2. Run `DatasetHeuristics` to infer modalities and likely `batch` / `cell_type` keys.
+3. Safely materialize files into the new store (hard-link first, fallback to copy).
+4. Write `dataset.yaml` next to `data/`, with comments when multiple metadata alternatives are detected.
+
+Dry-run preview (recommended first):
+
+```bash
+python -m multiverse.migrate_data --source /path/to/old --dest /path/to/store --dry-run
+```
+
+Run migration:
+
+```bash
+python -m multiverse.migrate_data --source /path/to/old --dest /path/to/store
+```
+
+The migration is non-destructive and will skip any destination dataset that already
+contains a `dataset.yaml` to avoid overwriting manual edits.
+
+---
+
 ## Model overview
 
 | Model | Pairing type | Methodology | Hyperparameter evaluation (typical) | scIB metrics |
