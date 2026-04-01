@@ -9,7 +9,8 @@ install:
 
 .PHONY: setup
 setup: install
-	@echo "Project setup complete."
+	@echo "Starting Multiverse Setup Wizard (Streamlit)..."
+	uv run streamlit run multiverse/gui.py
 
 # --- Docker Image Builds ---
 
