@@ -34,6 +34,8 @@ outputs/
 results/
 data/input/
 sample_data/input/
+store/
+mvexp_state.db
 
 # IDEs
 .vscode/

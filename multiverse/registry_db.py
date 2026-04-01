@@ -60,6 +60,9 @@ def init_db():
     conn.commit()
     conn.close()
 
+    # Populate models if registry exists
+    populate_models()
+
 def insert_dataset(name: str, path: str, omics_available: List[str], status: str = "READY"):
     """Inserts a new dataset record into the database."""
     conn = get_db_connection()
@@ -72,6 +75,30 @@ def insert_dataset(name: str, path: str, omics_available: List[str], status: str
     dataset_id = cursor.lastrowid
     conn.close()
     return dataset_id
+
+def populate_models(registry_path: str = "model_registry.json"):
+    """Populates the models table from a JSON registry file."""
+    if not os.path.isabs(registry_path):
+        registry_path = os.path.join(BASE_DIR, registry_path)
+
+    if not os.path.exists(registry_path):
+        print(f"Warning: Model registry file not found at {registry_path}")
+        return
+
+    with open(registry_path, "r") as f:
+        data = json.load(f)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    for model in data.get("models", []):
+        cursor.execute(
+            "INSERT OR REPLACE INTO models (name, docker_image, supported_omics) VALUES (?, ?, ?)",
+            (model["name"], model["docker_image"], json.dumps(model["supported_omics"]))
+        )
+
+    conn.commit()
+    conn.close()
 
 if __name__ == "__main__":
     init_db()

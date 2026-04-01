@@ -9,14 +9,65 @@ from .docker_runner import (
     run_model_container,
     run_evaluation_container,
     build_images_concurrently,
-    run_models_concurrently
+    run_models_concurrently,
+    run_jobs_concurrently
 )
 from ..logging_utils import get_logger, setup_logging
 from ..registry import load_registry
 from ..ingestion import register_dataset
-from ..registry_db import init_db
+from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR
+import json
 
 logger = get_logger(__name__)
+
+def generate_execution_plan(conn):
+    """Generates a list of required ML jobs by checking the database.
+
+    Args:
+        conn: A SQLite connection.
+
+    Returns:
+        List[Dict]: A list of pending jobs, each containing dataset and model info.
+    """
+    cursor = conn.cursor()
+
+    # 1. Get all READY datasets
+    cursor.execute("SELECT id, name, path, omics_available FROM datasets WHERE status = 'READY'")
+    datasets = cursor.fetchall()
+
+    # 2. Get all models
+    cursor.execute("SELECT name, docker_image, supported_omics FROM models")
+    models = cursor.fetchall()
+
+    pending_jobs = []
+
+    for d_id, d_name, d_path, d_omics_json in datasets:
+        d_omics = set(json.loads(d_omics_json))
+
+        for m_name, m_image, m_omics_json in models:
+            m_omics = set(json.loads(m_omics_json))
+
+            # Check if model is compatible with dataset omics
+            if m_omics.issubset(d_omics):
+                # Check if this combination already has a SUCCESS run
+                cursor.execute(
+                    "SELECT status FROM runs WHERE dataset_id = ? AND model_name = ?",
+                    (d_id, m_name)
+                )
+                run = cursor.fetchone()
+
+                if run is None or run[0] != 'SUCCESS':
+                    output_path = os.path.join(ARTIFACTS_DIR, f"{d_name}_{m_name}")
+                    pending_jobs.append({
+                        "dataset_id": d_id,
+                        "dataset_name": d_name,
+                        "dataset_path": d_path,
+                        "model_name": m_name,
+                        "model_image": m_image,
+                        "output_path": output_path
+                    })
+
+    return pending_jobs
 
 def generate_status_table(tasks: Dict[str, str]) -> Table:
     """Generates a Rich Table representing the current status of all tasks.
@@ -49,13 +100,24 @@ async def run_workflow_async(args: argparse.Namespace):
     os.makedirs(args.output, exist_ok=True)
     setup_logging(args.output)
 
-    registry = load_registry()
+    conn = get_db_connection()
+    pending_jobs = generate_execution_plan(conn)
+    conn.close()
+
+    if not pending_jobs:
+        logger.info("No pending jobs to execute.")
+        return
+
     models_info = []
-    for m in args.models:
-        if m in registry:
-            models_info.append({"name": m, "image": registry[m].docker_image})
-        else:
-            logger.warning(f"Model {m} not found in registry. Skipping.")
+    for job in pending_jobs:
+        models_info.append({
+            "name": f"{job['dataset_name']}_{job['model_name']}",
+            "image": job['model_image'],
+            "dataset_path": job['dataset_path'],
+            "output_path": job['output_path'],
+            "dataset_id": job['dataset_id'],
+            "model_name_orig": job['model_name']
+        })
 
     tasks_status = {m["name"]: "Pending" for m in models_info}
     image_tags = list(set(m["image"] for m in models_info))
@@ -78,11 +140,17 @@ async def run_workflow_async(args: argparse.Namespace):
 
         # 2. Run models
         update_status("Model Execution", "In Progress")
-        summary = await run_models_concurrently(
+
+        # We need to adapt run_models_concurrently to handle multiple datasets if needed,
+        # but for now we'll run the pending jobs.
+        # Note: the current run_models_concurrently assumes a single data_path and output_dir.
+        # We need to modify it or call it per dataset.
+
+        # Let's refine run_models_concurrently in docker_runner.py to take the full job info.
+
+        summary = await run_jobs_concurrently(
             models_info,
-            args.input,
             args.seed,
-            args.output,
             status_callback=update_status
         )
 
@@ -97,6 +165,49 @@ def execute_run(args: argparse.Namespace):
     if args.concurrent:
         asyncio.run(run_workflow_async(args))
     else:
+        # Check if we should use DB-based planner or legacy mode
+        conn = get_db_connection()
+        pending_jobs = generate_execution_plan(conn)
+        conn.close()
+
+        if pending_jobs:
+            logger.info(f"Running {len(pending_jobs)} pending jobs from registry.")
+            for job in pending_jobs:
+                logger.info(f"Running model {job['model_name']} on dataset {job['dataset_name']}")
+                try:
+                    run_model_container(
+                        job['model_name'],
+                        job['dataset_path'],
+                        job['output_path']
+                    )
+                    # Record success in DB
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO runs (dataset_id, model_name, status, output_path) VALUES (?, ?, ?, ?)",
+                        (job['dataset_id'], job['model_name'], "SUCCESS", job['output_path'])
+                    )
+                    conn.commit()
+                    conn.close()
+                    logger.info(f"Model {job['model_name']} on {job['dataset_name']} finished successfully.")
+                except Exception as e:
+                    logger.error(f"Error running model {job['model_name']} on {job['dataset_name']}: {e}")
+                    # Record failure in DB
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO runs (dataset_id, model_name, status, output_path) VALUES (?, ?, ?, ?)",
+                        (job['dataset_id'], job['model_name'], "FAILED", job['output_path'])
+                    )
+                    conn.commit()
+                    conn.close()
+            return
+
+        # Legacy mode if no pending jobs in DB (requires --models and --input)
+        if not args.models or not args.input:
+            logger.info("No pending jobs in registry and no models/input provided for legacy mode.")
+            return
+
         os.makedirs(args.output, exist_ok=True)
         setup_logging(args.output)
         logger.info(f"Running models: {args.models}")
@@ -136,7 +247,7 @@ def main():
             help="List of models to run (e.g., pca mofa multivi totalvi)",
             default=[],
         )
-        p.add_argument("--input", required=True, help="Path to the input data directory")
+        p.add_argument("--input", required=False, help="Path to the input data directory")
         p.add_argument("--output", required=True, help="Path to the output results directory")
         p.add_argument("--seed", type=int, default=42, help="Random seed")
         p.add_argument(
