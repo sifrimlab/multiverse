@@ -17,8 +17,83 @@ from ..registry import load_registry
 from ..ingestion import register_from_manifest, resolve_manifest_path
 from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR
 import json
+import yaml
 
 logger = get_logger(__name__)
+
+def load_manifest(manifest_path: str) -> Dict:
+    """Loads and parses the run manifest YAML file.
+
+    Args:
+        manifest_path: Path to the run_manifest.yaml.
+
+    Returns:
+        Dict: Parsed manifest data.
+    """
+    with open(manifest_path, 'r') as f:
+        return yaml.safe_load(f)
+
+def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dict]:
+    """Generates a list of required ML jobs based on a manifest.
+
+    Args:
+        conn: A SQLite connection.
+        manifest_data: Parsed manifest dictionary.
+
+    Returns:
+        List[Dict]: A list of pending jobs.
+    """
+    cursor = conn.cursor()
+    pending_jobs = []
+
+    for job in manifest_data.get("jobs", []):
+        dataset_name = job.get("dataset_id")
+        models_to_run = job.get("models", [])
+
+        # Get dataset info from DB
+        cursor.execute(
+            "SELECT id, path FROM datasets WHERE name = ? AND status = 'READY'",
+            (dataset_name,)
+        )
+        dataset_row = cursor.fetchone()
+        if not dataset_row:
+            logger.warning(f"Dataset '{dataset_name}' not found in registry or not READY. Skipping.")
+            continue
+
+        d_id, d_path = dataset_row
+
+        for m_name in models_to_run:
+            # Get model info from DB
+            cursor.execute(
+                "SELECT docker_image FROM models WHERE name = ?",
+                (m_name,)
+            )
+            model_row = cursor.fetchone()
+            if not model_row:
+                logger.warning(f"Model '{m_name}' not found in registry. Skipping.")
+                continue
+
+            m_image = model_row[0]
+
+            # Check status in runs table
+            cursor.execute(
+                "SELECT status FROM runs WHERE dataset_id = ? AND model_name = ?",
+                (d_id, m_name)
+            )
+            run = cursor.fetchone()
+
+            if run is None or run[0] != 'SUCCESS':
+                output_path = os.path.join(ARTIFACTS_DIR, f"{dataset_name}_{m_name}")
+                pending_jobs.append({
+                    "dataset_id": d_id,
+                    "dataset_name": dataset_name,
+                    "dataset_path": d_path,
+                    "model_name": m_name,
+                    "model_image": m_image,
+                    "output_path": output_path
+                })
+
+    return pending_jobs
 
 def generate_execution_plan(conn):
     """Generates a list of required ML jobs by checking the database.
@@ -101,7 +176,11 @@ async def run_workflow_async(args: argparse.Namespace):
     setup_logging(args.output)
 
     conn = get_db_connection()
-    pending_jobs = generate_execution_plan(conn)
+    if hasattr(args, "manifest") and args.manifest:
+        manifest_data = load_manifest(args.manifest)
+        pending_jobs = generate_execution_plan_from_manifest(conn, manifest_data)
+    else:
+        pending_jobs = generate_execution_plan(conn)
     conn.close()
 
     if not pending_jobs:
@@ -167,7 +246,11 @@ def execute_run(args: argparse.Namespace):
     else:
         # Check if we should use DB-based planner or legacy mode
         conn = get_db_connection()
-        pending_jobs = generate_execution_plan(conn)
+        if hasattr(args, "manifest") and args.manifest:
+            manifest_data = load_manifest(args.manifest)
+            pending_jobs = generate_execution_plan_from_manifest(conn, manifest_data)
+        else:
+            pending_jobs = generate_execution_plan(conn)
         conn.close()
 
         if pending_jobs:
@@ -260,6 +343,11 @@ def main():
             "--concurrent",
             action="store_true",
             help="Run models concurrently using Docker",
+        )
+        p.add_argument(
+            "--manifest",
+            required=False,
+            help="Path to a run_manifest.yaml file defining jobs to execute",
         )
 
     # If the first argument is not a known command, we assume legacy mode (run)
