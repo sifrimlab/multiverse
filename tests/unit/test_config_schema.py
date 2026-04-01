@@ -1,19 +1,17 @@
 import pytest
 import os
-import json
-from multiverse.config_schema import validate_config, SystemConfig
+from multiverse.config_schema import validate_config
 from pydantic import ValidationError
 
-def test_valid_config():
-    # Use a real path for testing (e.g. current directory)
-    real_path = os.getcwd()
+def test_valid_config(tmp_path):
+    # Use tmp_path for data_path to ensure it exists
     valid_data = {
         "_run_user_params": True,
         "_run_gridsearch": False,
         "batch_key": "sample",
         "data": {
             "ds1": {
-                "data_path": real_path,
+                "data_path": str(tmp_path),
                 "rna": {"file_name": "rna.h5ad"}
             }
         },
@@ -25,18 +23,18 @@ def test_valid_config():
     assert config.batch_key == "sample"
     assert config.random_seed == 42 # Default
 
-def test_missing_batch_key():
+def test_missing_batch_key(tmp_path):
     invalid_data = {
-        "data": {"ds1": {"data_path": os.getcwd()}},
+        "data": {"ds1": {"data_path": str(tmp_path)}},
         "model": {"pca": {}}
     }
     with pytest.raises(ValidationError):
         validate_config(invalid_data)
 
-def test_default_seed():
+def test_default_seed(tmp_path):
     data = {
         "batch_key": "batch",
-        "data": {"ds1": {"data_path": os.getcwd()}},
+        "data": {"ds1": {"data_path": str(tmp_path)}},
         "model": {"pca": {}}
     }
     config = validate_config(data)
