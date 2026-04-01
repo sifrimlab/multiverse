@@ -1,7 +1,7 @@
 import json
 import os
-from typing import List, Dict, Set
-from pydantic import BaseModel, Field
+from typing import List, Dict
+from pydantic import BaseModel
 from .logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -15,9 +15,18 @@ class ModelRegistry(BaseModel):
     models: List[ModelEntry]
 
 def load_registry(registry_path: str = "model_registry.json") -> Dict[str, ModelEntry]:
-    """
-    Load the model registry from a JSON file.
-    Returns a dictionary mapping model names to ModelEntry objects.
+    """Loads the model registry from a JSON file.
+
+    Args:
+        registry_path (str): Path to the model registry JSON file.
+            Defaults to "model_registry.json".
+
+    Returns:
+        Dict[str, ModelEntry]: A mapping from model names to their metadata.
+
+    Raises:
+        FileNotFoundError: If the registry file is not found.
+        Exception: For any issues during JSON parsing or validation.
     """
     if not os.path.exists(registry_path):
         # Try relative to the project root if not found
@@ -42,11 +51,19 @@ def get_eligible_models(
     available_omics: List[str],
     registry: Dict[str, ModelEntry]
 ) -> List[str]:
-    """
-    Match the extracted dataset omics to the available models in the registry.
-    A model is eligible if all its supported_omics are present in available_omics.
-    (Or if it supports a subset, depending on requirements. Task T3.2 says
-    'check if the model's required omics are a subset or match the dataset's available omics')
+    """Filters models based on their omics compatibility with the dataset.
+
+    Checks each requested model against the available omics in the dataset.
+    A model is considered eligible if its required modalities are a subset
+    of the modalities present in the dataset.
+
+    Args:
+        user_requested_models (List[str]): List of models requested by the user.
+        available_omics (List[str]): List of omics modalities present in the dataset.
+        registry (Dict[str, ModelEntry]): The loaded model registry.
+
+    Returns:
+        List[str]: A list of eligible model names.
     """
     eligible_models = []
     available_set = set(available_omics)

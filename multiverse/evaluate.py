@@ -12,17 +12,22 @@ from .logging_utils import get_logger, setup_logging
 logger = get_logger(__name__)
 
 
-def determine_valid_metrics(config, dataset, requested_metrics=None):
-    """
-    Determine which metrics are valid based on the dataset.
+def determine_valid_metrics(
+    config: dict, dataset: ad.AnnData, requested_metrics: dict = None
+):
+    """Filters evaluation metrics based on dataset properties.
+
+    Supervised metrics (e.g., ARI, NMI) are only valid if a cell type key is present.
+    Batch correction metrics are only valid if multiple batches exist.
 
     Args:
-        config (dict): System configuration.
-        dataset (AnnData): The dataset to evaluate.
-        requested_metrics (dict, optional): Dictionary containing 'bio_conservation' and 'batch_correction' lists.
+        config (dict): The system configuration.
+        dataset (ad.AnnData): The dataset to be evaluated.
+        requested_metrics (dict, optional): A dictionary specifying the desired
+            bio-conservation and batch-correction metrics.
 
     Returns:
-        dict: Validated metrics lists.
+        dict: A dictionary containing the lists of validated metrics.
     """
     if requested_metrics is None:
         requested_metrics = {
@@ -38,22 +43,19 @@ def determine_valid_metrics(config, dataset, requested_metrics=None):
     batch_key = config.get("batch_key", "batch")
     label_key = config.get("cell_type_key")
 
-    # Rule: Supervised metrics require label_key
+    # Bio-conservation metrics generally require cell type labels.
     if label_key and label_key in dataset.obs.columns:
         valid_metrics["bio_conservation"] = requested_metrics["bio_conservation"]
     else:
         logger.warning(f"Label key {label_key} not found or not provided. Skipping supervised metrics.")
-        # Filter out metrics that strictly require labels if we knew which ones they are.
-        # For simplicity, we'll just skip all bio_conservation if label_key is missing,
-        # or as per T5.1: "remove supervised metrics (ARI, NMI) if a cell_type_key exists" (wait, "if it exists" or "if it doesn't"?)
-        # T5.1 says: "remove supervised metrics if cell_type_key is null"
+        # Remove metrics that strictly require labels.
         supervised_keywords = ["nmi", "ari", "isolated_labels", "clisi", "label"]
         valid_metrics["bio_conservation"] = [
             m for m in requested_metrics["bio_conservation"]
             if not any(kw in m.lower() for kw in supervised_keywords)
         ]
 
-    # Rule: Batch metrics require at least 2 batches
+    # Batch correction metrics require at least two distinct batches to be meaningful.
     if batch_key in dataset.obs.columns:
         num_batches = dataset.obs[batch_key].nunique()
         if num_batches > 1:
@@ -68,13 +70,15 @@ def determine_valid_metrics(config, dataset, requested_metrics=None):
     return valid_metrics
 
 
-def aggregate_results(model_status, output_dir):
-    """
-    Aggregate results from successful models into a single results.json.
+def aggregate_results(model_status: dict, output_dir: str):
+    """Aggregates metrics from successful model runs into a single JSON file.
 
     Args:
-        model_status (dict): Mapping of model name to status ("success" or "failed").
-        output_dir (str): Base output directory.
+        model_status (dict): Mapping of model names to their execution status.
+        output_dir (str): The directory containing model outputs.
+
+    Returns:
+        dict: The aggregated results dictionary.
     """
     final_results = {}
 
@@ -82,13 +86,11 @@ def aggregate_results(model_status, output_dir):
         if status != "success":
             continue
 
-        # In a real scenario, we'd load actual scores from each model's output
         model_metrics_path = os.path.join(output_dir, model_name, "metrics.json")
         if os.path.exists(model_metrics_path):
             with open(model_metrics_path, "r") as f:
                 final_results[model_name] = json.load(f)
         else:
-            # Fallback for demo/mock purposes
             final_results[model_name] = {"status": "success", "info": "Metrics file not found, but model succeeded."}
 
     results_file = os.path.join(output_dir, "results.json")
@@ -100,14 +102,29 @@ def aggregate_results(model_status, output_dir):
 
 
 class Evaluator:
-    """Evaluator implementation"""
+    """A class for evaluating data integration models using scIB metrics.
+
+    Attributes:
+        dataset (ad.AnnData): The dataset containing model embeddings.
+        dataset_name (str): The name of the dataset.
+        output_dir (str): Directory for saving evaluation results.
+        metrics_filepath (str): Path to the final metrics JSON file.
+    """
 
     def __init__(
-        self, dataset: ad.AnnData, dataset_name, config_path: str, is_gridsearch=False
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: str,
+        is_gridsearch: bool = False,
     ):
-        """
-        Initialize the Evaluator.
-        Input data is AnnData object that was concatenated of multiple modality
+        """Initializes the Evaluator.
+
+        Args:
+            dataset (ad.AnnData): The dataset containing latent representations.
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
         """
         logger.info("Initializing Evaluator")
         self.config_dict = load_config(config_path=config_path)
@@ -132,6 +149,11 @@ class Evaluator:
         logger.info(f"Evaluator initialized for {self.dataset_name}")
 
     def load_embeddings(self):
+        """Loads latent embeddings for each model from the output directory.
+
+        Iterates through the models defined in the configuration and attempts
+        to load their saved embeddings from HDF5 files.
+        """
         for model_name in self.models_list:
             logger.info(f"Loading embeddings for model: {model_name}")
             if os.path.exists(
@@ -146,9 +168,18 @@ class Evaluator:
                 logger.warning(f"Embeddings file for model {model_name} not found.")
         logger.info(f"Loaded latent embeddings for: {self.latent_keys}")
 
-    def evaluate_models(self, batch_key="batch", label_key="cell_type"):
-        """
-        Evaluate the model using scib-metrics.
+    def evaluate_models(self, batch_key: str = "batch", label_key: str = "cell_type"):
+        """Runs the scIB-metrics benchmark suite on all loaded model embeddings.
+
+        Calculates bio-conservation and batch-correction metrics and saves
+        the results to a JSON file and a summary table plot.
+
+        Args:
+            batch_key (str): The observation key for batch labels. Defaults to "batch".
+            label_key (str): The observation key for cell type labels. Defaults to "cell_type".
+
+        Returns:
+            dict: The calculated metrics.
         """
         logger.info("Evaluating model with scib-metrics.")
 

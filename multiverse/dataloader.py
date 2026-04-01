@@ -10,10 +10,37 @@ from .config import load_config
 #Output type = anndata, mudata
 
 class DataLoader:
-    def __init__(self, file_path: str = "", modality: str = "", isProcessed=True, annotation: str=None, config_path: Union[str, dict]="./config.json"):
-        # These attributes should be loaded from the config file
-        self.config_path = config_path
+    """A data loader for reading and preprocessing single-cell datasets.
 
+    Handles multiple file formats and converts them into standardized AnnData
+    objects, ensuring necessary annotations are present.
+
+    Attributes:
+        file_path (str): The path to the data file.
+        modality (str): The omics modality of the data.
+        is_preprocessed (bool): Flag indicating if the input data is already preprocessed.
+        annotation (str): The column name for cell type annotations.
+        config_path (Union[str, dict]): Configuration object or path.
+    """
+
+    def __init__(
+        self,
+        file_path: str = "",
+        modality: str = "",
+        isProcessed: bool = True,
+        annotation: str = None,
+        config_path: Union[str, dict] = "./config.json",
+    ):
+        """Initializes the DataLoader.
+
+        Args:
+            file_path (str): The path to the data file.
+            modality (str): The omics modality.
+            isProcessed (bool): Whether the data is preprocessed. Defaults to True.
+            annotation (str): The annotation key for cell types.
+            config_path (Union[str, dict]): Configuration path or dictionary.
+        """
+        self.config_path = config_path
         self.file_path = file_path
         self.modality = modality
         self.is_preprocessed = isProcessed
@@ -21,14 +48,15 @@ class DataLoader:
         self.data = None
 
     def read_anndata(self) -> ad.AnnData:
-        """
-        Read files as anndata object
-        Note that if mu.read_10x_mtx is used, make sure there are barcodes.tsv.gz and features.tsv.gz are available in the same folder
-        Args:
-            Specific modality and file_path must be provided when defining DataLoader object
-            support file format: [".csv", ".tsv", ".h5ad", ".txt", ".mtx", ".h5mu", ".h5"]
+        """Reads the specified file into an AnnData object.
+
+        Supported formats include: `.csv`, `.tsv`, `.h5ad`, `.txt`, `.mtx`, `.h5mu`, and `.h5`.
+
         Returns:
-            A anndata.AnnData object (unprocessed)
+            ad.AnnData: The loaded (unprocessed) AnnData object.
+
+        Raises:
+            ValueError: If the file format is unsupported or if modality and file_path are missing.
         """
         adata = None
         # Modality and file_path should be provided to load anndata object
@@ -51,7 +79,7 @@ class DataLoader:
             elif ".h5mu" in self.file_path:
                 mudata = mu.read_h5mu(self.file_path)
                 adata = mudata[self.modality]
-                # TODO: This is hard-code for Prostate data, not to loss batch information in the metadata
+                # Propagate specific metadata keys for MuData files to maintain batch info.
                 adata.obs["batch"] = mudata.obs["batch"]
                 adata.obs["mod_id"] = mudata.obs["mod_id"]
             elif ".h5" in self.file_path:
@@ -61,14 +89,12 @@ class DataLoader:
             if adata:  # Check if adata is not None
                 adata.var_names_make_unique()
 
-                # Annotation processing,this looks cumbersome and hard-coded I know I'm just stupid
-                if self.annotation == None:
-                    # Adding annotation as "cell_type" to avoid conflicts in plotting umap
+                # Standardize cell type annotations to 'cell_type' key for downstream plotting.
+                if self.annotation is None:
                     self.annotation = "cell_type"
                     num_obs = adata.n_obs
-                    adata.obs[self.annotation] = np.zeros(num_obs, dtype=int) # Zeros for no-annotation
+                    adata.obs[self.annotation] = np.zeros(num_obs, dtype=int)
                 elif self.annotation != "cell_type":
-                    # Adding annotation as "cell_type" to avoid conflicts in plotting umap (umap color type = "cell_type")
                     adata.obs["cell_type"] = adata.obs[self.annotation]
                     self.annotation = "cell_type"
 
@@ -79,14 +105,14 @@ class DataLoader:
         else:
             raise ValueError("Modality and file_path must be provided for anndata loading.")
 
-    def read_mudata(self) -> md.MuData: # This actually has not implemented anywhere, can be get rid of.
-        """
-        Read h5mu file as MuData object.
-        Args:
-            file_path must be provided when defining DataLoader object
-            Only support file format ".h5mu", ".h5", ".mtx"
+    def read_mudata(self) -> md.MuData:
+        """Reads a file into a MuData object.
+
         Returns:
-            A mudata.MuData object
+            md.MuData: The loaded MuData object.
+
+        Raises:
+            ValueError: If the file path is empty or format is unsupported.
         """
         if self.file_path != "":
             if ".h5mu" in self.file_path:
@@ -105,13 +131,16 @@ class DataLoader:
         return self.data
 
     def preprocessing(self) -> ad.AnnData:
-        """
-        Preprocessing each anndata object
-        Only support rna, atac, adt modality currently
-        Args:
-            Modality and file_path must be provided when defining DataLoader object
+        """Loads and preprocesses the AnnData object.
+
+        If the data is not marked as preprocessed, the appropriate preprocessing
+        routine (RNA, ATAC, or ADT) is triggered.
+
         Returns:
-            A muon.MuData object
+            ad.AnnData: The preprocessed AnnData object.
+
+        Raises:
+            ValueError: If the file path, modality is missing or preprocessing is not applicable.
         """
          # Modality and file_path should be provided for the read_anndata() function to work
         if self.file_path != "":
@@ -141,19 +170,33 @@ class DataLoader:
 
 
 class Preprocessing:
-    def __init__(self, anndata: ad.AnnData, config_path: Union[str, dict]="./config.json"):
+    """Technical preprocessing routines for different single-cell modalities.
+
+    Attributes:
+        data (ad.AnnData): The AnnData object to be preprocessed.
+        config (dict): The modality-specific preprocessing configuration.
+    """
+
+    def __init__(
+        self, anndata: ad.AnnData, config_path: Union[str, dict] = "./config.json"
+    ):
+        """Initializes the Preprocessing object.
+
+        Args:
+            anndata (ad.AnnData): The dataset to process.
+            config_path (Union[str, dict]): Configuration path or dictionary.
+        """
         self.data = anndata
         if isinstance(config_path, dict):
             self.config = config_path.get("preprocess_params")
         else:
             self.config = load_config(config_path=config_path).get("preprocess_params")
-    
+
     def rna_preprocessing(self) -> ad.AnnData:
-        """
-        QC metrics for filtering obs depends on specific dataset and experimental condition.
-        Top highly variable gene = 2000
+        """Performs quality control, normalization, and feature selection for RNA data.
+
         Returns:
-            An anndata.AnnData object (proccessed)
+            ad.AnnData: The preprocessed RNA dataset.
         """
 
         rna_dict = self.config.get("rna_filtering")
@@ -185,11 +228,10 @@ class Preprocessing:
         return self.data
 
     def atac_preprocessing(self) -> ad.AnnData:
-        """
-        QC metrics for filtering obs depends on specific dataset and experimental condition.
-        Top highly variable peaks = 15000
+        """Performs quality control, normalization, and feature selection for ATAC data.
+
         Returns:
-            An anndata.AnnData object (proccessed)
+            ad.AnnData: The preprocessed ATAC dataset.
         """
 
         atac_dict = self.config.get("atac_filtering")
@@ -220,9 +262,10 @@ class Preprocessing:
         return self.data
 
     def adt_preprocessing(self) -> ad.AnnData:
-        """
+        """Performs normalization for ADT data.
+
         Returns:
-            An anndata.AnnData object (proccessed)
+            ad.AnnData: The preprocessed ADT dataset.
         """
 
         adt_dict = self.config.get("adt_filtering")

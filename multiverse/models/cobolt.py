@@ -14,9 +14,32 @@ logger = get_logger(__name__)
 
 
 class CoboltModel(ModelFactory):
-    """Cobolt model implementation."""
+    """Cobolt model wrapper.
 
-    def __init__(self, dataset, dataset_name, config_path: str, is_gridsearch=False):
+    Integrates multimodal data using a Bayesian hierarchical model.
+
+    Attributes:
+        latent_dimensions (int): Dimension of the latent space.
+        learning_rate (float): Learning rate for training.
+        num_epochs (int): Number of training epochs.
+        loss (float): Final training loss.
+    """
+
+    def __init__(
+        self, dataset: dict, dataset_name: str, config_path: str, is_gridsearch: bool = False
+    ):
+        """Initializes the CoboltModel.
+
+        Args:
+            dataset (dict): Dictionary containing modality names and AnnData objects.
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the JSON configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'cobolt' configuration is not found in the model parameters.
+        """
         logger.info("Initializing Cobolt Model")
 
         super().__init__(
@@ -74,11 +97,12 @@ class CoboltModel(ModelFactory):
         )
 
     def train(self):
+        """Trains the Cobolt model."""
         logger.info("Training Cobolt Model")
         try:
             self.model.train(num_epochs=self.num_epochs)
             self.loss = self.model.history["loss"][-1]  # Get the last loss value
-            #save the embedding of the cells with count data for both modalities (intersection)
+            # Save the latent embeddings for cells present in all modalities (intersection).
             self.dataset.obsm[self.latent_key] = self.model.get_all_latent()[0][
                 [
                     self.multiomic_dataset.get_comb_idx(
@@ -91,6 +115,13 @@ class CoboltModel(ModelFactory):
             raise
 
     def evaluate_model(self):
+        """Evaluates the Cobolt model by reporting the final training loss.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
+        """
         metrics = {}
         if hasattr(self, "loss"):
             logger.info(f"Cobolt Loss: {self.loss}")

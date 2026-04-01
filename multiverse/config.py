@@ -5,15 +5,19 @@ logger = get_logger(__name__)
 
 
 def load_config(config_path="./config.json"):
-    """
-    Load the configuration from a JSON file
-    Parameters:
-    - config_path (str): Path to the JSON configuration file.
+    """Load the configuration from a JSON file.
+
+    Args:
+        config_path (str): Path to the JSON configuration file. Defaults to "./config.json".
 
     Returns:
-    - dict: Dictionary of hyperparameters and settings.
-    """
+        dict: Dictionary of hyperparameters and settings.
 
+    Raises:
+        FileNotFoundError: If the configuration file is not found at the specified path.
+        json.JSONDecodeError: If the configuration file contains invalid JSON.
+        Exception: For any other unexpected errors during file loading.
+    """
     try:
         logger.info("Loading .json file")
         with open(config_path, "r", encoding="utf-8") as file:

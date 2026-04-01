@@ -4,14 +4,13 @@ from .logging_utils import get_logger
 logger = get_logger(__name__)
 
 def get_device(device_str: str):
-    """
-    Gets a torch.device object.
+    """Creates a torch.device object based on the provided string.
 
     Args:
-        device_str: "cpu" or a cuda device string like "cuda:0".
+        device_str (str): The device identifier string (e.g., "cpu", "cuda:0").
 
     Returns:
-        A torch.device object.
+        torch.device: The corresponding torch device object.
     """
     if device_str != "cpu":
         if torch.cuda.is_available():

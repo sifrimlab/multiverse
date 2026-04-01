@@ -8,8 +8,19 @@ from .logging_utils import get_logger
 logger = get_logger(__name__)
 
 def load_dataset(file_path: str) -> Union[sc.AnnData, md.MuData]:
-    """
-    Load data from h5ad or h5mu format.
+    """Loads a single-cell dataset from a file.
+
+    Supported formats include `.h5ad` for AnnData and `.h5mu` for MuData.
+
+    Args:
+        file_path (str): The path to the dataset file.
+
+    Returns:
+        Union[scanpy.AnnData, mudata.MuData]: The loaded dataset object.
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the file format is not supported.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Dataset file not found at {file_path}")
@@ -28,10 +39,23 @@ def validate_dataset_structure(
     batch_key: str,
     cell_type_key: Optional[str] = None
 ) -> List[str]:
-    """
-    Verify internal structural requirements.
-    Ensures batch_key and cell_type_key (if provided) exist in observations.
-    Returns list of available omics.
+    """Verifies internal structural requirements of the dataset.
+
+    Ensures that the specified `batch_key` and `cell_type_key` (if provided)
+    exist in the dataset observations (`.obs`).
+
+    Args:
+        data (Union[sc.AnnData, md.MuData]): The dataset object to validate.
+        batch_key (str): The observation key identifying experimental batches.
+        cell_type_key (Optional[str]): The observation key identifying cell types.
+            Defaults to None.
+
+    Returns:
+        List[str]: A list of available omics (modalities) in the dataset.
+
+    Raises:
+        ValueError: If required keys are missing from the dataset observations.
+        TypeError: If the input data is not an AnnData or MuData object.
     """
     # Check if keys exist in observations
     if batch_key not in data.obs.columns:

@@ -1,10 +1,8 @@
 import argparse
 import os
 import json
-import scanpy as sc
 import anndata as ad
 import scvi
-import matplotlib.pyplot as plt
 from ..config import load_config
 from ..data_utils import load_datasets, dataset_select
 from ..logging_utils import get_logger
@@ -14,9 +12,36 @@ from .base import ModelFactory
 logger = get_logger(__name__)
 
 class TotalVIModel(ModelFactory):
-    """TotalVI Model implementation."""
+    """TotalVI model wrapper from the `scvi-tools` library.
 
-    def __init__(self, dataset: ad.AnnData, dataset_name, config_path: str, is_gridsearch=False):
+    Designed for joint analysis of single-cell RNA and protein data.
+
+    Attributes:
+        max_epochs (int): Maximum number of training epochs.
+        learning_rate (float): Learning rate for training.
+        latent_dimensions (int): Dimension of the latent space.
+        torch_device (torch.device): Computation device.
+    """
+
+    def __init__(
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: str,
+        is_gridsearch: bool = False,
+    ):
+        """Initializes the TotalVIModel.
+
+        Args:
+            dataset (ad.AnnData): Concatenated RNA and Protein AnnData object.
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the JSON configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'totalvi' configuration is missing.
+        """
         logger.info("Initializing TotalVI Model")
 
         super().__init__(dataset, dataset_name, config_path=config_path,
@@ -44,16 +69,24 @@ class TotalVIModel(ModelFactory):
         self.model = scvi.model.TOTALVI(self.dataset)
 
     def train(self):
+        """Trains the TotalVI model using variational inference."""
         logger.info("Training TotalVI Model")
         try:
             self.model.train()
             self.dataset.obsm[self.latent_key] = self.model.get_latent_representation()
-            logger.info(f"TotalVI training completed.")
+            logger.info("TotalVI training completed.")
         except Exception as e:
             logger.error(f"Error during training: {e}")
             raise
 
     def evaluate_model(self):
+        """Evaluates the TotalVI model.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
+        """
         metrics = {}
         try:
             with open(self.metrics_filepath, "w") as f:

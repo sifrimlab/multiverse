@@ -1,11 +1,8 @@
 import argparse
 import os
 import json
-import h5py
-import scanpy as sc
 import anndata as ad
 import muon as mu
-import matplotlib.pyplot as plt
 import numpy as np
 from ..config import load_config
 from ..logging_utils import get_logger, setup_logging
@@ -16,9 +13,34 @@ from .base import ModelFactory
 logger = get_logger(__name__)
 
 class MOFAModel(ModelFactory):
-    """MOFA Model implementation."""
+    """MOFA+ model wrapper using the `muon` library.
 
-    def __init__(self, dataset: ad.AnnData, dataset_name, config_path: str, is_gridsearch=False):
+    Attributes:
+        device (str): Computation device (e.g., "cpu", "cuda:0").
+        n_iterations (int): Maximum number of iterations for training.
+        n_factors (int): Number of latent factors to extract.
+        gpu_mode (bool): Flag indicating if GPU acceleration is used.
+    """
+
+    def __init__(
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: str,
+        is_gridsearch: bool = False,
+    ):
+        """Initializes the MOFAModel.
+
+        Args:
+            dataset (ad.AnnData): The input dataset (MuData-derived AnnData).
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the JSON configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'mofa' configuration is not found in the model parameters.
+        """
         logger.info("Initializing MOFA Model")
 
         super().__init__(dataset, dataset_name, config_path=config_path,
@@ -37,9 +59,7 @@ class MOFAModel(ModelFactory):
         self.gpu_mode = self.device != "cpu"
 
     def train(self):
-        """
-        Train the MOFA model.
-        """
+        """Trains the MOFA+ model using variational inference."""
         logger.info("Training MOFA+ Model")
         try:
             mu.tl.mofa(
@@ -47,9 +67,6 @@ class MOFAModel(ModelFactory):
             )
             self.dataset.obsm[self.latent_key] = self.dataset.obsm["X_mofa"]
             logger.info("MOFA training completed.")
-
-            # Debugging output
-            # logger.debug(f"Keys in dataset.uns['mofa']: {self.dataset.uns.get('mofa', {}).keys()}")
 
             # Compute explained variance if not available
             if "explained_variance" in self.dataset.uns.get("mofa", {}):
@@ -68,72 +85,38 @@ class MOFAModel(ModelFactory):
             raise
     
     def _compute_explained_variance(self):
-        """
-        Compute explained variance for MOFA factors.
+        """Computes the variance explained by each latent factor.
+
+        Returns:
+            np.ndarray: An array containing the explained variance ratio for each factor.
         """
         try:
-            factors = self.dataset.obsm[self.latent_key]  # Extract latent factors
-            # logger.debug(f"Latent factors (X_mofa) shape: {factors.shape}")
+            factors = self.dataset.obsm[self.latent_key]
 
-            # Compute total variance from raw data across modalities
+            # Aggregate total variance across all modalities.
             total_variance = 0
             for modality in self.dataset.mod.values():
                 if hasattr(modality.X, "toarray"):
-                    modality_data = (
-                        modality.X.toarray()
-                    )  # Convert sparse to dense if needed
+                    modality_data = modality.X.toarray()
                 else:
                     modality_data = modality.X
                 total_variance += np.var(modality_data, axis=0).sum()
 
-            # logger.debug(f"Total variance from all modalities: {total_variance}")
-
-            # Variance explained by factors
+            # Calculate the ratio of variance captured by the extracted factors.
             factor_variances = np.var(factors, axis=0)
-            # logger.debug(f"Factor variances: {factor_variances}")
-
             explained_variance_ratio = factor_variances / total_variance
-            # logger.debug(f"Explained variance ratio per factor: {explained_variance_ratio}")
-            return explained_variance_ratio
-
-        except Exception as e:
-            logger.error(f"Error computing explained variance: {e}")
-            return []
-    def _compute_explained_variance(self):
-        """
-        Compute explained variance for MOFA factors.
-        """
-        try:
-            factors = self.dataset.obsm[self.latent_key]  # Extract latent factors
-            # logger.debug(f"Latent factors (X_mofa) shape: {factors.shape}")
-
-            # Compute total variance from raw data across modalities
-            total_variance = 0
-            for modality in self.dataset.mod.values():
-                if hasattr(modality.X, "toarray"):
-                    modality_data = (
-                        modality.X.toarray()
-                    )  # Convert sparse to dense if needed
-                else:
-                    modality_data = modality.X
-                total_variance += np.var(modality_data, axis=0).sum()
-
-            # logger.debug(f"Total variance from all modalities: {total_variance}")
-
-            # Variance explained by factors
-            factor_variances = np.var(factors, axis=0)
-            # logger.debug(f"Factor variances: {factor_variances}")
-
-            explained_variance_ratio = factor_variances / total_variance
-            # logger.debug(f"Explained variance ratio per factor: {explained_variance_ratio}")
             return explained_variance_ratio
 
         except Exception as e:
             logger.error(f"Error computing explained variance: {e}")
             return []
     def evaluate_model(self):
-        """
-        Evaluate the trained MOFA+ model based on explained variance.
+        """Evaluates the MOFA+ model by calculating total explained variance.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
         """
         metrics = {}
         if hasattr(self, "explained_variance"):

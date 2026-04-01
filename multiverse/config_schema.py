@@ -1,5 +1,5 @@
 import os
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, Optional, Any
 from pydantic import BaseModel, Field, field_validator, ConfigDict
 
 
@@ -60,5 +60,15 @@ class SystemConfig(BaseModel):
         return v
 
 def validate_config(config_data: Dict[str, Any]) -> SystemConfig:
-    """Validates configuration dictionary against the schema."""
+    """Validates the configuration dictionary against the Pydantic schema.
+
+    Args:
+        config_data (Dict[str, Any]): The raw configuration dictionary.
+
+    Returns:
+        SystemConfig: A validated SystemConfig object.
+
+    Raises:
+        pydantic.ValidationError: If the configuration does not match the schema.
+    """
     return SystemConfig(**config_data)
