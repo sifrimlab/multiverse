@@ -416,3 +416,59 @@ Constraints
 
 Verification
 - Provide the callback function logic for the button and a sample of the generated YAML output.
+
+# Epic [E4]: Workflow Automation, DVC Integration, & Makefile Orchestration
+
+Description
+Finalize the system by wrapping the Registry-based architecture and the Job Manifest system with DVC data-tracking and a high-level Makefile interface.
+
+Outcome
+A production-ready pipeline where the user interacts solely with the Makefile and the GUI, while DVC handles the heavy storage in the background.
+
+---
+
+## Sprint [S4]: Execution Automation
+
+Goal
+Connect the `run_manifest.yaml` (from E5) to the orchestrator via Makefile targets and secure the data store with DVC.
+
+Scope
+Makefile target implementation, DVC automation, and final pipeline wiring.
+
+### Task [T4.1]: Implement manifest-driven orchestration
+
+Type: Integration
+
+Description
+Update the orchestrator/runner to accept a `run_manifest.yaml` file and execute only the jobs defined therein, respecting registry status.
+
+Inputs
+`run_manifest.yaml` (from E5).
+
+Outputs
+Executable pipeline based on manifest selections.
+
+Implementation Prompt
+
+Act as a senior software engineer.
+
+Goal
+Implement manifest-driven execution in the orchestrator.
+
+Context
+Part of a larger system with the following requirement:
+The Orchestrator must now read the `run_manifest.yaml` file. It should validate each job, check the SQLite registry for current status, and spin up only the required Docker containers.
+
+Tasks
+1. Update `multiverse/runner/cli.py` to accept a `--manifest` flag.
+2. Load and parse the `run_manifest.yaml`.
+3. For each job in the manifest, check the `runs` table in the SQLite registry:
+   - If `status == 'SUCCESS'`, skip.
+   - If `status == 'PENDING' OR 'FAILED'`, spin up the container.
+4. Log the execution progress to the SQLite `runs` table in real-time.
+
+Constraints
+- Maintain compatibility with the existing registry check logic.
+
+Verification
+- Provide the CLI flag implementation and the logic for iterating over the manifest.
