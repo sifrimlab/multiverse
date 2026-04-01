@@ -1,9 +1,13 @@
 import streamlit as st
 import json
-import os
 from multiverse.registry import load_registry
 
 def main():
+    """Main entry point for the Streamlit-based setup wizard.
+
+    Provides a graphical interface for users to specify their dataset details,
+    select models, and generate a compatible JSON configuration file.
+    """
     st.title("Multiverse Setup Wizard")
     st.markdown("Use this interface to generate your system configuration file.")
 
@@ -53,9 +57,7 @@ def main():
             }
 
             if cell_type_key:
-                 # In current schema, cell_type_key isn't in SystemConfig root,
-                 # but it might be used by evaluation.
-                 # For now we'll stick to the schema defined in T1.2 and T5.1
+                 # Included for downstream evaluation metrics that require cell type labels.
                  config["cell_type_key"] = cell_type_key
 
             if atac_file:

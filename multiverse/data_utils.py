@@ -13,14 +13,20 @@ logger = get_logger(__name__)
 
 
 def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None) -> md.MuData:
-    """
-    Fusing paired anndata as MuData
-    intersect_obs will be used if number of obs not equivalent
+    """Fuses a list of AnnData objects into a single MuData object.
+
+    Uses `muon.pp.intersect_obs` to ensure that the observation indices are consistent across
+    all modalities.
+
     Args:
-        list_modality: A list of strings representing the modalities (e.g., ["rna", "atac", "adt"]).
-        list_anndata: A list of AnnData objects corresponding to the modalities (e.g., [adata_rna, adata_atac, adata_adt]).
-    Returns:s
-        A mudata.MuData object    
+        list_anndata (List[ad.AnnData]): A list of AnnData objects to be fused.
+        list_modality (List[str]): A list of modality names corresponding to each AnnData.
+
+    Returns:
+        mudata.MuData: The fused MuData object containing all modalities.
+
+    Raises:
+        ValueError: If the lengths of `list_modality` and `list_anndata` are not equal.
     """
     if len(list_modality) != len(list_anndata):
         raise ValueError("Length of list_modality and list_anndata must be equal!")
@@ -36,11 +42,11 @@ def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] 
     data = mu.MuData(data_dict)
     mu.pp.intersect_obs(data)   # Make sure number of cells are the same for all modalities
 
-    # Hard-code "cell_type" to avoid conflict
+    # Ensures consistency in cell type annotations by using 'rna' modality's labels
+    # if available, otherwise creates a default column.
     if "cell_type" in data["rna"].obs.columns:
         data.obs["cell_type"] = data["rna"].obs["cell_type"]
     else:
-        # If there is no 'cell_type' annotation in rna modality
         logger.warning("No 'cell_type' annotation found in rna modality. Creating a default 'cell_type' column with zeros.")
         num_obs = data.n_obs
         data.obs["cell_type"] = np.zeros(num_obs, dtype=int)
@@ -48,12 +54,17 @@ def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] 
     return data
 
 def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None) -> ad.AnnData:
-    """
+    """Concatenates multiple AnnData objects along the variable axis.
+
+    First fuses the data into a MuData object to ensure alignment of observations,
+    then concatenates the individual modalities into a single AnnData object.
+
     Args:
-        list_modality: A list of strings representing the modalities (e.g., ["rna", "atac", "adt"]).
-        list_anndata: A list of AnnData objects corresponding to the modalities (e.g., [adata_rna, adata_atac, adata_adt]).
+        list_anndata (List[ad.AnnData]): A list of AnnData objects to be concatenated.
+        list_modality (List[str]): A list of modality names.
+
     Returns:
-        A AnnData object
+        anndata.AnnData: The concatenated AnnData object.
     """
     mudata = fuse_mudata(list_anndata=list_anndata, list_modality=list_modality)
     list_ann = []
@@ -62,22 +73,31 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
 
     anndata = ad.concat(list_ann, axis="var", label="cell_type", merge="unique", uns_merge="unique")
 
-    # Hard-code "cell_type" to avoid conflict (Should already be available when fuse_mudata is called above)
+    # Propagates cell type annotations from the fused MuData to the concatenated object.
     num_obs = anndata.n_obs
     if "cell_type" in mudata.obs.columns:
         anndata.obs["cell_type"] = mudata.obs["cell_type"]
     else:
-        # No annotation -> setting annotation as 'cell_type' = 0 to avoid conflicts.
         anndata.obs["cell_type"] = np.zeros(num_obs, dtype=int)
     
-    anndata.obs["modality"] = np.zeros(num_obs, dtype=int) # Adding this to prevent error in multiVI model
+    # Initialize modality mapping for compatibility with models like MultiVI.
+    anndata.obs["modality"] = np.zeros(num_obs, dtype=int)
     return anndata
 
 
 def load_datasets(config_path_or_dict):
-    """
-    Load all datasets specified in the configuration.
-    Returns a dictionary where keys are dataset names, and values are the data objects.
+    """Loads and preprocesses all datasets specified in the system configuration.
+
+    Args:
+        config_path_or_dict (Union[str, dict]): Either a path to the JSON configuration
+            file or the configuration dictionary itself.
+
+    Returns:
+        dict: A dictionary where keys are dataset names and values are dictionaries
+            containing modality names and the loaded AnnData objects.
+
+    Raises:
+        ValueError: If a dataset has no modalities defined.
     """
     if isinstance(config_path_or_dict, dict):
         config_dict = config_path_or_dict
@@ -98,7 +118,7 @@ def load_datasets(config_path_or_dict):
             key
             for key, value in dataset_info.items()
             if isinstance(value, dict) and "file_name" in value
-        ]  # modality (i.e.'rna') must be a dictionary
+        ]
         dataset_path = dataset_info["data_path"]
         list_anndata = []
         # Check if data is loaded correctly
@@ -123,13 +143,24 @@ def load_datasets(config_path_or_dict):
     return datasets
 
 
-def dataset_select(datasets_dict, data_type: str = ""):
-    """
-    Concatenate list of AnnDatas or Fuse list of AnnDatas into one MuData
+def dataset_select(datasets_dict: dict, data_type: str = ""):
+    """Converts the internal dataset dictionary into the format required by models.
+
+    Args:
+        datasets_dict (dict): The dictionary returned by `load_datasets`.
+        data_type (str): The desired output format, either "concatenate" (for AnnData)
+            or "mudata" (for MuData).
+
+    Returns:
+        dict: A dictionary mapping dataset names to the processed data objects.
+
+    Raises:
+        ValueError: If an unsupported `data_type` is provided.
     """
     datasets = datasets_dict
 
-    if data_type == "concatenate":  # Process input object for PCA and MultiVI
+    if data_type == "concatenate":
+        # PCA and MultiVI require a single AnnData with concatenated modalities.
         concatenate = {}
         for dataset_name, dataset_data in datasets.items():
             logger.info(f"Concatenating dataset: {dataset_name}")
@@ -140,7 +171,8 @@ def dataset_select(datasets_dict, data_type: str = ""):
             )
             concatenate[dataset_name] = data_concat
         data = concatenate
-    elif data_type == "mudata":  # Process input object for MOFA+ and Mowgli
+    elif data_type == "mudata":
+        # MOFA+ and Mowgli use MuData to represent multiple modalities separately.
         mudata_input = {}
         for dataset_name, dataset_data in datasets.items():
             logger.info(f"Fusing dataset as MuData object: {dataset_name}")

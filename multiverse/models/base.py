@@ -11,9 +11,19 @@ logger = get_logger(__name__)
 
 
 class ModelFactory:
-    """
-    Other classes will inherit initial attributes of this class (config_file, dataset, dataset_name, ...)
-    List of functions in each model is same as ModelFactory but how it works is different for each model
+    """The base class for all multimodal integration model wrappers.
+
+    Standardizes the lifecycle of a model run, providing methods for training,
+    saving latent embeddings, and generating visualizations.
+
+    Attributes:
+        dataset (ad.AnnData or md.MuData): The input dataset.
+        dataset_name (str): A descriptive name for the dataset.
+        model_name (str): The name of the model being executed.
+        output_dir (str): Base directory for model results.
+        latent_filepath (str): Path to save latent embeddings.
+        umap_filename (str): Path to save the UMAP plot.
+        metrics_filepath (str): Path to save model-specific metrics.
     """
 
     def __init__(
@@ -22,8 +32,18 @@ class ModelFactory:
         dataset_name: str,
         model_name: str = "",
         config_path: Union[str, dict] = "./config.json",
-        is_gridsearch=False,
+        is_gridsearch: bool = False,
     ):
+        """Initializes the ModelFactory base class.
+
+        Args:
+            dataset (Union[ad.AnnData, md.MuData]): The dataset object.
+            dataset_name (str): Name of the dataset.
+            model_name (str): Name of the model. Defaults to "".
+            config_path (Union[str, dict]): Path to the configuration file or the configuration dictionary.
+                Defaults to "./config.json".
+            is_gridsearch (bool): Flag indicating if this is a grid search run. Defaults to False.
+        """
         if isinstance(config_path, dict):
             self.config_dict = config_path
         else:
@@ -63,11 +83,10 @@ class ModelFactory:
             self.umap_color_type = model_specific_params.get("umap_color_type")
 
     def update_parameters(self, **kwargs):
-        """
-        Updates the model parameters.
+        """Updates the model attributes with new parameter values.
+
         Args:
-            **kwargs: Keyword arguments with parameter names and their new values.
-                     Example: update_parameters(n_factors=10, n_iteration=500)
+            **kwargs: Dictionary of attribute names and new values.
         """
         for key, value in kwargs.items():
             if hasattr(self, key):
@@ -77,11 +96,18 @@ class ModelFactory:
                 logger.warning(f"Invalid parameter name '{key}'")
 
     def train(self):
+        """Abstract method for training the model. Subclasses must implement this."""
         logger.info("Training the model.")
 
     def save_latent(self):
-        """
-        Saves only the latent embedding (matrix) to an HDF5 file.
+        """Saves the calculated latent representation of the data to an HDF5 file.
+
+        The latent representation is expected to be stored in `self.dataset.obsm`
+        under the key `self.latent_key`.
+
+        Raises:
+            ValueError: If `latent_filepath` is not set.
+            IOError: If there is an issue writing the HDF5 file.
         """
         if self.latent_filepath is None:
             raise ValueError("latent_filepath is not set. Cannot save latent data.")
@@ -103,7 +129,14 @@ class ModelFactory:
             raise
 
     def umap(self):
-        """Generate UMAP visualization using Cobolt embeddings for all modalities."""
+        """Generates a UMAP visualization using the model's latent embeddings.
+
+        The resulting plot is saved to `self.umap_filename`.
+
+        Raises:
+            ValueError: If `umap_filename` is not set.
+            Exception: If an error occurs during UMAP generation or plotting.
+        """
         if self.umap_filename is None:
             raise ValueError("umap_filename is not set. Cannot save UMAP plot.")
 
@@ -142,4 +175,5 @@ class ModelFactory:
             raise
 
     def evaluate_model(self):
+        """Abstract method for evaluating the model. Subclasses must implement this."""
         logger.info("Evaluating the model.")

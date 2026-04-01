@@ -1,13 +1,9 @@
 import argparse
 import os
 import json
-import scanpy as sc
 import anndata as ad
 import scvi
-import h5py
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from sklearn.metrics import silhouette_score
 from ..config import load_config
 from ..data_utils import load_datasets, dataset_select
@@ -18,9 +14,36 @@ from .base import ModelFactory
 logger = get_logger(__name__)
 
 class MultiVIModel(ModelFactory):
-    """MultiVI Model implementation."""
+    """MultiVI model wrapper from the `scvi-tools` library.
 
-    def __init__(self, dataset: ad.AnnData, dataset_name, config_path: str, is_gridsearch=False):
+    Designed for joint analysis of single-cell RNA and ATAC sequencing data.
+
+    Attributes:
+        max_epochs (int): Maximum number of training epochs.
+        learning_rate (float): Learning rate for training.
+        latent_dimensions (int): Dimension of the latent space.
+        torch_device (torch.device): Computation device.
+    """
+
+    def __init__(
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: str,
+        is_gridsearch: bool = False,
+    ):
+        """Initializes the MultiVIModel.
+
+        Args:
+            dataset (ad.AnnData): Concatenated RNA and ATAC AnnData object.
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the JSON configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'multivi' configuration is missing or 'feature_types' are not defined.
+        """
         logger.info("Initializing MultiVI Model")
 
         super().__init__(dataset, dataset_name, config_path=config_path,
@@ -66,16 +89,24 @@ class MultiVIModel(ModelFactory):
             raise ValueError("MultiVI initialization needs 'feature_types' in variable keys to setup genes (RNA-seq) and genomic regions (ATAC-seq)!")
 
     def train(self):
+        """Trains the MultiVI model using stochastic variational inference."""
         logger.info("Training MultiVI Model")
         try:
             self.model.train()
             self.dataset.obsm[self.latent_key] = self.model.get_latent_representation()
-            logger.info(f"Multivi training completed.")
+            logger.info("Multivi training completed.")
         except Exception as e:
             logger.error(f"Error during training: {e}")
             raise
 
     def evaluate_model(self):
+        """Evaluates the MultiVI model using the silhouette score.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
+        """
         metrics = {}
         if self.latent_key in self.dataset.obsm:
             latent = self.dataset.obsm[self.latent_key]

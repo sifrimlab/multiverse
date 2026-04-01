@@ -16,6 +16,14 @@ from ..registry import load_registry
 logger = get_logger(__name__)
 
 def generate_status_table(tasks: Dict[str, str]) -> Table:
+    """Generates a Rich Table representing the current status of all tasks.
+
+    Args:
+        tasks (Dict[str, str]): A mapping from task names to their status strings.
+
+    Returns:
+        rich.table.Table: A formatted table for terminal display.
+    """
     table = Table(title="Multiverse Parallel Execution Dashboard")
     table.add_column("Task/Model", justify="left", style="cyan", no_wrap=True)
     table.add_column("Status", justify="center", style="magenta")
@@ -26,7 +34,15 @@ def generate_status_table(tasks: Dict[str, str]) -> Table:
 
     return table
 
-async def run_workflow_async(args):
+async def run_workflow_async(args: argparse.Namespace):
+    """Executes the concurrent Docker-based workflow.
+
+    Manages image preparation and parallel model execution with a live
+    terminal dashboard.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+    """
     os.makedirs(args.output, exist_ok=True)
     setup_logging(args.output)
 
@@ -82,6 +98,10 @@ async def run_workflow_async(args):
             logger.error(f"Error during evaluation: {e}")
 
 def main():
+    """Main entry point for the multiverse CLI.
+
+    Supports both sequential and concurrent Docker-based model execution.
+    """
     parser = argparse.ArgumentParser(description="Run multiverse models in Docker containers")
     parser.add_argument(
         "--models",

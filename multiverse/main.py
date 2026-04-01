@@ -6,7 +6,6 @@ of multimodal data integration models based on a configuration file.
 """
 
 import os
-import sys
 import json
 import random
 import numpy as np
@@ -14,19 +13,17 @@ import torch
 from .config import load_config
 from .config_schema import validate_config
 from .data_utils import load_datasets, dataset_select
-from .ingestion import load_dataset, validate_dataset_structure
 from .registry import load_registry, get_eligible_models
 from .logging_utils import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
 
-def set_seed(seed=42):
-    """
-    Set random seeds for reproducibility across torch, numpy, and random.
-    
+def set_seed(seed: int = 42):
+    """Sets random seeds for reproducibility across torch, numpy, and random.
+
     Args:
-        seed (int): Random seed value. Default is 42.
+        seed (int): Random seed value. Defaults to 42.
     """
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -41,19 +38,18 @@ def set_seed(seed=42):
 
 
 def main_workflow(config_path: str):
-    """
-    Main workflow for running multiverse models.
-    
-    This function loads the configuration, prepares datasets, and executes
-    the specified models based on the configuration settings.
-    
+    """Orchestrates the execution of the multimodal data integration pipeline.
+
+    This function manages the end-to-end workflow, including configuration
+    validation, data loading, model eligibility routing, and model execution.
+
     Args:
-        config_path (str): Path to the JSON configuration file
-        
+        config_path (str): Path to the JSON configuration file.
+
     Raises:
-        FileNotFoundError: If the configuration file doesn't exist
-        ValueError: If the configuration is invalid
-        Exception: For any other errors during execution
+        FileNotFoundError: If the configuration file doesn't exist.
+        ValueError: If the configuration is invalid.
+        Exception: For any other errors during execution.
     """
     try:
         # Set random seed for reproducibility at the very start
@@ -76,9 +72,7 @@ def main_workflow(config_path: str):
         # Convert back to dict for the rest of the pipeline to keep it compatible
         config = validated_config.model_dump(by_alias=True)
         
-        # We use the validated config object in memory for the rest of the pipeline.
-
-        # Setup output directory and logging
+        # Ensure the output directory exists and setup the global logging configuration.
         output_dir = config.get("output_dir", "/data/outputs/")
         os.makedirs(output_dir, exist_ok=True)
         setup_logging(output_dir)
@@ -86,12 +80,9 @@ def main_workflow(config_path: str):
         logger.info("Configuration loaded successfully")
         logger.info(f"Output directory: {output_dir}")
         
-        # Load registry
         registry = load_registry()
 
-        # Load datasets
         logger.info("Loading datasets...")
-        # Use the validated config dictionary
         datasets = load_datasets(config)
         
         # Get model configuration
@@ -150,8 +141,6 @@ def main_workflow(config_path: str):
         if run_gridsearch:
             logger.warning("Grid search is configured but not yet implemented in the workflow")
             logger.info("Skipping grid search for now")
-            # TODO: Implement grid search workflow
-            # run_models_with_gridsearch(config_path, datasets, model_config)
         
         logger.info("Multiverse workflow completed successfully")
         
@@ -166,14 +155,15 @@ def main_workflow(config_path: str):
         raise
 
 
-def run_models_with_user_params(config_path, datasets, model_config):
-    """
-    Run models with user-specified parameters.
-    
+def run_models_with_user_params(
+    config_path: str, datasets: dict, model_config: dict
+):
+    """Executes models using parameters provided in the configuration.
+
     Args:
-        config_path (str): Path to the configuration file
-        datasets (dict): Dictionary of loaded datasets
-        model_config (dict): Model configuration dictionary
+        config_path (str): Path to the configuration file.
+        datasets (dict): Dictionary containing the loaded datasets.
+        model_config (dict): Configuration specific to the models to be run.
     """
     from .models.pca import PCAModel
     from .models.mofa import MOFAModel

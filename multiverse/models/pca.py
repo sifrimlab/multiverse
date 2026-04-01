@@ -11,12 +11,35 @@ from ..logging_utils import get_logger, setup_logging
 logger = get_logger(__name__)
 
 class PCAModel(ModelFactory):
-    """PCA implementation"""
+    """Principal Component Analysis (PCA) model wrapper.
 
-    def __init__(self, dataset: ad.AnnData, dataset_name, config_path: str, is_gridsearch=False):
-        """
-        Initialize the PCA model with the specified parameters.
-        Input data is AnnData object that was concatenated of multiple modality
+    Performs PCA on concatenated multimodal data to generate low-dimensional
+    latent embeddings.
+
+    Attributes:
+        n_components (int): The number of principal components to calculate.
+        device (str): Computation device (e.g., "cpu").
+        gpu_mode (bool): Flag indicating if GPU acceleration is used.
+    """
+
+    def __init__(
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: str,
+        is_gridsearch: bool = False,
+    ):
+        """Initializes the PCAModel.
+
+        Args:
+            dataset (ad.AnnData): Concatenated multimodal AnnData object.
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the JSON configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'pca' configuration is not found in the model parameters.
         """
         logger.info("Initializing PCA Model")
 
@@ -41,7 +64,7 @@ class PCAModel(ModelFactory):
         )
 
     def train(self):
-        """Perform PCA on all modalities concatenated."""
+        """Calculates principal components on the dataset."""
         logger.info("Training PCA Model")
 
         if "highly_variable" in self.dataset.var.keys():
@@ -59,8 +82,12 @@ class PCAModel(ModelFactory):
 
 
     def evaluate_model(self):
-        """
-        Evaluate the trained PCA model based on variance explained.
+        """Evaluates the PCA model by calculating the total explained variance.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
         """
         metrics = {}
         if hasattr(self, "variance_ratio"):

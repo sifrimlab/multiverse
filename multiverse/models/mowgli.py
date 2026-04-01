@@ -1,10 +1,7 @@
 import argparse
 import os
 import json
-import scanpy as sc
-import h5py
-import numpy as np
-import matplotlib.pyplot as plt
+import anndata as ad
 import mowgli
 from .base import ModelFactory
 from ..config import load_config
@@ -15,9 +12,33 @@ from ..data_utils import load_datasets, dataset_select
 logger = get_logger(__name__)
 
 class MowgliModel(ModelFactory):
-    """Mowgli model implementation."""
+    """Mowgli model wrapper.
 
-    def __init__(self, dataset, dataset_name, config_path: str, is_gridsearch=False):
+    Uses Optimal Transport and Non-negative Matrix Factorization for multimodal
+    data integration.
+
+    Attributes:
+        latent_dimensions (int): Dimension of the latent space.
+        optimizer (str): Name of the optimizer to use.
+        learning_rate (float): Learning rate for the optimizer.
+        loss (float): Final training loss.
+    """
+
+    def __init__(
+        self, dataset: ad.AnnData, dataset_name: str, config_path: str, is_gridsearch: bool = False
+    ):
+        """Initializes the MowgliModel.
+
+        Args:
+            dataset (ad.AnnData): The input dataset.
+            dataset_name (str): Name of the dataset.
+            config_path (str): Path to the JSON configuration file.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'mowgli' configuration is not found in the model parameters.
+        """
         logger.info("Initializing Mowgli Model")
 
         super().__init__(dataset, dataset_name, config_path=config_path,
@@ -43,6 +64,7 @@ class MowgliModel(ModelFactory):
         logger.info(f"Mowgli model initiated with {self.latent_dimensions} dimension.")
 
     def train(self):
+        """Trains the Mowgli model using the specified optimizer."""
         logger.info("Training Mowgli Model")
         try:
             self.model.train(
@@ -61,6 +83,13 @@ class MowgliModel(ModelFactory):
             raise
 
     def evaluate_model(self):
+        """Evaluates the Mowgli model by reporting the final Optimal Transport loss.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
+        """
         metrics = {}
         if hasattr(self, "loss"):
             logger.info(f"Optimal Transport Loss (Mowgli): {self.loss}")
