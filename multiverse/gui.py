@@ -1,76 +1,133 @@
 import streamlit as st
 import json
-from multiverse.registry import load_registry
+import yaml
+import os
+import pandas as pd
+from multiverse.registry import generate_compatibility_matrix
+from multiverse.registry_db import get_all_datasets, get_all_models, init_db
+
+@st.cache_data
+def fetch_registry_data():
+    """Fetches datasets and models from the SQLite registry."""
+    # Ensure DB is initialized (idempotent)
+    init_db()
+    datasets = get_all_datasets()
+    models = get_all_models()
+    return datasets, models
 
 def main():
     """Main entry point for the Streamlit-based setup wizard.
 
     Provides a graphical interface for users to specify their dataset details,
-    select models, and generate a compatible JSON configuration file.
+    select models, and generate a compatible YAML run manifest.
     """
+    st.set_page_config(page_title="Multiverse Setup Wizard", layout="wide")
     st.title("Multiverse Setup Wizard")
-    st.markdown("Use this interface to generate your system configuration file.")
+    st.markdown("Use this interface to explore compatibility and generate your execution plan.")
 
-    with st.form("setup_form"):
-        # Basic Settings
-        st.subheader("Basic Settings")
-        dataset_path = st.text_input("Dataset Path (h5ad/h5mu)", value="data/dataset.h5mu")
-        batch_key = st.text_input("Batch Key", value="batch")
-        cell_type_key = st.text_input("Cell Type Key (Optional)", value="")
-        output_dir = st.text_input("Output Directory", value="./outputs/")
-        random_seed = st.number_input("Random Seed", value=42)
+    datasets, models = fetch_registry_data()
 
-        # Model Selection
-        st.subheader("Model Selection")
-        try:
-            registry = load_registry()
-            model_options = list(registry.keys())
-        except Exception as e:
-            st.error(f"Failed to load model registry: {e}")
-            model_options = []
+    if not datasets:
+        st.warning("No datasets found in registry. Please register a dataset first.")
+        # Optional: Add a link or button to register datasets if T1.2 is implemented
+        return
 
-        selected_models = st.multiselect("Select Models to Run", model_options, default=model_options[:1] if model_options else [])
+    st.subheader("1. Compatibility Matrix")
+    matrix_df = generate_compatibility_matrix(datasets, models)
 
-        # Omics mapping (Simplified for GUI)
-        st.subheader("Omics Configuration")
-        rna_file = st.text_input("RNA Modality File Name (within dataset)", value="rna.h5ad")
-        atac_file = st.text_input("ATAC Modality File Name (Optional)", value="")
-        adt_file = st.text_input("ADT Modality File Name (Optional)", value="")
+    # Styling the matrix
+    def color_compatibility(val):
+        color = 'white'
+        if val == 'Compatible':
+            color = '#90ee90' # Light green
+        elif val == 'Partial':
+            color = '#ffffe0' # Light yellow
+        elif val == 'Incompatible':
+            color = '#ffcccb' # Light red
+        return f'background-color: {color}'
 
-        submitted = st.form_submit_button("Generate Configuration")
+    st.dataframe(matrix_df.style.map(color_compatibility))
 
-        if submitted:
-            # Construct the configuration dictionary matching SystemConfig schema
-            config = {
-                "batch_key": batch_key,
-                "random_seed": int(random_seed),
-                "output_dir": output_dir,
-                "data": {
-                    "dataset_1": {
-                        "data_path": dataset_path,
-                        "rna": {"file_name": rna_file}
-                    }
-                },
-                "model": {m: {} for m in selected_models},
-                "_run_user_params": True,
-                "_run_gridsearch": False
+    st.subheader("2. Job Selection")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        selected_dataset_names = st.multiselect(
+            "Select Datasets",
+            options=[d["name"] for d in datasets],
+            help="Choose one or more datasets to process."
+        )
+
+    # Filter models based on selected datasets
+    compatible_models_all = set()
+    if selected_dataset_names:
+        for ds_name in selected_dataset_names:
+            compat_row = matrix_df.loc[ds_name]
+            compatible_models = compat_row[compat_row.isin(["Compatible", "Partial"])].index.tolist()
+            if not compatible_models_all:
+                compatible_models_all = set(compatible_models)
+            else:
+                # We want models compatible with ALL selected datasets if they are to be multi-selected?
+                # Actually, usually users want to run different models on different datasets.
+                # But for a simple UI, let's show models compatible with AT LEAST ONE selected dataset.
+                compatible_models_all.update(compatible_models)
+    else:
+        compatible_models_all = set([m["name"] for m in models])
+
+    with col2:
+        selected_model_names = st.multiselect(
+            "Select Models",
+            options=sorted(list(compatible_models_all)),
+            help="Only models compatible with at least one selected dataset are shown."
+        )
+
+    st.subheader("3. Finalize Plan")
+
+    # We need a way to pair them. Let's use a data editor for fine-grained control
+    planned_jobs = []
+    for ds_name in selected_dataset_names:
+        for mod_name in selected_model_names:
+            status = matrix_df.loc[ds_name, mod_name]
+            if status in ["Compatible", "Partial"]:
+                planned_jobs.append({"Dataset": ds_name, "Model": mod_name, "Status": status})
+            else:
+                # Optionally warn about incompatible pairs if they were somehow selected
+                pass
+
+    if planned_jobs:
+        jobs_df = pd.DataFrame(planned_jobs)
+        st.write("The following jobs will be added to the manifest:")
+        st.table(jobs_df)
+
+        if st.button("Generate Run Manifest"):
+            manifest = {
+                "manifest_version": "1.0",
+                "jobs": []
             }
 
-            if cell_type_key:
-                 # Included for downstream evaluation metrics that require cell type labels.
-                 config["cell_type_key"] = cell_type_key
+            # Group by dataset for the manifest structure
+            from collections import defaultdict
+            ds_to_models = defaultdict(list)
+            for job in planned_jobs:
+                ds_to_models[job["Dataset"]].append(job["Model"])
 
-            if atac_file:
-                config["data"]["dataset_1"]["atac"] = {"file_name": atac_file}
-            if adt_file:
-                config["data"]["dataset_1"]["adt"] = {"file_name": adt_file}
+            for ds_name, mods in ds_to_models.items():
+                manifest["jobs"].append({
+                    "dataset_id": ds_name,
+                    "models": mods
+                })
 
-            config_filename = "generated_config.json"
-            with open(config_filename, "w") as f:
-                json.dump(config, f, indent=4)
+            manifest_path = "run_manifest.yaml"
+            with open(manifest_path, "w") as f:
+                yaml.dump(manifest, f, default_flow_style=False)
 
-            st.success(f"Configuration saved to {config_filename}!")
-            st.json(config)
+            st.success(f"Manifest saved to {manifest_path}!")
+            st.code(f"make benchmark config={manifest_path}")
+            st.write("Manifest content:")
+            st.code(yaml.dump(manifest, default_flow_style=False), language="yaml")
+    else:
+        st.info("Select datasets and compatible models to generate a plan.")
 
 if __name__ == "__main__":
     main()

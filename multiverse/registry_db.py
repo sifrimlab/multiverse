@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import json
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 # Calculate base directory relative to this file's location
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -99,6 +99,28 @@ def populate_models(registry_path: str = "model_registry.json"):
 
     conn.commit()
     conn.close()
+
+def get_all_datasets() -> List[Dict]:
+    """Fetches all datasets from the database."""
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM datasets")
+    rows = cursor.fetchall()
+    datasets = [dict(row) for row in rows]
+    conn.close()
+    return datasets
+
+def get_all_models() -> List[Dict]:
+    """Fetches all models from the database."""
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM models")
+    rows = cursor.fetchall()
+    models = [dict(row) for row in rows]
+    conn.close()
+    return models
 
 if __name__ == "__main__":
     init_db()
