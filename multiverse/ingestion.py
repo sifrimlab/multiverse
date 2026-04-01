@@ -2,8 +2,11 @@ import scanpy as sc
 import mudata as md
 import muon as mu
 import os
+import shutil
+import time
 from typing import List, Union, Optional
 from .logging_utils import get_logger
+from . import registry_db
 
 logger = get_logger(__name__)
 
@@ -75,3 +78,34 @@ def validate_dataset_structure(
 
     logger.info(f"Dataset validated. Available omics: {omics}")
     return omics
+
+def register_dataset(file_path: str, name: str, batch_key: str):
+    """Validates, copies, and registers a dataset into the SQLite registry."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Dataset file not found at {file_path}")
+
+    # Load and validate
+    data = load_dataset(file_path)
+    omics = validate_dataset_structure(data, batch_key=batch_key)
+
+    # Prepare destination path
+    file_name = os.path.basename(file_path)
+    dest_path = os.path.join(registry_db.RAW_DATASETS_DIR, file_name)
+
+    # Handle name collision by adding timestamp if needed
+    if os.path.exists(dest_path):
+        base, ext = os.path.splitext(file_name)
+        counter = 1
+        while os.path.exists(dest_path):
+            new_file_name = f"{base}_{int(time.time())}_{counter}{ext}"
+            dest_path = os.path.join(registry_db.RAW_DATASETS_DIR, new_file_name)
+            counter += 1
+
+    # Copy dataset
+    logger.info(f"Copying dataset from {file_path} to {dest_path}")
+    shutil.copy2(file_path, dest_path)
+
+    # Record in DB
+    dataset_id = registry_db.insert_dataset(name, dest_path, omics, status="READY")
+    logger.info(f"Dataset registered with ID {dataset_id}")
+    return dataset_id
