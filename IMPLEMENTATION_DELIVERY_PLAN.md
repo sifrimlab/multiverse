@@ -1,542 +1,280 @@
-# Epic [E1]: Foundation - Project Structure & Data Pipeline
+# Epic [E1]: State Management & The Registry Architecture
 
 Description
-Establish the reproducible environment, centralized configuration system, and single-source-of-truth data pipeline. This prevents pipeline runs from failing due to environment discrepancies or malformed data.
+Transition the system from reading static JSON configuration files (`config_alldatasets.json`) to a dynamic SQLite-backed Registry. This enables idempotency (skipping completed runs) and decoupled execution.
 
 Outcome
-A robust baseline capable of deterministic dependency installation, strict configuration validation, and centralized data preprocessing.
+A local SQLite database tracking Datasets, Models, and Runs, along with a structured physical file Store.
 
 ---
 
-## Sprint [S1]: Environment & Configuration
+## Sprint [S1]: Database & Ingestion Layer
 
 Goal
-Set up dependency management, project entry points, and strict configuration validation.
+Create the SQLite schema and update the dataset ingestion process to register datasets into the database instead of a JSON file.
 
 Scope
-Implementation of a unified `Makefile`, `uv`-based dependency locking, and a `Pydantic`-based configuration schema.
+SQLite database initialization, Store directory creation, and an ingestion script.
 
-### Task [T1.1]: Create dependency manager and task runner
+### Task[T1.1]: Initialize local state database and store directories
 
 Type: Foundation
 
 Description
-Implement a standardized entry point for project tasks and lock dependencies.
+Create the `mvexp_state.db` SQLite database with tables for Datasets, Models, and Runs, and initialize the physical `store/` directories.
 
 Inputs
-Existing scattered `requirements.txt` or loose environment files.
+None.
 
 Outputs
-A locked dependency file and a `Makefile` with standard targets.
+A new module `multiverse/registry_db.py` and directory structure.
 
-```id="atomic-prompt-t1.1"
 Implementation Prompt
 
 Act as a senior software engineer.
 
 Goal
-Implement a reproducible dependency configuration and a universal task runner.
+Implement a lightweight SQLite state manager and directory initializer.
 
 Context
 Part of a larger system with the following requirement:
-We need a deterministic way to install dependencies and run project commands (setup, run, test) without user friction.
+We are migrating from static JSON configs to a local SQLite registry to track execution state. We need a module to initialize the DB schema and create the required physical folders.
 
 Tasks
-1. Define a dependency configuration file (e.g., `pyproject.toml` or `uv.lock`) that pins all required libraries (pydantic, docker, rich, streamlit, pytest, etc.).
-2. Create a `Makefile` with the following targets: `install`, `setup`, `run`, and `test`.
-3. Ensure the `install` target syncs the locked dependencies to the virtual environment.
+1. Create `multiverse/registry_db.py`.
+2. Implement an initialization function that creates `store/datasets/`, `store/models/`, and `store/artifacts/`.
+3. Implement SQLite table creation using the built-in `sqlite3` library:
+   - `datasets` (id, name, path, omics_available, status)
+   - `models` (name, docker_image, supported_omics)
+   - `runs` (run_id, dataset_id, model_name, status, output_path)
+4. Ensure the initialization is idempotent (using `CREATE TABLE IF NOT EXISTS`).
 
 Constraints
-- Keep the Makefile POSIX compliant.
-- Assume `uv` or standard `pip-compile` is the underlying package manager.
-
-Safety Notes
-- Fail clearly if the base python version is fundamentally incompatible.
+- Do not use ORMs like SQLAlchemy; keep it strictly minimal with standard library `sqlite3`.
+- Do not hardcode absolute paths; use relative paths from the project root.
 
 Verification
-- Provide a usage example demonstrating `make install` and `make run`.
-```
+- Provide a Python snippet demonstrating the initialization of the DB and inserting a dummy dataset row.
 
-### Task[T1.2]: Create strict configuration module
 
-Type: Foundation
-
-Description
-Implement a centralized configuration parser that validates user inputs (data paths, dataset keys, random seeds).
-
-Inputs
-Raw JSON/YAML user configuration file.
-
-Outputs
-Validated configuration object usable across the system.
-
-```id="atomic-prompt-t1.2"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement a strict configuration parsing and validation module.
-
-Context
-Part of a larger system with the following requirement:
-The system needs a validated configuration object defining dataset location, `batch_key`, `cell_type_key`, `random_seed`, and `selected_models`.
-
-Tasks
-1. Create a data structure (using Pydantic or standard Dataclasses) representing the system configuration.
-2. Implement validation logic to ensure paths exist on the filesystem.
-3. Allow `cell_type_key` to be nullable (for unsupervised-only runs) but enforce `batch_key` existence.
-4. Set a default `random_seed` (e.g., 42) if none is provided.
-
-Constraints
-- Keep the module completely independent of machine learning logic.
-- Ensure clear, human-readable error messages for missing required fields.
-
-Safety Notes
-- Validate external paths to prevent directory traversal or reading restricted files.
-
-Verification
-- Add a minimal test demonstrating validation success on valid input and clear exception on missing dataset paths.
-```
-
----
-
-## Sprint [S2]: Data Ingestion & Preprocessing
-
-Goal
-Implement the centralized data handling logic so datasets are processed exactly once before any models execute.
-
-Scope
-Dataset loader, column verifier, and single standardized output generator.
-
-### Task [T2.1]: Implement dataset loader and validator
-
-Type: Foundation
-
-Description
-Load the biological dataset and verify internal structural requirements based on the configuration.
-
-Inputs
-Validated configuration object from T1.2.
-
-Outputs
-In-memory representation of the dataset and extracted metadata (e.g., list of available omics).
-
-```id="atomic-prompt-t2.1"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement a dataset loader that verifies required internal structures.
-
-Context
-Part of a larger system with the following requirement:
-Before running models, the system must confirm the dataset actually contains the biological metadata (batch, cell type) specified in the config.
-
-Tasks
-1. Create a module to load data files (h5ad/h5mu formats).
-2. Implement logic to inspect the dataset headers/observations.
-3. Verify that the `batch_key` and `cell_type_key` (if provided) actually exist in the dataset.
-4. Extract and return a list of available omics (e.g.,["rna", "atac"]).
-
-Constraints
-- Do not modify the dataset in memory during validation.
-
-Safety Notes
-- Fail fast with a descriptive error if a configured key is missing from the dataset.
-
-Verification
-- Provide a usage example mocking a dataset load and successfully verifying keys.
-```
-
----
-
-# Epic [E2]: Core Feature - Model Registry & Dynamic Routing
-
-Description
-Decouple model rules from the codebase to allow dynamic matching of user datasets to compatible ML models.
-
-Outcome
-A declarative registry system that automatically filters and selects valid models based on the dataset's available omics.
-
----
-
-## Sprint [S3]: Registry Engine
-
-Goal
-Build a declarative model registry and the dynamic routing logic.
-
-Scope
-Registry schema loader and the model matching engine.
-
-### Task [T3.1]: Implement model registry schema
+### Task[T1.2]: Create dataset registration CLI command
 
 Type: Feature
 
 Description
-Create an externalized registry mapping models to their required Docker images and omics compatibility.
+Update `multiverse/ingestion.py` and `multiverse/dataloader.py` so that when a user registers a dataset, it validates the structure and inserts the metadata into the SQLite registry.
 
 Inputs
-None directly (standalone component).
+`multiverse/ingestion.py`, `multiverse/registry_db.py`.
 
 Outputs
-A loaded dictionary/object representing the available multiverse models.
+A command-line entry point to register a dataset.
 
-```id="atomic-prompt-t3.1"
 Implementation Prompt
 
 Act as a senior software engineer.
 
 Goal
-Implement a static model registry loader.
+Implement a CLI command to register datasets into the SQLite registry.
 
 Context
 Part of a larger system with the following requirement:
-The system needs to know which models exist, what Docker images they need, and what data modalities they support, without hardcoding this into Python logic.
+Instead of defining datasets in `config.json`, users will run a command to register a dataset. The system must validate the dataset and save its metadata to the DB.
 
 Tasks
-1. Define a YAML or JSON schema structure for a `model_registry`. It must include: model name, docker image tag, and a list of supported omics.
-2. Create a loader function that reads this file and returns an indexed registry object.
+1. Create a function `register_dataset(file_path: str, name: str, batch_key: str)` in `multiverse/ingestion.py`.
+2. Use existing `validate_dataset_structure` to extract available omics (e.g., `["rna", "atac"]`).
+3. Copy the dataset into `store/datasets/raw/`.
+4. Insert a record into the `datasets` SQLite table with status="READY" and the extracted omics.
 
 Constraints
-- Do not instantiate any Docker logic here. purely structural data loading.
-
-Safety Notes
-- Fail clearly if the registry file is missing or malformed.
+- Fail gracefully if the dataset is corrupted or missing the required `batch_key`.
 
 Verification
-- Provide a sample `registry.yaml` and a script demonstrating loading it into memory.
-```
+- Add a minimal unit test mocking the file copy and verifying the correct SQLite `INSERT` statement is generated.
 
-### Task [T3.2]: Implement dynamic routing logic
+---
+
+# Epic[E2]: Orchestrator Hardening & Idempotency
+
+Description
+Update the Docker runner to use the new SQLite registry for planning runs, enforcing resource guardrails, and tracking execution state.
+
+Outcome
+The `docker_runner.py` is fully idempotent, respects concurrency limits, and isolates file permissions.
+
+---
+
+## Sprint [S2]: The Execution Engine
+
+Goal
+Refactor the async Docker runner to read from the DB, protect host resources, and handle failures gracefully.
+
+Scope
+Updates to `multiverse/runner/docker_runner.py` and `multiverse/runner/cli.py`.
+
+### Task [T2.1]: Implement run planning and idempotency
 
 Type: Feature
 
 Description
-Match the extracted dataset omics to the available models in the registry to determine eligibility.
+Modify the orchestrator to check the SQLite database for existing successful runs before spinning up Docker containers.
 
 Inputs
-Extracted omics list (from T2.1) and loaded registry (from T3.1).
+`multiverse/registry_db.py`, `model_registry.json`.
 
 Outputs
-Filtered list of eligible models to be run.
+A "Planner" function that generates a list of required jobs.
 
-```id="atomic-prompt-t3.2"
 Implementation Prompt
 
 Act as a senior software engineer.
 
 Goal
-Implement dynamic matching logic for model eligibility.
+Implement an execution planner that calculates the delta of required ML jobs.
 
 Context
 Part of a larger system with the following requirement:
-Not all models support all data types. We must automatically filter out models from the user's selection that are incompatible with their dataset.
+If a user runs the benchmark command, the system should check the DB for all "READY" datasets and compatible models. It must skip any dataset+model combination that already has a "SUCCESS" status in the `runs` table.
 
 Tasks
-1. Create a function `get_eligible_models(user_requested_models, available_omics, registry)`.
-2. Implement intersection logic: check if the model's required omics are a subset or match the dataset's available omics.
-3. Return the final list of models that are safe to execute.
+1. In `multiverse/runner/cli.py`, create a function `generate_execution_plan(db_connection)`.
+2. Query the DB to cross-reference eligible models (based on dataset omics).
+3. Filter out any combinations where `status == 'SUCCESS'` in the `runs` table.
+4. Return a list of dictionary objects representing the pending jobs.
 
 Constraints
-- Must handle edge cases (e.g., a model supports "any" omics vs strict lists).
+- Must handle cases where previous runs failed (status == 'FAILED'); these SHOULD be retried.
 
 Verification
-- Add a minimal test passing a mock registry and asserting incompatible models are dropped from the output.
-```
+- Provide a mock DB state and show the function returning only the pending/failed jobs.
 
----
 
-# Epic [E3]: Integration - Async Docker Orchestration
+### Task [T2.2]: Apply Docker resource guardrails and permissions
+
+Type: Hardening
 
 Description
-Replace sequential, host-based execution with isolated, concurrent Docker container orchestration for maximum performance.
+Update `run_models_concurrently` and `run_model_container` in `docker_runner.py` to enforce file ownership mappings and memory limits.
 
-Outcome
-The system can pull/build images concurrently and execute multiple ML models in parallel without blocking, while catching individual container failures gracefully.
+Inputs
+`multiverse/runner/docker_runner.py`.
+
+Outputs
+Hardened Docker run configurations.
+
+Implementation Prompt
+
+Act as a senior software engineer.
+
+Goal
+Harden the Docker execution layer with resource limits and UID mapping.
+
+Context
+Part of a larger system with the following requirement:
+Containers currently run as root, creating output files the host user cannot delete. Furthermore, uncontrolled containers might cause an OS out-of-memory error.
+
+Tasks
+1. Modify `run_model_container` in `multiverse/runner/docker_runner.py`.
+2. Inject the host machine's User ID (UID) and Group ID (GID) into the Docker run parameters using the `user` argument in `docker-py` (e.g., `user=f"{os.getuid()}:{os.getgid()}"`).
+3. Add a memory limit parameter to the container run config (e.g., `mem_limit='16g'`).
+4. Mount the input dataset volume as strictly read-only (`mode='ro'`).
+
+Constraints
+- Ensure compatibility with both Linux and macOS UID fetching logic.
+
+Verification
+- Provide the updated Python function definition showing the new `docker.containers.run` arguments.
 
 ---
 
-## Sprint [S4]: Container Management
+# Epic [E3]: Decoupled Evaluation & Output Contracts
+
+Description
+Enforce strict I/O contracts on `ModelFactory` subclasses and decouple the `scIB-metrics` evaluator into an independent background process.
+
+Outcome
+Models write outputs atomically, and the evaluator watches the artifact store to continuously update results.
+
+---
+
+## Sprint [S3]: Atomic Outputs & Evaluator Refactoring
 
 Goal
-Build the asynchronous engine for Docker execution.
+Ensure model outputs are safe from corruption and build the standalone evaluator script.
 
 Scope
-Parallel image builder, parallel model runner, and failure isolation.
+Updates to `multiverse/models/base.py` and `multiverse/evaluate.py`.
 
-### Task [T4.1]: Implement concurrent Docker image builder
+### Task[T3.1]: Implement atomic writes for model latent saves
+
+Type: Hardening
+
+Description
+Update `ModelFactory.save_latent()` to write to a temporary file before renaming it, preventing corrupted data if a model crashes.
+
+Inputs
+`multiverse/models/base.py`.
+
+Outputs
+Resilient `save_latent` method.
+
+Implementation Prompt
+
+Act as a senior software engineer.
+
+Goal
+Implement atomic file writes for model embeddings.
+
+Context
+Part of a larger system with the following requirement:
+If a model container crashes while saving `embeddings.h5`, a corrupted file is left behind, tricking the system into thinking the run succeeded. We must ensure writes are atomic.
+
+Tasks
+1. Modify `save_latent()` in `multiverse/models/base.py`.
+2. Change the output file path to use a `.tmp` suffix during the `h5py.File` write operation.
+3. Upon successful closure of the file, use `os.rename` or `shutil.move` to remove the `.tmp` suffix.
+
+Constraints
+- Must work seamlessly across all subclasses (PCA, MOFA, Mowgli, etc.).
+
+Verification
+- Add a minimal unit test simulating a successful save and verifying the `.tmp` file is renamed correctly.
+
+
+### Task [T3.2]: Refactor Evaluator for decoupled execution
 
 Type: Integration
 
 Description
-Ensure all required Docker images for eligible models are built/pulled concurrently before execution starts.
+Modify `multiverse/evaluate.py` to accept specific run IDs from the SQLite DB rather than reading a master config file, allowing it to run independently on newly finished outputs.
 
 Inputs
-List of eligible models and their required image tags (from T3.2).
+`multiverse/evaluate.py`, `multiverse/registry_db.py`.
 
 Outputs
-Locally available, ready-to-run Docker images.
+A standalone `evaluate_run()` function.
 
-```id="atomic-prompt-t4.1"
 Implementation Prompt
 
 Act as a senior software engineer.
 
 Goal
-Implement an asynchronous Docker image builder/puller.
+Refactor the evaluation module to process single completed runs dynamically.
 
 Context
 Part of a larger system with the following requirement:
-To save time, the system must prepare all necessary Docker images concurrently before running any data pipelines.
+The `evaluate.py` script currently evaluates *all* models based on a central config. It needs to be refactored so a watcher daemon can pass it a specific `run_id` and output directory as soon as a single model finishes.
 
 Tasks
-1. Create an async Python module utilizing a Docker client library.
-2. Implement a function that takes a list of image tags and pulls/builds them concurrently using `asyncio.gather` or ThreadPoolExecutor.
-3. Ensure thread-safe logging of build progress.
+1. Modify `multiverse/evaluate.py`.
+2. Create a function `evaluate_single_run(output_dir: str, dataset_path: str, batch_key: str, label_key: str)`.
+3. Load the specific model's `embeddings.h5` from `output_dir`.
+4. Run `scib_metrics` and save the resulting JSON strictly inside that `output_dir`.
 
 Constraints
-- Do not start any model execution. Only ensure the images exist locally.
-
-Safety Notes
-- Catch Docker daemon connection errors immediately and halt.
+- Remove dependencies on the monolithic `config_alldatasets.json`.
+- Do not crash if `label_key` is missing; calculate unsupervised metrics only.
 
 Verification
-- Provide a usage example that mocks the Docker client and demonstrates concurrent task execution.
-```
-
-### Task [T4.2]: Implement concurrent model runner with isolation
-
-Type: Integration
-
-Description
-Execute eligible models in parallel via Docker, mounting the dataset as read-only, and tracking success/failure states.
-
-Inputs
-Eligible models, prepared dataset path, configuration (random seed).
-
-Outputs
-A status report dictionary mapping model names to success/failure states and output directories.
-
-```id="atomic-prompt-t4.2"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement an asynchronous Docker execution engine with failure isolation.
-
-Context
-Part of a larger system with the following requirement:
-Models must run concurrently. If one model fails (e.g., Out of Memory), the master process must catch it, record the failure, and allow the remaining parallel models to finish.
-
-Tasks
-1. Create an async function `run_models_concurrently(models, data_path, seed)`.
-2. For each model, spin up a Docker container.
-3. Mount the `data_path` as a read-only volume inside the container.
-4. Inject the `seed` as an environment variable.
-5. Wait for containers to exit and capture their exit codes.
-6. Return a summary object indicating which models exited with code 0 (success) and which failed.
-
-Constraints
-- Ensure the master process does not crash if a container exits with a non-zero code.
-
-Safety Notes
-- Ensure volume mounts are strictly read-only for input data to prevent corruption.
-
-Verification
-- Add a minimal test mocking a container run where one container returns exit code 0 and another returns 1, verifying the master process survives and reports both correctly.
-```
-
----
-
-# Epic [E4]: Feature - Conditional Evaluation Engine
-
-Description
-Implement an intelligent downstream evaluation node that calculates metrics conditionally based on dataset properties and model success.
-
-Outcome
-An evaluation module that avoids crashing on missing data (e.g., trying to calculate batch effects when there's only one batch) and consolidates results into a single JSON.
-
----
-
-## Sprint [S5]: Metrics Calculation
-
-Goal
-Build the conditional evaluator and result aggregator.
-
-Scope
-Metric toggle logic, condition checks, and result consolidation.
-
-### Task[T5.1]: Implement conditional metrics logic
-
-Type: Feature
-
-Description
-Determine which metrics are mathematically valid to run based on the initial data configuration.
-
-Inputs
-Validated configuration (T1.2) containing dataset metadata (number of batches, presence of cell types).
-
-Outputs
-A filtered list of metrics to compute.
-
-```id="atomic-prompt-t5.1"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement conditional logic for evaluation metrics.
-
-Context
-Part of a larger system with the following requirement:
-The system should only run supervised metrics (ARI, NMI) if a `cell_type_key` exists, and skip batch-correction metrics (Graph Connectivity) if only one batch is present in the dataset.
-
-Tasks
-1. Create a function `determine_valid_metrics(config, user_requested_metrics)`.
-2. Implement rules: remove supervised metrics if `cell_type_key` is null.
-3. Implement rules: remove batch metrics if the number of unique batches is 1.
-4. Return the final actionable list of metrics.
-
-Constraints
-- Keep this logic distinct from the actual mathematical calculation of the metrics.
-
-Verification
-- Add a minimal test passing a config with `cell_type_key=None` and ensuring "ari" is removed from the requested metrics list.
-```
-
-### Task [T5.2]: Implement result aggregator
-
-Type: Integration
-
-Description
-Iterate over the output directories of successful models, compute valid metrics, and write a unified JSON file.
-
-Inputs
-Model run status report (T4.2) and valid metrics list (T5.1).
-
-Outputs
-A final `results.json` in the save directory.
-
-```id="atomic-prompt-t5.2"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement a result aggregation module.
-
-Context
-Part of a larger system with the following requirement:
-After models finish running, the system must collect outputs only from the successful ones, trigger metric calculations, and save everything into a single summary file.
-
-Tasks
-1. Create a function that iterates over the model status report.
-2. Ignore models marked as failed.
-3. For successful models, simulate/trigger the computation of the provided valid metrics list.
-4. Aggregate the final scores into a single dictionary and serialize it to `results.json` in a specified output directory.
-
-Constraints
-- Must handle file I/O safely and overwrite existing results cleanly.
-
-Verification
-- Provide a usage example with dummy model scores writing to a temporary JSON file.
-```
-
----
-
-# Epic [E5]: User Experience & Hardening
-
-Description
-Provide intuitive interfaces (CLI dashboards, GUI wizards) and robust documentation so "rookie" users can operate the system flawlessly.
-
-Outcome
-A polished CLI with live progress bars, a web-based setup wizard, and compiled static documentation.
-
----
-
-## Sprint [S6]: Interfaces
-
-Goal
-Build the terminal dashboard and the GUI setup wizard.
-
-Scope
-Rich CLI integration and Streamlit GUI.
-
-### Task [T6.1]: Implement live CLI dashboard
-
-Type: Feature
-
-Description
-Wrap the orchestrator in a visual CLI layer that displays real-time progress for parallel Docker tasks.
-
-Inputs
-Async state from T4.1 and T4.2.
-
-Outputs
-Visual terminal interface showing active, completed, and failed tasks.
-
-```id="atomic-prompt-t6.1"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement a live terminal dashboard for parallel tasks.
-
-Context
-Part of a larger system with the following requirement:
-Users need visual feedback while models run in parallel, showing which are building, running, successful, or failed.
-
-Tasks
-1. Use a terminal formatting library (e.g., `Rich`).
-2. Implement a `Live` table or `Progress` bar layout.
-3. Create callback functions or state updaters that the Docker runner can call to update the status of a specific model from "Pending" to "Running" to "Done/Failed".
-
-Constraints
-- The UI layer must not block the async execution loop.
-
-Verification
-- Provide a standalone script simulating parallel sleep tasks updating a live terminal table.
-```
-
-### Task [T6.2]: Implement interactive setup GUI
-
-Type: Feature
-
-Description
-Create a lightweight web application that allows users to configure their run without editing JSON/YAML files.
-
-Inputs
-None directly (acts as a frontend generator).
-
-Outputs
-A generated configuration file ready for the core pipeline.
-
-```id="atomic-prompt-t6.2"
-Implementation Prompt
-
-Act as a senior software engineer.
-
-Goal
-Implement a lightweight setup GUI.
-
-Context
-Part of a larger system with the following requirement:
-Bioinformaticians need a simple web interface to point to their dataset, select models, and generate the system configuration file.
-
-Tasks
-1. Create a basic web script (e.g., using `Streamlit`).
-2. Add form inputs for: Dataset Path (text), Cell Type Key (text/optional), Batch Key (text), Output Directory (text).
-3. Add a multi-select box for available models.
-4. On submit, serialize the inputs into a valid YAML/JSON configuration file matching the schema from T1.2.
-
-Constraints
-- Keep it entirely contained in one file.
-- Do not trigger the pipeline execution from here; only generate the config file.
-
-Verification
-- Provide the Python script structure demonstrating the layout and file-saving logic.
-```
+- Provide the updated function signature and logic flow for `evaluate_single_run`.
