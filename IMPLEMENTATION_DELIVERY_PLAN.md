@@ -278,3 +278,141 @@ Constraints
 
 Verification
 - Provide the updated function signature and logic flow for `evaluate_single_run`.
+
+# Epic[E5]: Interactive Planning & Job Manifests
+
+Description
+Introduce an interactive GUI feature that calculates and displays a compatibility matrix between registered datasets and available models based on omics modalities. Allow the user to export their selections as a declarative Job Manifest (configuration file) that the Orchestrator consumes.
+
+Outcome
+A Streamlit interface where selecting a dataset automatically filters compatible models (and vice versa), presenting a visual matrix, and outputting a `run_manifest.yaml` for execution.
+
+---
+
+## Sprint [S5]: Compatibility Matrix & GUI Integration
+
+Goal
+Build the matrix calculation logic, integrate it into the Streamlit GUI, and implement the manifest generator.
+
+Scope
+Updates to `multiverse/registry.py` (for matrix logic) and `multiverse/gui.py` (for the frontend and export).
+
+### Task [T5.1]: Implement compatibility matrix logic
+
+Type: Feature
+
+Description
+Create a core Python function that cross-references available datasets and models to generate a binary or graded compatibility matrix based on available vs. required omics.
+
+Inputs
+Dataset Registry (SQLite) and Model Registry (SQLite or YAML).
+
+Outputs
+A structured dictionary or Pandas DataFrame representing the compatibility matrix.
+
+Implementation Prompt
+
+Act as a senior software engineer.
+
+Goal
+Implement a cross-reference compatibility matrix generator for datasets and models.
+
+Context
+Part of a larger system with the following requirement:
+The GUI needs to display a table showing which models can run on which datasets. A model is compatible if its `required_omics` is a subset of the dataset's `omics_available`.
+
+Tasks
+1. Create a function `generate_compatibility_matrix(datasets: List[Dict], models: List[Dict])` in `multiverse/registry.py`.
+2. Iterate over all dataset-model combinations.
+3. Determine compatibility: return `True` (compatible), `False` (incompatible due to missing omics), or `Partial` (e.g., dataset has RNA, ATAC, ADT but model only uses RNA).
+4. Return a structured format (e.g., a Pandas DataFrame with Datasets as rows and Models as columns) containing the compatibility status.
+
+Constraints
+- Keep the logic pure; do not include Streamlit or GUI code in this core function.
+- Handle edge cases where a model supports "any" omics.
+
+Verification
+- Provide a unit test with dummy datasets and models asserting the resulting DataFrame has the correct True/False intersections.
+
+### Task [T5.2]: Build interactive GUI compatibility selector
+
+Type: Feature
+
+Description
+Update the Streamlit application to render the compatibility matrix and dynamically filter options based on the user's selection of a dataset or model.
+
+Inputs
+`generate_compatibility_matrix` from T5.1.
+
+Outputs
+Interactive Streamlit UI components.
+
+Implementation Prompt
+
+Act as a senior software engineer.
+
+Goal
+Implement an interactive compatibility matrix and selection UI in Streamlit.
+
+Context
+Part of a larger system with the following requirement:
+When a user selects a dataset in the GUI, the system should immediately highlight compatible models. When a user checks the boxes for specific pairs, it stages them for execution.
+
+Tasks
+1. Update `multiverse/gui.py` to fetch current datasets and models from the Registry.
+2. Call `generate_compatibility_matrix` and display the result using `st.dataframe` with visual styling (e.g., Green for compatible, Red/Disabled for incompatible).
+3. Add a multi-select dropdown for Datasets. When a dataset is selected, dynamically update a multi-select dropdown for Models to only show compatible options.
+4. Provide checkboxes (or a data editor) allowing the user to finalize which compatible pairs they actually want to run.
+
+Constraints
+- Do not allow the user to select an incompatible Dataset-Model pair (enforce disabled states or throw a clear UI warning).
+- Ensure the Streamlit app remains responsive by caching the registry fetches using `@st.cache_data`.
+
+Verification
+- Provide the Streamlit code snippet demonstrating the layout, session state management, and dynamic filtering callbacks.
+
+### Task [T5.3]: Implement Job Manifest generator
+
+Type: Integration
+
+Description
+Take the finalized selections from the GUI and export them as a declarative `run_manifest.yaml` configuration file, which acts as the explicit instruction set for the Docker orchestrator.
+
+Inputs
+User selections from the Streamlit GUI (T5.2).
+
+Outputs
+A generated `run_manifest.yaml` file.
+
+
+Implementation Prompt
+
+Act as a senior software engineer.
+
+Goal
+Implement a manifest generator to serialize GUI selections into an orchestrator-ready configuration file.
+
+Context
+Part of a larger system with the following requirement:
+Once the user verifies the compatibility matrix and selects their desired runs, they click "Generate Run Plan". The GUI must save this as a declarative YAML file that the `make benchmark` command can consume.
+
+Tasks
+1. In `multiverse/gui.py`, add a "Generate Run Manifest" button.
+2. On click, construct a dictionary representing the execution plan. Structure example:
+   ```yaml
+   manifest_version: "1.0"
+   jobs:
+     - dataset_id: "cohort_A"
+       models: ["mofa", "multivi"]
+     - dataset_id: "cohort_B"
+       models: ["pca"]
+   ```
+3. Serialize this dictionary using the `yaml` library and save it to the project root as `run_manifest.yaml`.
+4. Display a success message in the UI with the exact command the user should run next (`make benchmark config=run_manifest.yaml`).
+
+Constraints
+- Ensure the YAML strictly adheres to a schema the orchestrator expects.
+- Overwrite existing manifests safely or append a timestamp if preferred.
+
+Verification
+- Provide the callback function logic for the button and a sample of the generated YAML output.
