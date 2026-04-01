@@ -107,7 +107,7 @@ python -m multiverse.runner.cli --concurrent --input /path/to/data --output /pat
 Use the migration utility to convert researcher-centric folders into the standardized
 `store/datasets/<slug>/data/` layout. The workflow is:
 
-1. Recursively discover directories that contain `.h5ad` / `.h5mu` files.
+1. Recursively discover directories that contain raw inputs: `.h5ad` / `.h5mu`, 10x Cell Ranger `filtered_feature_bc_matrix.h5`, and per-modality tables such as `*_adt_counts.csv.gz`.
 2. Run `DatasetHeuristics` to infer modalities and likely `batch` / `cell_type` keys.
 3. Safely materialize files into the new store (hard-link first, fallback to copy).
 4. Write `dataset.yaml` next to `data/`, with comments when multiple metadata alternatives are detected.

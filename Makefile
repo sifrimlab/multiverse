@@ -62,3 +62,16 @@ test:
 clean:
 	@echo "Cleaning up output directory..."
 	rm -rf $(OUTPUT_DIR)
+
+.PHONY: register
+register:
+	@if [ -n "$(slug)" ]; then \
+		echo "Registering dataset slug $(slug)"; \
+		uv run python -m multiverse.runner.cli register-dataset --slug "$(slug)"; \
+	elif [ -n "$(manifest)" ]; then \
+		echo "Registering manifest $(manifest)"; \
+		uv run python -m multiverse.runner.cli register-dataset --manifest "$(manifest)"; \
+	else \
+		echo "Usage: make register slug=<dataset-slug> OR make register manifest=/path/to/dataset.yaml"; \
+		exit 1; \
+	fi

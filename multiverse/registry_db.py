@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import json
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 # Calculate base directory relative to this file's location
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,12 +30,19 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS datasets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT,
             name TEXT NOT NULL,
             path TEXT NOT NULL,
             omics_available TEXT NOT NULL,
+            batch_key TEXT,
+            cell_type_key TEXT,
+            manifest_path TEXT,
+            manifest_hash TEXT,
             status TEXT NOT NULL
         )
     """)
+    _ensure_dataset_columns(cursor)
+    cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_datasets_slug_unique ON datasets(slug)")
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS models (
@@ -63,6 +70,22 @@ def init_db():
     # Populate models if registry exists
     populate_models()
 
+
+def _ensure_dataset_columns(cursor: sqlite3.Cursor) -> None:
+    """Backfill new dataset columns for older DBs."""
+    cursor.execute("PRAGMA table_info(datasets)")
+    existing = {row[1] for row in cursor.fetchall()}
+    column_defs = {
+        "slug": "TEXT",
+        "batch_key": "TEXT",
+        "cell_type_key": "TEXT",
+        "manifest_path": "TEXT",
+        "manifest_hash": "TEXT",
+    }
+    for col, col_type in column_defs.items():
+        if col not in existing:
+            cursor.execute(f"ALTER TABLE datasets ADD COLUMN {col} {col_type}")
+
 def insert_dataset(name: str, path: str, omics_available: List[str], status: str = "READY"):
     """Inserts a new dataset record into the database."""
     conn = get_db_connection()
@@ -73,6 +96,70 @@ def insert_dataset(name: str, path: str, omics_available: List[str], status: str
     )
     conn.commit()
     dataset_id = cursor.lastrowid
+    conn.close()
+    return dataset_id
+
+
+def get_dataset_by_slug(slug: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM datasets WHERE slug = ? LIMIT 1", (slug,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_dataset_from_manifest(
+    *,
+    slug: str,
+    name: str,
+    path: str,
+    omics_available: List[str],
+    batch_key: Optional[str],
+    cell_type_key: Optional[str],
+    manifest_path: str,
+    manifest_hash: str,
+    status: str = "READY",
+) -> int:
+    """Idempotent upsert keyed by slug."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM datasets WHERE slug = ? LIMIT 1", (slug,))
+    row = cursor.fetchone()
+    payload = (
+        name,
+        path,
+        json.dumps(omics_available),
+        batch_key,
+        cell_type_key,
+        manifest_path,
+        manifest_hash,
+        status,
+        slug,
+    )
+    if row:
+        dataset_id = int(row[0])
+        cursor.execute(
+            """
+            UPDATE datasets
+            SET name = ?, path = ?, omics_available = ?, batch_key = ?, cell_type_key = ?,
+                manifest_path = ?, manifest_hash = ?, status = ?
+            WHERE slug = ?
+            """,
+            payload,
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO datasets
+            (name, path, omics_available, batch_key, cell_type_key, manifest_path, manifest_hash, status, slug)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            payload,
+        )
+        dataset_id = int(cursor.lastrowid)
+    conn.commit()
     conn.close()
     return dataset_id
 

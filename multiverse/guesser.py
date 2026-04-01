@@ -12,7 +12,38 @@ from .logging_utils import get_logger
 
 logger = get_logger(__name__)
 
-RAW_LIKE_EXTENSIONS = (".h5ad", ".h5mu")
+# Informative only; discovery must use ``is_raw_like_file`` (``.csv.gz`` has suffix ``.gz``).
+RAW_LIKE_EXTENSIONS = (".h5ad", ".h5mu", ".h5", ".csv.gz")
+
+
+def is_raw_like_file(path: Path) -> bool:
+    """True for migratable raw inputs: AnnData/MuData, 10x matrix ``.h5``, or ``.csv.gz`` counts."""
+    name = path.name.lower()
+    if not path.is_file():
+        return False
+    if name.endswith(".h5ad") or name.endswith(".h5mu"):
+        return True
+    if name.endswith(".csv.gz"):
+        return True
+    # 10x Cell Ranger ``filtered_feature_bc_matrix.h5`` (not AnnData/MuData).
+    if name.endswith(".h5"):
+        return True
+    return False
+
+
+def _is_10x_feature_matrix_h5(path: Path) -> bool:
+    """Cell Ranger / ARC multi-omics matrix HDF5 (GEX + ATAC peaks in one file)."""
+    name = path.name.lower()
+    if not name.endswith(".h5"):
+        return False
+    if name.endswith(".h5ad") or name.endswith(".h5mu"):
+        return False
+    return (
+        "feature_bc_matrix" in name
+        or "filtered_feature" in name
+        or "cellranger" in name
+        or "arc" in name
+    )
 
 # Filename tokens (lexical guesser). Order: modality-like tags first, then role tags.
 _FILENAME_TAG_SPECS: Tuple[Tuple[Pattern[str], str], ...] = (
@@ -129,7 +160,7 @@ class DatasetHeuristics:
         for p in sorted(directory.iterdir()):
             if not p.is_file():
                 continue
-            if p.suffix.lower() not in RAW_LIKE_EXTENSIONS:
+            if not is_raw_like_file(p):
                 continue
             tags: List[str] = []
             for pattern, tag in _FILENAME_TAG_SPECS:
@@ -139,76 +170,119 @@ class DatasetHeuristics:
 
         return {"directory": str(directory.resolve()), "files": per_file}
 
-    def _shallow_peek_h5(self, filepath: Path) -> Dict[str, Any]:
-        """Read only the ``obs`` group key names from an ``.h5ad`` / ``.h5mu`` file.
-
-        Does not touch ``X``, ``layers``, ``raw``, ``obsm``, or modality matrices.
-        """
+    def _peek_file_metadata(self, filepath: Path) -> Dict[str, Any]:
+        """Lightweight metadata: ``obs`` column names for AnnData/MuData; structure hints for 10x ``.h5``."""
         filepath = Path(filepath)
-        if filepath.suffix.lower() not in RAW_LIKE_EXTENSIONS:
-            raise ValueError(f"Expected .h5ad or .h5mu, got {filepath}")
+        name = filepath.name.lower()
 
-        with h5py.File(filepath, "r") as f:
-            if "obs" not in f:
-                logger.warning("No 'obs' group in %s; cannot infer metadata keys.", filepath)
-                return {
-                    "filepath": str(filepath),
-                    "obs_columns": [],
-                    "batch_key": None,
-                    "cell_type_key": None,
-                    "batch_key_alternatives": [],
-                    "cell_type_key_alternatives": [],
-                }
-
-            obs = f["obs"]
-            raw_keys = [str(k) for k in obs.keys()]
-
-        match_keys = _filter_obs_keys_for_matching(raw_keys)
-
-        batch_key, batch_alts_same_pattern = _pick_first_pattern_match(
-            match_keys, self._BATCH_KEY_PATTERNS
-        )
-        cell_type_key, cell_alts_same_pattern = _pick_first_pattern_match(
-            match_keys, self._CELL_TYPE_KEY_PATTERNS
-        )
-
-        all_batchish = _collect_all_pattern_matches(match_keys, self._BATCH_KEY_PATTERNS)
-        all_cellish = _collect_all_pattern_matches(match_keys, self._CELL_TYPE_KEY_PATTERNS)
-
-        batch_alternatives = [k for k in all_batchish if k != batch_key]
-        cell_type_alternatives = [k for k in all_cellish if k != cell_type_key]
-
-        if batch_alternatives:
-            logger.info(
-                "batch_key=%r (alternatives: %s)",
-                batch_key,
-                batch_alternatives,
+        def _empty_peek(
+            *,
+            kind: str,
+            raw_keys: Optional[List[str]] = None,
+            extra: Optional[Dict[str, Any]] = None,
+        ) -> Dict[str, Any]:
+            raw_keys = raw_keys or []
+            match_keys = _filter_obs_keys_for_matching(raw_keys)
+            batch_key, batch_alts_same_pattern = _pick_first_pattern_match(
+                match_keys, self._BATCH_KEY_PATTERNS
             )
-        if cell_type_alternatives:
-            logger.info(
-                "cell_type_key=%r (alternatives: %s)",
-                cell_type_key,
-                cell_type_alternatives,
+            cell_type_key, cell_alts_same_pattern = _pick_first_pattern_match(
+                match_keys, self._CELL_TYPE_KEY_PATTERNS
             )
-        if batch_alts_same_pattern:
-            logger.info("Other batch-like keys matching the same pattern tier: %s", batch_alts_same_pattern)
-        if cell_alts_same_pattern:
-            logger.info(
-                "Other cell-type-like keys matching the same pattern tier: %s",
-                cell_alts_same_pattern,
+            all_batchish = _collect_all_pattern_matches(match_keys, self._BATCH_KEY_PATTERNS)
+            all_cellish = _collect_all_pattern_matches(match_keys, self._CELL_TYPE_KEY_PATTERNS)
+            batch_alternatives = [k for k in all_batchish if k != batch_key]
+            cell_type_alternatives = [k for k in all_cellish if k != cell_type_key]
+            out: Dict[str, Any] = {
+                "filepath": str(filepath),
+                "obs_columns": raw_keys,
+                "batch_key": batch_key,
+                "cell_type_key": cell_type_key,
+                "batch_key_alternatives": batch_alternatives,
+                "cell_type_key_alternatives": cell_type_alternatives,
+                "peek_kind": kind,
+            }
+            if extra:
+                out.update(extra)
+            return out
+
+        if name.endswith(".csv.gz"):
+            return _empty_peek(kind="csv_gz")
+
+        if filepath.suffix.lower() in (".h5ad", ".h5mu"):
+            with h5py.File(filepath, "r") as f:
+                if "obs" not in f:
+                    logger.warning("No 'obs' group in %s; cannot infer metadata keys.", filepath)
+                    return _empty_peek(kind="annadata_h5mu", raw_keys=[])
+
+                obs = f["obs"]
+                raw_keys = [str(k) for k in obs.keys()]
+
+            match_keys = _filter_obs_keys_for_matching(raw_keys)
+
+            batch_key, batch_alts_same_pattern = _pick_first_pattern_match(
+                match_keys, self._BATCH_KEY_PATTERNS
+            )
+            cell_type_key, cell_alts_same_pattern = _pick_first_pattern_match(
+                match_keys, self._CELL_TYPE_KEY_PATTERNS
             )
 
-        return {
-            "filepath": str(filepath),
-            "obs_columns": raw_keys,
-            "batch_key": batch_key,
-            "cell_type_key": cell_type_key,
-            "batch_key_alternatives": batch_alternatives,
-            "cell_type_key_alternatives": cell_type_alternatives,
-        }
+            all_batchish = _collect_all_pattern_matches(match_keys, self._BATCH_KEY_PATTERNS)
+            all_cellish = _collect_all_pattern_matches(match_keys, self._CELL_TYPE_KEY_PATTERNS)
+
+            batch_alternatives = [k for k in all_batchish if k != batch_key]
+            cell_type_alternatives = [k for k in all_cellish if k != cell_type_key]
+
+            if batch_alternatives:
+                logger.info(
+                    "batch_key=%r (alternatives: %s)",
+                    batch_key,
+                    batch_alternatives,
+                )
+            if cell_type_alternatives:
+                logger.info(
+                    "cell_type_key=%r (alternatives: %s)",
+                    cell_type_key,
+                    cell_type_alternatives,
+                )
+            if batch_alts_same_pattern:
+                logger.info("Other batch-like keys matching the same pattern tier: %s", batch_alts_same_pattern)
+            if cell_alts_same_pattern:
+                logger.info(
+                    "Other cell-type-like keys matching the same pattern tier: %s",
+                    cell_alts_same_pattern,
+                )
+
+            return {
+                "filepath": str(filepath),
+                "obs_columns": raw_keys,
+                "batch_key": batch_key,
+                "cell_type_key": cell_type_key,
+                "batch_key_alternatives": batch_alternatives,
+                "cell_type_key_alternatives": cell_type_alternatives,
+                "peek_kind": "annadata_h5mu",
+            }
+
+        if name.endswith(".h5"):
+            with h5py.File(filepath, "r") as f:
+                top_keys = [str(k) for k in f.keys()]
+                raw_keys: List[str] = []
+                if "obs" in f:
+                    raw_keys = [str(k) for k in f["obs"].keys()]
+            return _empty_peek(
+                kind="tenx_matrix_h5" if not raw_keys else "h5_with_obs",
+                raw_keys=raw_keys,
+                extra={"h5_top_level_keys": sorted(top_keys)},
+            )
+
+        raise ValueError(f"Unsupported file for metadata peek: {filepath}")
+
+    def _shallow_peek_h5(self, filepath: Path) -> Dict[str, Any]:
+        """Backward-compatible alias for ``_peek_file_metadata``."""
+        return self._peek_file_metadata(filepath)
 
     def _pick_peek_target(self, directory: Path, lexical: Dict[str, Any]) -> Optional[Path]:
-        """Prefer an RNA-tagged ``.h5ad``, else first ``.h5ad``, else first raw-like file."""
+        """Prefer ``.h5ad`` / ``.h5mu`` with ``obs``; else Cell Ranger matrix ``.h5`` (not CSV)."""
         directory = Path(directory)
         files = lexical.get("files") or []
         paths = [directory / e["path"] for e in files]
@@ -221,13 +295,25 @@ class DatasetHeuristics:
                     return tag in entry.get("tags", [])
             return False
 
+        def nlow(p: Path) -> str:
+            return p.name.lower()
+
         for p in paths:
             if p.suffix.lower() == ".h5ad" and has_tag(p, "rna"):
                 return p
         for p in paths:
             if p.suffix.lower() == ".h5ad":
                 return p
-        return paths[0]
+        for p in paths:
+            if p.suffix.lower() == ".h5mu":
+                return p
+        for p in paths:
+            if _is_10x_feature_matrix_h5(p):
+                return p
+        for p in paths:
+            if nlow(p).endswith(".h5") and not nlow(p).endswith(".h5ad") and not nlow(p).endswith(".h5mu"):
+                return p
+        return None
 
     def generate_manifest(self, directory: Path) -> Dict[str, Any]:
         """Combine filename heuristics and shallow ``obs`` peek into a YAML-ready manifest."""
@@ -236,7 +322,7 @@ class DatasetHeuristics:
         peek_path = self._pick_peek_target(directory, lexical)
         peek: Dict[str, Any] = {}
         if peek_path is not None and peek_path.is_file():
-            peek = self._shallow_peek_h5(peek_path)
+            peek = self._peek_file_metadata(peek_path)
         else:
             peek = {
                 "filepath": None,
@@ -245,6 +331,7 @@ class DatasetHeuristics:
                 "cell_type_key": None,
                 "batch_key_alternatives": [],
                 "cell_type_key_alternatives": [],
+                "peek_kind": "none",
             }
 
         name = directory.name or directory.resolve().name
@@ -254,14 +341,29 @@ class DatasetHeuristics:
         for entry in lexical.get("files", []):
             fname = entry["path"]
             p = directory / fname
-            if not p.is_file():
+            if not p.is_file() or not is_raw_like_file(p):
                 continue
-            if p.suffix.lower() not in RAW_LIKE_EXTENSIONS:
+            if _is_10x_feature_matrix_h5(p):
+                rel = f"data/{fname}"
+                for mod in ("rna", "atac"):
+                    key = mod
+                    n = 2
+                    while key in raw_files:
+                        key = f"{mod}_{n}"
+                        n += 1
+                    raw_files[key] = rel
                 continue
             tags = [t for t in entry.get("tags", []) if t in omics_tags]
             mod = _modality_from_tags(tags)
             if mod is None:
-                mod = _guess_modality_from_stem(p.stem) or "rna"
+                nlow = fname.lower()
+                if nlow.endswith(".csv.gz"):
+                    if "adt" in nlow or "protein" in nlow or "cite" in nlow:
+                        mod = "adt"
+                    else:
+                        mod = _guess_modality_from_stem(p.stem) or "rna"
+                else:
+                    mod = _guess_modality_from_stem(p.stem) or "rna"
             key = mod
             n = 2
             while key in raw_files:

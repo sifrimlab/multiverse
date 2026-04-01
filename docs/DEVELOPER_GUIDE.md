@@ -123,7 +123,7 @@ Instead of manually moving files, use the provided CLI tool to ensure your regis
 ```bash
 # This automatically validates the dataset structure, 
 # copies it into the store, and updates the SQLite Registry.
-make register path=/path/to/my_data.h5ad name=my-dataset
+make register slug=my-dataset
 ```
 
 ***

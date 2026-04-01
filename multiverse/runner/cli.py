@@ -14,7 +14,7 @@ from .docker_runner import (
 )
 from ..logging_utils import get_logger, setup_logging
 from ..registry import load_registry
-from ..ingestion import register_dataset
+from ..ingestion import register_from_manifest, resolve_manifest_path
 from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR
 import json
 
@@ -280,10 +280,14 @@ def main():
     add_run_args(run_parser)
 
     # Register dataset command
-    reg_parser = subparsers.add_parser("register-dataset", help="Register a dataset")
-    reg_parser.add_argument("--path", required=True, help="Path to the dataset file")
-    reg_parser.add_argument("--name", required=True, help="Name of the dataset")
-    reg_parser.add_argument("--batch-key", required=True, help="Batch key in the dataset")
+    reg_parser = subparsers.add_parser("register-dataset", help="Register a dataset from dataset.yaml")
+    reg_parser.add_argument("--slug", required=False, help="Dataset slug under store/datasets/<slug>/")
+    reg_parser.add_argument("--manifest", required=False, help="Explicit path to dataset.yaml")
+    reg_parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Update existing registry row when manifest changed.",
+    )
 
     # Init DB command
     subparsers.add_parser("init-db", help="Initialize the registry database")
@@ -295,8 +299,19 @@ def main():
         print("Database and directories initialized.")
     elif args.command == "register-dataset":
         init_db()  # Ensure DB is ready
-        dataset_id = register_dataset(args.path, args.name, args.batch_key)
-        print(f"Dataset '{args.name}' registered with ID: {dataset_id}")
+        manifest_path = resolve_manifest_path(manifest_path=args.manifest, slug=args.slug)
+        try:
+            result = register_from_manifest(str(manifest_path), update=True if args.update else None)
+        except RuntimeError as exc:
+            prompt = f"{exc} Update now? [y/N]: "
+            choice = input(prompt).strip().lower()
+            if choice in {"y", "yes"}:
+                result = register_from_manifest(str(manifest_path), update=True)
+            else:
+                print("Skipped update.")
+                return
+        print(result["message"])
+        print(f"Dataset slug '{result['slug']}' registered with ID: {result['dataset_id']}")
     elif args.command == "run":
         execute_run(args)
     else:

@@ -1,0 +1,17 @@
+jobs:
+- dataset_id: Pbmc10k
+  models:
+  - cobolt
+  - mofa
+  - mowgli
+  - multivi
+  - pca
+- dataset_id: teaseq
+  models:
+  - cobolt
+  - mofa
+  - mowgli
+  - multivi
+  - pca
+  - totalvi
+manifest_version: '1.0'

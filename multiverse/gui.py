@@ -37,7 +37,7 @@ def main():
 
     # Styling the matrix
     def color_compatibility(val):
-        color = 'white'
+        color = 'black'
         if val == 'Compatible':
             color = '#90ee90' # Light green
         elif val == 'Partial':

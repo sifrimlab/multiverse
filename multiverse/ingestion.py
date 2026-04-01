@@ -1,16 +1,53 @@
-import scanpy as sc
-import mudata as md
-import muon as mu
+from __future__ import annotations
+
 import os
 import shutil
 import time
-from typing import List, Union, Optional
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+import re
+import yaml
+from pydantic import BaseModel, Field, field_validator
 from .logging_utils import get_logger
 from . import registry_db
 
+# scanpy / mudata / muon are imported lazily inside functions that load data so that
+# metadata-only paths (e.g. register_from_manifest) do not trigger noisy third-party warnings.
+
 logger = get_logger(__name__)
 
-def load_dataset(file_path: str) -> Union[sc.AnnData, md.MuData]:
+
+class DatasetManifest(BaseModel):
+    name: str
+    omics: List[str]
+    raw_files: Dict[str, str]
+    metadata_keys: Dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        if not value or not value.strip():
+            raise ValueError("Manifest field 'name' must not be empty.")
+        return value
+
+    @field_validator("omics")
+    @classmethod
+    def validate_omics(cls, value: List[str]) -> List[str]:
+        if not value:
+            raise ValueError("Manifest field 'omics' must not be empty.")
+        return value
+
+    @field_validator("raw_files")
+    @classmethod
+    def validate_raw_files(cls, value: Dict[str, str]) -> Dict[str, str]:
+        if not value:
+            raise ValueError("Manifest field 'raw_files' must not be empty.")
+        return value
+
+def load_dataset(file_path: str) -> Any:
     """Loads a single-cell dataset from a file.
 
     Supported formats include `.h5ad` for AnnData and `.h5mu` for MuData.
@@ -25,6 +62,9 @@ def load_dataset(file_path: str) -> Union[sc.AnnData, md.MuData]:
         FileNotFoundError: If the file does not exist.
         ValueError: If the file format is not supported.
     """
+    import scanpy as sc
+    import muon as mu
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Dataset file not found at {file_path}")
 
@@ -38,7 +78,7 @@ def load_dataset(file_path: str) -> Union[sc.AnnData, md.MuData]:
         raise ValueError(f"Unsupported file format: {file_path}. Use .h5ad or .h5mu.")
 
 def validate_dataset_structure(
-    data: Union[sc.AnnData, md.MuData],
+    data: Any,
     batch_key: str,
     cell_type_key: Optional[str] = None
 ) -> List[str]:
@@ -60,6 +100,9 @@ def validate_dataset_structure(
         ValueError: If required keys are missing from the dataset observations.
         TypeError: If the input data is not an AnnData or MuData object.
     """
+    import scanpy as sc
+    import mudata as md
+
     # Check if keys exist in observations
     if batch_key not in data.obs.columns:
         raise ValueError(f"Batch key '{batch_key}' not found in dataset observations.")
@@ -109,3 +152,103 @@ def register_dataset(file_path: str, name: str, batch_key: str):
     dataset_id = registry_db.insert_dataset(name, dest_path, omics, status="READY")
     logger.info(f"Dataset registered with ID {dataset_id}")
     return dataset_id
+
+
+def sanitize_slug(slug: str) -> str:
+    if not slug or "/" in slug or ".." in slug:
+        raise ValueError("Invalid slug.")
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "-", slug).strip("-").lower()
+    if not safe:
+        raise ValueError("Invalid slug after sanitization.")
+    return safe
+
+
+def resolve_manifest_path(*, manifest_path: Optional[str] = None, slug: Optional[str] = None) -> Path:
+    if manifest_path:
+        return Path(manifest_path).resolve()
+    if not slug:
+        raise ValueError("Either manifest_path or slug must be provided.")
+    safe_slug = sanitize_slug(slug)
+    return Path(registry_db.DATASETS_DIR).resolve() / safe_slug / "dataset.yaml"
+
+
+def _compute_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _processed_placeholder_path(manifest_path: Path) -> str:
+    dataset_dir = manifest_path.parent
+    return str((dataset_dir / "data" / "processed.h5mu").resolve())
+
+
+def register_from_manifest(manifest_path: str, update: Optional[bool] = None) -> Dict[str, Any]:
+    """Register a dataset manifest into SQLite, metadata only and idempotent."""
+    path = Path(manifest_path).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Manifest not found: {path}")
+    if path.stat().st_size == 0:
+        raise ValueError(f"Manifest is empty: {path}")
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Manifest must parse to a YAML mapping.")
+    manifest = DatasetManifest(**raw)
+    manifest_hash = _compute_file_sha256(path)
+
+    dataset_dir = path.parent
+    slug = sanitize_slug(dataset_dir.name)
+
+    # Validate referenced raw files exist.
+    for _, rel in manifest.raw_files.items():
+        candidate = (dataset_dir / rel).resolve()
+        if not candidate.exists():
+            raise FileNotFoundError(f"raw_files entry does not exist: {rel} -> {candidate}")
+
+    batch_key = manifest.metadata_keys.get("batch")
+    cell_type_key = manifest.metadata_keys.get("cell_type")
+    processed_path = _processed_placeholder_path(path)
+
+    registry_db.init_db()
+    existing = registry_db.get_dataset_by_slug(slug)
+    if existing:
+        existing_hash = existing.get("manifest_hash")
+        if existing_hash == manifest_hash:
+            return {
+                "action": "noop",
+                "dataset_id": existing["id"],
+                "slug": slug,
+                "message": "Dataset already registered and manifest unchanged.",
+            }
+        if update is None:
+            raise RuntimeError(
+                "Dataset already registered with changed manifest. Re-run with update=True to replace."
+            )
+        if update is False:
+            return {
+                "action": "skipped",
+                "dataset_id": existing["id"],
+                "slug": slug,
+                "message": "Dataset changed but update declined.",
+            }
+
+    dataset_id = registry_db.upsert_dataset_from_manifest(
+        slug=slug,
+        name=manifest.name,
+        path=processed_path,
+        omics_available=manifest.omics,
+        batch_key=batch_key,
+        cell_type_key=cell_type_key,
+        manifest_path=str(path),
+        manifest_hash=manifest_hash,
+        status="READY",
+    )
+    return {
+        "action": "updated" if existing else "inserted",
+        "dataset_id": dataset_id,
+        "slug": slug,
+        "message": f"Dataset '{manifest.name}' registered from manifest.",
+    }

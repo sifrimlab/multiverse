@@ -21,7 +21,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
-from .guesser import DatasetHeuristics, RAW_LIKE_EXTENSIONS
+from .guesser import DatasetHeuristics, is_raw_like_file
 
 console = Console()
 
@@ -53,13 +53,7 @@ def _slugify_relpath(rel_path: Path, fallback: str) -> str:
 def _list_raw_files_in_dir(directory: Path) -> List[Path]:
     if not directory.is_dir():
         return []
-    return sorted(
-        [
-            p
-            for p in directory.iterdir()
-            if p.is_file() and p.suffix.lower() in RAW_LIKE_EXTENSIONS
-        ]
-    )
+    return sorted([p for p in directory.iterdir() if is_raw_like_file(p)])
 
 
 def iter_candidate_directories(source: Path) -> List[Path]:
@@ -117,7 +111,14 @@ def _render_yaml_with_notes(manifest: Dict[str, Any]) -> str:
         lines.append("")
 
     yaml_ready = {k: v for k, v in manifest.items() if k != "guesser_notes"}
-    lines.append(yaml.safe_dump(yaml_ready, sort_keys=False, default_flow_style=False).rstrip())
+    lines.append(
+        yaml.safe_dump(
+            yaml_ready,
+            sort_keys=False,
+            default_flow_style=False,
+            width=10000,
+        ).rstrip()
+    )
     return "\n".join(lines) + "\n"
 
 

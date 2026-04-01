@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from multiverse.guesser import DatasetHeuristics
+import h5py
+
+from multiverse.guesser import DatasetHeuristics, is_raw_like_file
 
 
 class _FakeObsGroup:
@@ -82,3 +84,28 @@ def test_generate_manifest_combines_lexical_and_peek(tmp_path: Path) -> None:
     assert m["raw_files"]["rna"] == "data/RNA.h5ad"
     assert m["metadata_keys"]["batch"] == "donor_id"
     assert m["metadata_keys"]["cell_type"] == "cell_ontology"
+
+
+def test_is_raw_like_file_recognizes_tenx_and_csv_gz(tmp_path: Path) -> None:
+    (tmp_path / "m.h5ad").write_text("")
+    (tmp_path / "m.h5mu").write_text("")
+    (tmp_path / "matrix.h5").write_text("")
+    (tmp_path / "x.csv.gz").write_text("")
+    assert is_raw_like_file(tmp_path / "m.h5ad")
+    assert is_raw_like_file(tmp_path / "matrix.h5")
+    assert is_raw_like_file(tmp_path / "x.csv.gz")
+    (tmp_path / "other.gz").write_text("")
+    assert not is_raw_like_file(tmp_path / "other.gz")
+
+
+def test_generate_manifest_arc_matrix_h5_and_adt_csv_gz(tmp_path: Path) -> None:
+    h5_path = tmp_path / "GSM_filtered_feature_bc_matrix.h5"
+    with h5py.File(h5_path, "w") as f:
+        f.create_group("matrix")
+        f.create_group("barcodes")
+    (tmp_path / "GSM_adt_counts.csv.gz").write_bytes(b"")
+    dh = DatasetHeuristics()
+    m = dh.generate_manifest(tmp_path)
+    assert m["raw_files"]["rna"] == m["raw_files"]["atac"] == f"data/{h5_path.name}"
+    assert m["raw_files"]["adt"] == "data/GSM_adt_counts.csv.gz"
+    assert set(m["omics"]) == {"adt", "atac", "rna"}
