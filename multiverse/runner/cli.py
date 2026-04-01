@@ -1,9 +1,10 @@
 import argparse
 import os
 import asyncio
-from typing import Dict
+from typing import Dict, List
 from rich.live import Live
 from rich.table import Table
+
 from .docker_runner import (
     run_model_container,
     run_evaluation_container,
@@ -12,6 +13,8 @@ from .docker_runner import (
 )
 from ..logging_utils import get_logger, setup_logging
 from ..registry import load_registry
+from ..ingestion import register_dataset
+from ..registry_db import init_db
 
 logger = get_logger(__name__)
 
@@ -89,47 +92,11 @@ async def run_workflow_async(args: argparse.Namespace):
         else:
              update_status("Model Execution", "Success")
 
-    if args.evaluate:
-        logger.info("Starting evaluation of results.")
-        try:
-            run_evaluation_container(args.input, args.output)
-            logger.info("Evaluation finished successfully.")
-        except Exception as e:
-            logger.error(f"Error during evaluation: {e}")
-
-def main():
-    """Main entry point for the multiverse CLI.
-
-    Supports both sequential and concurrent Docker-based model execution.
-    """
-    parser = argparse.ArgumentParser(description="Run multiverse models in Docker containers")
-    parser.add_argument(
-        "--models",
-        nargs="+",
-        required=False,
-        help="List of models to run (e.g., pca mofa multivi totalvi)",
-        default=[],
-    )
-    parser.add_argument("--input", required=True, help="Path to the input data directory")
-    parser.add_argument("--output", required=True, help="Path to the output results directory")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument(
-        "--evaluate",
-        required=False,
-        action="store_true",
-        help="Whether to run evaluation after model execution",
-    )
-    parser.add_argument(
-        "--concurrent",
-        action="store_true",
-        help="Run models concurrently using Docker",
-    )
-    args = parser.parse_args()
-
+def execute_run(args: argparse.Namespace):
+    """Executes the model running logic, either sequentially or concurrently."""
     if args.concurrent:
         asyncio.run(run_workflow_async(args))
     else:
-        # Legacy sequential execution
         os.makedirs(args.output, exist_ok=True)
         setup_logging(args.output)
         logger.info(f"Running models: {args.models}")
@@ -145,12 +112,84 @@ def main():
                 logger.error(f"Error running model {model}: {e}")
                 pass
 
-        if args.evaluate:
-            logger.info("Starting evaluation of results.")
-            try:
-                run_evaluation_container(args.input, args.output)
-                logger.info("Evaluation finished successfully.")
-            except Exception as e:
-                logger.error(f"Error during evaluation: {e}")
+    if args.evaluate:
+        logger.info("Starting evaluation of results.")
+        try:
+            run_evaluation_container(args.input, args.output)
+            logger.info("Evaluation finished successfully.")
+        except Exception as e:
+            logger.error(f"Error during evaluation: {e}")
+
+def main():
+    """Main entry point for the multiverse CLI.
+
+    Supports both sequential and concurrent Docker-based model execution.
+    """
+    parser = argparse.ArgumentParser(description="Multiverse CLI")
+
+    # Common arguments for 'run' and legacy mode
+    def add_run_args(p):
+        p.add_argument(
+            "--models",
+            nargs="+",
+            required=False,
+            help="List of models to run (e.g., pca mofa multivi totalvi)",
+            default=[],
+        )
+        p.add_argument("--input", required=True, help="Path to the input data directory")
+        p.add_argument("--output", required=True, help="Path to the output results directory")
+        p.add_argument("--seed", type=int, default=42, help="Random seed")
+        p.add_argument(
+            "--evaluate",
+            required=False,
+            action="store_true",
+            help="Whether to run evaluation after model execution",
+        )
+        p.add_argument(
+            "--concurrent",
+            action="store_true",
+            help="Run models concurrently using Docker",
+        )
+
+    # If the first argument is not a known command, we assume legacy mode (run)
+    import sys
+    known_commands = ["run", "register-dataset", "init-db"]
+
+    if len(sys.argv) > 1 and sys.argv[1] not in known_commands and not sys.argv[1].startswith("-h"):
+        # Legacy mode: no command provided
+        add_run_args(parser)
+        args = parser.parse_args()
+        execute_run(args)
+        return
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Run command
+    run_parser = subparsers.add_parser("run", help="Run models")
+    add_run_args(run_parser)
+
+    # Register dataset command
+    reg_parser = subparsers.add_parser("register-dataset", help="Register a dataset")
+    reg_parser.add_argument("--path", required=True, help="Path to the dataset file")
+    reg_parser.add_argument("--name", required=True, help="Name of the dataset")
+    reg_parser.add_argument("--batch-key", required=True, help="Batch key in the dataset")
+
+    # Init DB command
+    subparsers.add_parser("init-db", help="Initialize the registry database")
+
+    args = parser.parse_args()
+
+    if args.command == "init-db":
+        init_db()
+        print("Database and directories initialized.")
+    elif args.command == "register-dataset":
+        init_db()  # Ensure DB is ready
+        dataset_id = register_dataset(args.path, args.name, args.batch_key)
+        print(f"Dataset '{args.name}' registered with ID: {dataset_id}")
+    elif args.command == "run":
+        execute_run(args)
+    else:
+        parser.print_help()
+
 if __name__ == "__main__":
     main()
