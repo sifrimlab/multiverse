@@ -53,6 +53,7 @@ async def run_models_concurrently(
     seed: int,
     output_dir: str,
     status_callback: callable = None,
+    mem_limit: str = "16g",
 ):
     """Executes eligible models in parallel using isolated Docker containers.
 
@@ -88,6 +89,8 @@ async def run_models_concurrently(
             },
             "detach": True,
             "remove": False,
+            "user": f"{os.getuid()}:{os.getgid()}",
+            "mem_limit": mem_limit,
         }
 
         try:
@@ -128,12 +131,106 @@ async def run_models_concurrently(
     return summary
 
 
+async def run_jobs_concurrently(
+    jobs_info: list,
+    seed: int,
+    status_callback: callable = None,
+    mem_limit: str = "16g",
+    use_gpu: bool = True,
+):
+    """Executes jobs in parallel. Each job can have its own data and output paths.
+
+    Args:
+        jobs_info (list of dict): keys 'name', 'image', 'dataset_path', 'output_path', 'dataset_id', 'model_name_orig'
+    """
+    client = docker.from_env()
+    loop = asyncio.get_running_loop()
+    from ..registry_db import get_db_connection
+
+    async def run_single_job(job):
+        model_display_name = job["name"]
+        if status_callback:
+            status_callback(model_display_name, "Starting")
+
+        output_dir = job["output_path"]
+        os.makedirs(output_dir, exist_ok=True)
+
+        run_kwargs = {
+            "image": job["image"],
+            "environment": {"RANDOM_SEED": str(seed)},
+            "volumes": {
+                os.path.abspath(job["dataset_path"]): {"bind": "/data/input", "mode": "ro"},
+                os.path.abspath(output_dir): {"bind": "/data/outputs", "mode": "rw"},
+            },
+            "detach": True,
+            "remove": False,
+            "user": f"{os.getuid()}:{os.getgid()}",
+            "mem_limit": mem_limit,
+        }
+
+        # Add GPU support if requested and available
+        if use_gpu:
+            try:
+                from docker.types import DeviceRequest
+                run_kwargs["device_requests"] = [
+                    DeviceRequest(count=-1, capabilities=[["gpu"]])
+                ]
+            except Exception as e:
+                logger.warning(f"GPU support not available for {model_display_name}, running on CPU. ({e})")
+
+        try:
+            logger.info(f"Starting container for {model_display_name} using image: {job['image']}")
+            container = await loop.run_in_executor(None, lambda: client.containers.run(**run_kwargs))
+
+            if status_callback:
+                status_callback(model_display_name, "Running")
+
+            result = await loop.run_in_executor(None, container.wait)
+            exit_code = result.get("StatusCode", 1)
+
+            if exit_code == 0:
+                status = "SUCCESS"
+                logger.info(f"Job {model_display_name} completed successfully.")
+                if status_callback:
+                    status_callback(model_display_name, "Success")
+            else:
+                status = "FAILED"
+                logger.error(f"Job {model_display_name} failed with exit code {exit_code}.")
+                if status_callback:
+                    status_callback(model_display_name, f"Failed ({exit_code})")
+
+            # Record in DB
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO runs (dataset_id, model_name, status, output_path) VALUES (?, ?, ?, ?)",
+                (job["dataset_id"], job["model_name_orig"], status, output_dir)
+            )
+            conn.commit()
+            conn.close()
+
+            await loop.run_in_executor(None, container.remove)
+            return model_display_name, exit_code == 0
+        except Exception as e:
+            logger.error(f"Error running job {model_display_name}: {e}")
+            if status_callback:
+                status_callback(model_display_name, "Error")
+            return model_display_name, False
+
+    tasks = [run_single_job(job) for job in jobs_info]
+    results = await asyncio.gather(*tasks)
+
+    summary = {name: "success" if success else "failed" for name, success in results}
+    return summary
+
+
 def run_model_container(
     model_name: str,
     input_dir: str,
     output_dir: str,
     extra_args: list = None,
     use_gpu: bool = True,
+    mem_limit: str = "16g",
 ):
     """Runs a single model container synchronously.
 
@@ -170,6 +267,8 @@ def run_model_container(
         },
         "detach": True,
         "remove": True,
+        "user": f"{os.getuid()}:{os.getgid()}",
+        "mem_limit": mem_limit,
     }
 
     # Add GPU support if requested and available
