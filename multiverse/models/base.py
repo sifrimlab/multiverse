@@ -116,16 +116,24 @@ class ModelFactory:
         if not isinstance(latent, np.ndarray):
             latent = latent.to_numpy()  # handle sparse or dataframe
 
+        tmp_filepath = f"{self.latent_filepath}.tmp"
         try:
-            logger.info("Saving latent embedding matrix")
-            with h5py.File(self.latent_filepath, "w") as f:
+            logger.info(f"Saving latent embedding matrix to temporary file: {tmp_filepath}")
+            with h5py.File(tmp_filepath, "w") as f:
                 f.create_dataset("latent", data=latent)
+
+            # Atomic rename
+            os.rename(tmp_filepath, self.latent_filepath)
             logger.info(f"Latent embedding saved to {self.latent_filepath}")
         except IOError as e:
-            logger.error(f"Could not write latent file to {self.latent_filepath}: {e}")
+            logger.error(f"Could not write latent file to {tmp_filepath}: {e}")
+            if os.path.exists(tmp_filepath):
+                os.remove(tmp_filepath)
             raise
         except Exception as e:
             logger.error(f"An unexpected error occurred while saving latent data: {e}")
+            if os.path.exists(tmp_filepath):
+                os.remove(tmp_filepath)
             raise
 
     def umap(self):
