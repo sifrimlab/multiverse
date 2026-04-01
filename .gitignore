@@ -40,3 +40,4 @@ mvexp_state.db
 # IDEs
 .vscode/
 .idea/
+/store

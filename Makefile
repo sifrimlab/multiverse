@@ -47,11 +47,17 @@ INPUT_DIR ?= ./sample_data/input
 OUTPUT_DIR ?= ./results
 MODELS_TO_RUN ?= pca multivi mowgli
 CONFIG_FILE ?= config_alldatasets.json
+MANIFEST ?= run_manifest.yaml
 
 .PHONY: run
 run:
 	@echo "Running Multi-verse pipeline..."
 	uv run python runner.py $(CONFIG_FILE)
+
+.PHONY: benchmark
+benchmark:
+	@echo "Running Multi-verse benchmark from manifest..."
+	uv run python -m multiverse.runner.cli run --output $(OUTPUT_DIR) --manifest $(MANIFEST)
 
 .PHONY: test
 test:
