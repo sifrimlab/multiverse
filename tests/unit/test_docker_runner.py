@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 from unittest.mock import MagicMock, patch
 from multiverse.runner.docker_runner import build_images_concurrently, run_models_concurrently
 
