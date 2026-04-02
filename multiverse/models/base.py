@@ -44,10 +44,7 @@ class ModelFactory:
                 Defaults to "./config.json".
             is_gridsearch (bool): Flag indicating if this is a grid search run. Defaults to False.
         """
-        if isinstance(config_path, dict):
-            self.config_dict = config_path
-        else:
-            self.config_dict = load_config(config_path=config_path)
+        self.config_dict = load_config(config_path)
         self.model_params = self.config_dict.get("model")
         self.dataset = dataset
         self.dataset_name = dataset_name

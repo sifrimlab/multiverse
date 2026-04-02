@@ -1,6 +1,8 @@
 import argparse
 import os
 import json
+from typing import Union
+
 import anndata as ad
 import muon as mu
 import numpy as np
@@ -13,7 +15,7 @@ from .base import ModelFactory
 logger = get_logger(__name__)
 
 class MOFAModel(ModelFactory):
-    """MOFA+ model wrapper using the `muon` library.
+    """MOFA model wrapper using the `muon` library.
 
     Attributes:
         device (str): Computation device (e.g., "cpu", "cuda:0").
@@ -26,7 +28,7 @@ class MOFAModel(ModelFactory):
         self,
         dataset: ad.AnnData,
         dataset_name: str,
-        config_path: str,
+        config_path: Union[str, dict],
         is_gridsearch: bool = False,
     ):
         """Initializes the MOFAModel.
@@ -34,7 +36,7 @@ class MOFAModel(ModelFactory):
         Args:
             dataset (ad.AnnData): The input dataset (MuData-derived AnnData).
             dataset_name (str): Name of the dataset.
-            config_path (str): Path to the JSON configuration file.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
 
@@ -83,7 +85,7 @@ class MOFAModel(ModelFactory):
         except Exception as e:
             logger.error(f"Error during training: {e}")
             raise
-    
+
     def _compute_explained_variance(self):
         """Computes the variance explained by each latent factor.
 
@@ -93,7 +95,7 @@ class MOFAModel(ModelFactory):
         try:
             factors = self.dataset.obsm[self.latent_key]
 
-            # Aggregate total variance across all modalities.
+            # Total variance from raw data across modalities (dense where needed).
             total_variance = 0
             for modality in self.dataset.mod.values():
                 if hasattr(modality.X, "toarray"):
@@ -102,7 +104,6 @@ class MOFAModel(ModelFactory):
                     modality_data = modality.X
                 total_variance += np.var(modality_data, axis=0).sum()
 
-            # Calculate the ratio of variance captured by the extracted factors.
             factor_variances = np.var(factors, axis=0)
             explained_variance_ratio = factor_variances / total_variance
             return explained_variance_ratio
@@ -110,6 +111,7 @@ class MOFAModel(ModelFactory):
         except Exception as e:
             logger.error(f"Error computing explained variance: {e}")
             return []
+
     def evaluate_model(self):
         """Evaluates the MOFA+ model by calculating total explained variance.
 

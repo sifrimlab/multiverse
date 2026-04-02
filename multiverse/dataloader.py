@@ -187,10 +187,7 @@ class Preprocessing:
             config_path (Union[str, dict]): Configuration path or dictionary.
         """
         self.data = anndata
-        if isinstance(config_path, dict):
-            self.config = config_path.get("preprocess_params")
-        else:
-            self.config = load_config(config_path=config_path).get("preprocess_params")
+        self.config = load_config(config_path).get("preprocess_params")
 
     def rna_preprocessing(self) -> ad.AnnData:
         """Performs quality control, normalization, and feature selection for RNA data.

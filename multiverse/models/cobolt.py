@@ -1,6 +1,8 @@
 import argparse
 import os
 import json
+from typing import Union
+
 from cobolt.utils import SingleData, MultiomicDataset
 from cobolt.model import Cobolt
 
@@ -26,14 +28,18 @@ class CoboltModel(ModelFactory):
     """
 
     def __init__(
-        self, dataset: dict, dataset_name: str, config_path: str, is_gridsearch: bool = False
+        self,
+        dataset: dict,
+        dataset_name: str,
+        config_path: Union[str, dict],
+        is_gridsearch: bool = False,
     ):
         """Initializes the CoboltModel.
 
         Args:
             dataset (dict): Dictionary containing modality names and AnnData objects.
             dataset_name (str): Name of the dataset.
-            config_path (str): Path to the JSON configuration file.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
 

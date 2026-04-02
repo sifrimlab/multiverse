@@ -1,6 +1,8 @@
 import argparse
 import os
 import json
+from typing import Union
+
 import anndata as ad
 import mowgli
 from .base import ModelFactory
@@ -25,14 +27,18 @@ class MowgliModel(ModelFactory):
     """
 
     def __init__(
-        self, dataset: ad.AnnData, dataset_name: str, config_path: str, is_gridsearch: bool = False
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: Union[str, dict],
+        is_gridsearch: bool = False,
     ):
         """Initializes the MowgliModel.
 
         Args:
             dataset (ad.AnnData): The input dataset.
             dataset_name (str): Name of the dataset.
-            config_path (str): Path to the JSON configuration file.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
 

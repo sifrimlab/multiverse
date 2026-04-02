@@ -4,6 +4,7 @@ import json
 import h5py
 import anndata as ad
 import numpy as np
+from typing import Union
 from scib_metrics.benchmark import BioConservation, BatchCorrection, Benchmarker
 from .config import load_config
 from .data_utils import load_datasets, dataset_select
@@ -216,7 +217,7 @@ class Evaluator:
         self,
         dataset: ad.AnnData,
         dataset_name: str,
-        config_path: str,
+        config_path: Union[str, dict],
         is_gridsearch: bool = False,
     ):
         """Initializes the Evaluator.
@@ -224,11 +225,11 @@ class Evaluator:
         Args:
             dataset (ad.AnnData): The dataset containing latent representations.
             dataset_name (str): Name of the dataset.
-            config_path (str): Path to the configuration file.
+            config_path: Path to the configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
         """
         logger.info("Initializing Evaluator")
-        self.config_dict = load_config(config_path=config_path)
+        self.config_dict = load_config(config_path)
         self.model_params = self.config_dict.get("model")
         self.dataset = dataset
         self.dataset_name = dataset_name

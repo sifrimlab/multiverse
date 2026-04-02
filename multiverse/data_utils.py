@@ -3,7 +3,7 @@ import mudata as md
 import muon as mu
 import numpy as np
 import os
-from typing import List
+from typing import List, Union
 from .logging_utils import get_logger
 from .dataloader import DataLoader
 from .config import load_config
@@ -85,12 +85,11 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
     return anndata
 
 
-def load_datasets(config_path_or_dict):
+def load_datasets(config_path_or_dict: Union[str, dict]):
     """Loads and preprocesses all datasets specified in the system configuration.
 
     Args:
-        config_path_or_dict (Union[str, dict]): Either a path to the JSON configuration
-            file or the configuration dictionary itself.
+        config_path_or_dict: Path to the JSON configuration file or the configuration dict.
 
     Returns:
         dict: A dictionary where keys are dataset names and values are dictionaries
@@ -99,10 +98,7 @@ def load_datasets(config_path_or_dict):
     Raises:
         ValueError: If a dataset has no modalities defined.
     """
-    if isinstance(config_path_or_dict, dict):
-        config_dict = config_path_or_dict
-    else:
-        config_dict = load_config(config_path_or_dict)
+    config_dict = load_config(config_path_or_dict)
     datasets = {}
 
     data_config = config_dict.get("data", {})

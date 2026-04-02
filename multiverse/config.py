@@ -1,14 +1,16 @@
 import json
+from typing import Union
+
 from .logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def load_config(config_path="./config.json"):
-    """Load the configuration from a JSON file.
+def load_config(config_path: Union[str, dict] = "./config.json"):
+    """Load the configuration from a JSON file or return an in-memory dict unchanged.
 
     Args:
-        config_path (str): Path to the JSON configuration file. Defaults to "./config.json".
+        config_path: Path to the JSON configuration file, or a configuration dict.
 
     Returns:
         dict: Dictionary of hyperparameters and settings.
@@ -18,6 +20,9 @@ def load_config(config_path="./config.json"):
         json.JSONDecodeError: If the configuration file contains invalid JSON.
         Exception: For any other unexpected errors during file loading.
     """
+    if isinstance(config_path, dict):
+        return config_path
+
     try:
         logger.info("Loading .json file")
         with open(config_path, "r", encoding="utf-8") as file:

@@ -1,6 +1,8 @@
 import argparse
 import os
 import json
+from typing import Union
+
 import anndata as ad
 import scvi
 from ..config import load_config
@@ -27,7 +29,7 @@ class TotalVIModel(ModelFactory):
         self,
         dataset: ad.AnnData,
         dataset_name: str,
-        config_path: str,
+        config_path: Union[str, dict],
         is_gridsearch: bool = False,
     ):
         """Initializes the TotalVIModel.
@@ -35,7 +37,7 @@ class TotalVIModel(ModelFactory):
         Args:
             dataset (ad.AnnData): Concatenated RNA and Protein AnnData object.
             dataset_name (str): Name of the dataset.
-            config_path (str): Path to the JSON configuration file.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
 

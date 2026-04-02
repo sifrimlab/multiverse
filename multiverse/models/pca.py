@@ -1,6 +1,8 @@
 import argparse
 import os
 import json
+from typing import Union
+
 import scanpy as sc
 import anndata as ad
 from .base import ModelFactory
@@ -26,7 +28,7 @@ class PCAModel(ModelFactory):
         self,
         dataset: ad.AnnData,
         dataset_name: str,
-        config_path: str,
+        config_path: Union[str, dict],
         is_gridsearch: bool = False,
     ):
         """Initializes the PCAModel.
@@ -34,7 +36,7 @@ class PCAModel(ModelFactory):
         Args:
             dataset (ad.AnnData): Concatenated multimodal AnnData object.
             dataset_name (str): Name of the dataset.
-            config_path (str): Path to the JSON configuration file.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
 
