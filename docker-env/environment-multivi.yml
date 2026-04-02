@@ -12,7 +12,8 @@ dependencies:
   - pytorch::pytorch-cuda=12.1
   - scvi-tools==1.2.0
   - scanpy==1.10.3
+  # jax/jaxlib come from conda-forge via scvi-tools; do not pip-pin jaxlib here — pip
+  # cannot replace conda-installed jaxlib (no RECORD / uninstall-no-record-file).
   - pip:
       - muon==0.1.7
-      - jaxlib==0.4.34
       - louvain==0.8.2
