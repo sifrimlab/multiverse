@@ -1,9 +1,8 @@
-FROM python:3.11-slim
+FROM mambaorg/micromamba:2.3.0
 
-# Prevent interactive prompts
+USER root
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
-# Install R and basic system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     r-base \
     r-base-dev \
@@ -18,8 +17,10 @@ RUN R -e "install.packages('remotes', repos='https://cloud.r-project.org')" \
 WORKDIR /app
 
 COPY multiverse ./multiverse
-COPY docker-env/requirements-evaluation.txt ./requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY docker-env/environment-evaluation.yml /tmp/environment.yml
+RUN micromamba create -y -f /tmp/environment.yml && micromamba clean -afy
+
+ENV PATH=/opt/conda/envs/multiverse_evaluation/bin:$PATH
 
 COPY config_alldatasets.json .
 

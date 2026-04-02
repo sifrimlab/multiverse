@@ -1,0 +1,19 @@
+name: multiverse_multivi
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - ipykernel
+  - python
+  - pytorch
+  - scvi-tools
+  - scanpy
+  - numpy
+  - pandas
+  - matplotlib
+  - pip:
+    - scib
+    - muon
+    - jaxlib
+    - louvain

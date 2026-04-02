@@ -1,0 +1,19 @@
+name: multiverse_mofa
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - ipykernel
+  - python
+  - pytorch
+  - scanpy
+  - matplotlib
+  - pandas
+  - numpy
+  - pip:
+    - mofapy2
+    - scib
+    - muon
+    - jaxlib
+    - louvain

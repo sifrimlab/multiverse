@@ -1,0 +1,17 @@
+# R + kBET are installed in evaluation.Dockerfile. Python deps follow project pins below.
+# evaluate.py imports `scib_metrics` (PyPI package `scib-metrics`). Legacy `scib==1.1.5` is also pinned per project requirements.
+name: multiverse_evaluation
+channels:
+  - conda-forge
+dependencies:
+  - pip
+  - ipykernel
+  - python=3.11
+  - pytorch
+  - scanpy==1.10.3
+  - pip:
+      - scib==1.1.5
+      - scib-metrics>=0.5.0
+      - muon==0.1.7
+      - jaxlib==0.4.34
+      - louvain==0.8.2

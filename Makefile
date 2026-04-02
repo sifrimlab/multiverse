@@ -14,9 +14,11 @@ setup: install
 
 # --- Docker Image Builds ---
 # Dockerfiles live under docker-env/; build context is the repository root
-# (COPY multiverse, docker-env/requirements-*.txt, config_alldatasets.json).
+# (COPY multiverse, docker-env/environment-*.yml, config_alldatasets.json).
+# Images use micromamba + conda env YAML. GPU envs target linux/amd64 (pytorch::pytorch-cuda=12.1).
 
 DOCKER_ENV ?= docker-env
+DOCKER_BUILD_FLAGS ?=
 
 .PHONY: build-all
 build-all: build-pca build-multivi build-mowgli build-mofa build-cobolt build-totalvi build-evaluate
@@ -25,37 +27,37 @@ build-all: build-pca build-multivi build-mowgli build-mofa build-cobolt build-to
 .PHONY: build-pca
 build-pca:
 	@echo "Building PCA image..."
-	docker build -f $(DOCKER_ENV)/pca.Dockerfile -t multiverse-pca .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/pca.Dockerfile -t multiverse-pca .
 
 .PHONY: build-multivi
 build-multivi:
 	@echo "Building MultiVI image..."
-	docker build -f $(DOCKER_ENV)/multivi.Dockerfile -t multiverse-multivi .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/multivi.Dockerfile -t multiverse-multivi .
 
 .PHONY: build-mowgli
 build-mowgli:
 	@echo "Building Mowgli image..."
-	docker build -f $(DOCKER_ENV)/mowgli.Dockerfile -t multiverse-mowgli .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/mowgli.Dockerfile -t multiverse-mowgli .
 
 .PHONY: build-mofa
 build-mofa:
 	@echo "Building MOFA image..."
-	docker build -f $(DOCKER_ENV)/mofa.Dockerfile -t multiverse-mofa .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/mofa.Dockerfile -t multiverse-mofa .
 
 .PHONY: build-cobolt
 build-cobolt:
 	@echo "Building Cobolt image..."
-	docker build -f $(DOCKER_ENV)/cobolt.Dockerfile -t multiverse-cobolt .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/cobolt.Dockerfile -t multiverse-cobolt .
 
 .PHONY: build-totalvi
 build-totalvi:
 	@echo "Building TotalVI image..."
-	docker build -f $(DOCKER_ENV)/totalvi.Dockerfile -t multiverse-totalvi .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/totalvi.Dockerfile -t multiverse-totalvi .
 
 .PHONY: build-evaluate
 build-evaluate:
 	@echo "Building evaluation image..."
-	docker build -f $(DOCKER_ENV)/evaluation.Dockerfile -t multiverse-evaluate .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/evaluation.Dockerfile -t multiverse-evaluate .
 
 
 # --- Orchestrator Runner ---
