@@ -36,8 +36,8 @@ data/input/
 sample_data/input/
 store/
 mvexp_state.db
+optuna_demo.db
 
 # IDEs
 .vscode/
 .idea/
-/store
