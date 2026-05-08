@@ -1,13 +1,40 @@
+from __future__ import annotations
 
-import scanpy as sc
-import anndata as ad
-import mudata as md
-import muon as mu
+
+import importlib
+sc = None
+ad = None
+md = None
+mu = None
 import os
 from typing import Union
 import numpy as np
 from .config import load_config
+from .logging_utils import get_logger
 #Output type = anndata, mudata
+
+logger = get_logger(__name__)
+
+CONTAINER_ONLY_ERROR = (
+    "This module must be run inside a Model Container, not on the Orchestrator Host."
+)
+
+
+def _ensure_ml_runtime() -> None:
+    global sc, ad, md, mu
+    if sc is not None and ad is not None and md is not None and mu is not None:
+        return
+    try:
+        _sc = importlib.import_module("scanpy")
+        _ad = importlib.import_module("anndata")
+        _md = importlib.import_module("mudata")
+        _mu = importlib.import_module("muon")
+    except ImportError as exc:
+        raise RuntimeError(CONTAINER_ONLY_ERROR) from exc
+    sc = _sc
+    ad = _ad
+    md = _md
+    mu = _mu
 
 class DataLoader:
     """A data loader for reading and preprocessing single-cell datasets.
@@ -46,6 +73,7 @@ class DataLoader:
         self.is_preprocessed = isProcessed
         self.annotation = annotation
         self.data = None
+        _ensure_ml_runtime()
 
     def read_anndata(self) -> ad.AnnData:
         """Reads the specified file into an AnnData object.
@@ -91,9 +119,11 @@ class DataLoader:
 
                 # Standardize cell type annotations to 'cell_type' key for downstream plotting.
                 if self.annotation is None:
+                    logger.warning(
+                        "No cell type annotation key provided — supervised metrics will be unavailable for this dataset."
+                    )
                     self.annotation = "cell_type"
-                    num_obs = adata.n_obs
-                    adata.obs[self.annotation] = np.zeros(num_obs, dtype=int)
+                    adata.obs[self.annotation] = "unknown"
                 elif self.annotation != "cell_type":
                     adata.obs["cell_type"] = adata.obs[self.annotation]
                     self.annotation = "cell_type"

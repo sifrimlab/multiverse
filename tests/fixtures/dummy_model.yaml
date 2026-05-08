@@ -1,0 +1,11 @@
+name: Dummy PCA
+version: 1.0.0
+contract_version: 1.0.0
+supported_omics:
+  - rna
+runtime:
+  image: local/dummy-pca:1.0.0
+hyperparameters_schema: schemas/hyperparameters.schema.json
+build:
+  context: .
+  dockerfile: Dockerfile

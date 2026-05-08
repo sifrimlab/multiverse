@@ -8,7 +8,7 @@ with minimal test data.
 import os
 import json
 import pytest
-from multiverse.main import main_workflow
+from tools.legacy_local_runner import main_workflow
 
 
 @pytest.fixture

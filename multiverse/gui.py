@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -59,6 +60,102 @@ def build_run_manifest(
         )
     return manifest
 
+
+def _safe_float(value, fallback=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(fallback)
+
+
+def _safe_int(value, fallback=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def _load_hyperparameter_schema(schema_path: str | None) -> dict | None:
+    if not schema_path:
+        return None
+    path = Path(schema_path)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            schema = json.load(handle)
+        return schema if isinstance(schema, dict) else None
+    except Exception:
+        return None
+
+
+def _render_param_field(job_key: str, param_name: str, spec: dict):
+    label = param_name
+    enum_values = spec.get("enum")
+    default = spec.get("default")
+    description = spec.get("description")
+
+    if isinstance(enum_values, list) and enum_values:
+        default_index = 0
+        if default in enum_values:
+            default_index = enum_values.index(default)
+        return st.selectbox(
+            label,
+            options=enum_values,
+            index=default_index,
+            key=f"param::{job_key}::{param_name}",
+            help=description,
+        )
+
+    param_type = spec.get("type")
+    if param_type == "integer":
+        min_value = spec.get("minimum")
+        max_value = spec.get("maximum")
+        step = _safe_int(spec.get("multipleOf", 1), 1)
+        if step <= 0:
+            step = 1
+        return st.number_input(
+            label,
+            min_value=_safe_int(min_value) if min_value is not None else None,
+            max_value=_safe_int(max_value) if max_value is not None else None,
+            value=_safe_int(default, 0),
+            step=step,
+            key=f"param::{job_key}::{param_name}",
+            help=description,
+        )
+
+    if param_type == "number":
+        min_value = spec.get("minimum")
+        max_value = spec.get("maximum")
+        step = _safe_float(spec.get("multipleOf", 0.001), 0.001)
+        if step <= 0:
+            step = 0.001
+        return st.number_input(
+            label,
+            min_value=_safe_float(min_value) if min_value is not None else None,
+            max_value=_safe_float(max_value) if max_value is not None else None,
+            value=_safe_float(default, 0.0),
+            step=step,
+            key=f"param::{job_key}::{param_name}",
+            format="%.6f",
+            help=description,
+        )
+
+    if param_type == "boolean":
+        return st.checkbox(
+            label,
+            value=bool(default) if default is not None else False,
+            key=f"param::{job_key}::{param_name}",
+            help=description,
+        )
+
+    return st.text_input(
+        label,
+        value="" if default is None else str(default),
+        key=f"param::{job_key}::{param_name}",
+        help=description,
+    )
+
 def main():
     """Main entry point for the Streamlit-based setup wizard.
 
@@ -101,14 +198,14 @@ def main():
 
     # Styling the matrix
     def color_compatibility(val):
-        color = 'black'
+        bg_color = 'black'
         if val == 'Compatible':
-            color = '#90ee90' # Light green
+            bg_color = '#90ee90' # Light green
         elif val == 'Partial':
-            color = '#ffffe0' # Light yellow
+            bg_color = '#ffffe0' # Light yellow
         elif val == 'Incompatible':
-            color = '#ffcccb' # Light red
-        return f'background-color: {color}'
+            bg_color = '#ffcccb' # Light red
+        return f'background-color: {bg_color}; color: #000000'
 
     st.dataframe(matrix_df.style.map(color_compatibility))
 
@@ -169,30 +266,46 @@ def main():
         st.write("The following jobs will be added to the manifest:")
         st.table(jobs_df)
 
+        model_name_to_schema_path = {
+            model["name"]: model.get("hyperparameters_schema")
+            for model in models
+        }
+
         st.markdown("#### Optional Model Hyperparameter Overrides")
-        st.caption("Provide JSON per dataset-model pair (example: {\"factors\": 15}). Leave blank for {}.")
+        st.caption("Fields are generated from each model's hyperparameter schema.")
         pair_params = {}
         for job in planned_jobs:
             ds_name = job["Dataset"]
             mod_name = job["Model"]
-            field_key = f"params::{ds_name}::{mod_name}"
+            job_key = f"{ds_name}::{mod_name}"
+            field_key = f"params::{job_key}"
             with st.expander(f"{ds_name} × {mod_name}", expanded=False):
-                raw_params = st.text_area(
-                    "Model Params (JSON)",
-                    value="{}",
-                    key=field_key,
-                    help="Optional override dictionary passed as model_params for this job.",
-                ).strip()
-                if not raw_params:
-                    raw_params = "{}"
-                try:
-                    parsed = json.loads(raw_params)
-                    if not isinstance(parsed, dict):
-                        raise ValueError("Model params must be a JSON object.")
+                schema = _load_hyperparameter_schema(model_name_to_schema_path.get(mod_name))
+                if schema and isinstance(schema.get("properties"), dict):
+                    parsed = {}
+                    for param_name, param_spec in schema["properties"].items():
+                        if not isinstance(param_spec, dict):
+                            continue
+                        parsed[param_name] = _render_param_field(job_key, param_name, param_spec)
                     pair_params[(ds_name, mod_name)] = parsed
-                except Exception as exc:
-                    st.error(f"Invalid JSON for {ds_name} × {mod_name}: {exc}")
-                    pair_params[(ds_name, mod_name)] = None
+                else:
+                    st.info("No schema found for this model. Falling back to JSON override input.")
+                    raw_params = st.text_area(
+                        "Model Params (JSON)",
+                        value="{}",
+                        key=field_key,
+                        help="Optional override dictionary passed as model_params for this job.",
+                    ).strip()
+                    if not raw_params:
+                        raw_params = "{}"
+                    try:
+                        parsed = json.loads(raw_params)
+                        if not isinstance(parsed, dict):
+                            raise ValueError("Model params must be a JSON object.")
+                        pair_params[(ds_name, mod_name)] = parsed
+                    except Exception as exc:
+                        st.error(f"Invalid JSON for {ds_name} × {mod_name}: {exc}")
+                        pair_params[(ds_name, mod_name)] = None
 
         if st.button("Generate Run Manifest"):
             invalid_pairs = [

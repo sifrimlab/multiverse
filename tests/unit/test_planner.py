@@ -1,69 +1,88 @@
-
 import sqlite3
 import json
-import os
 import sys
 from unittest.mock import MagicMock
 
 # Mocking modules to avoid side effects during test
-sys.modules['multiverse.logging_utils'] = MagicMock()
-sys.modules['rich.live'] = MagicMock()
-sys.modules['rich.table'] = MagicMock()
-sys.modules['docker'] = MagicMock()
+if 'multiverse.logging_utils' not in sys.modules:
+    sys.modules['multiverse.logging_utils'] = MagicMock()
+if 'rich.live' not in sys.modules:
+    sys.modules['rich.live'] = MagicMock()
+if 'rich.table' not in sys.modules:
+    sys.modules['rich.table'] = MagicMock()
+if 'docker' not in sys.modules:
+    sys.modules['docker'] = MagicMock()
 
-# Import the function to test
 from multiverse.runner.cli import generate_execution_plan
 
-def test_generate_execution_plan():
-    # Setup in-memory SQLite for testing
+
+def _make_conn():
     conn = sqlite3.connect(":memory:")
     cursor = conn.cursor()
+    cursor.execute(
+        "CREATE TABLE datasets ("
+        "id INTEGER PRIMARY KEY, name TEXT, slug TEXT, path TEXT, "
+        "omics_available TEXT, batch_key TEXT, cell_type_key TEXT, status TEXT)"
+    )
+    cursor.execute(
+        "CREATE TABLE models ("
+        "slug TEXT PRIMARY KEY, docker_image TEXT, supported_omics TEXT, "
+        "version TEXT, status TEXT)"
+    )
+    cursor.execute(
+        "CREATE TABLE runs ("
+        "run_id INTEGER PRIMARY KEY, dataset_id INTEGER, model_slug TEXT, "
+        "model_version TEXT, status TEXT, output_path TEXT)"
+    )
+    return conn
 
-    # Create tables
-    cursor.execute("CREATE TABLE datasets (id INTEGER PRIMARY KEY, name TEXT, path TEXT, omics_available TEXT, status TEXT)")
-    cursor.execute("CREATE TABLE models (name TEXT PRIMARY KEY, docker_image TEXT, supported_omics TEXT)")
-    cursor.execute("CREATE TABLE runs (run_id INTEGER PRIMARY KEY, dataset_id INTEGER, model_name TEXT, status TEXT, output_path TEXT)")
 
-    # Insert test data
-    cursor.execute("INSERT INTO datasets (id, name, path, omics_available, status) VALUES (?, ?, ?, ?, ?)",
-                   (1, "dataset1", "/path/to/d1", json.dumps(["rna"]), "READY"))
-    cursor.execute("INSERT INTO datasets (id, name, path, omics_available, status) VALUES (?, ?, ?, ?, ?)",
-                   (2, "dataset2", "/path/to/d2", json.dumps(["rna", "atac"]), "READY"))
+def test_generate_execution_plan():
+    conn = _make_conn()
+    cursor = conn.cursor()
 
-    cursor.execute("INSERT INTO models (name, docker_image, supported_omics) VALUES (?, ?, ?)",
-                   ("pca", "multiverse-pca", json.dumps(["rna"])))
-    cursor.execute("INSERT INTO models (name, docker_image, supported_omics) VALUES (?, ?, ?)",
-                   ("mofa", "multiverse-mofa", json.dumps(["rna", "atac"])))
+    cursor.execute(
+        "INSERT INTO datasets (id, name, slug, path, omics_available, batch_key, cell_type_key, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (1, "dataset1", "dataset1", "/path/to/d1", json.dumps(["rna"]), "batch", "cell_type", "READY"),
+    )
+    cursor.execute(
+        "INSERT INTO datasets (id, name, slug, path, omics_available, batch_key, cell_type_key, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (2, "dataset2", "dataset2", "/path/to/d2", json.dumps(["rna", "atac"]), "batch", "cell_type", "READY"),
+    )
+    cursor.execute(
+        "INSERT INTO models (slug, docker_image, supported_omics, version, status) VALUES (?, ?, ?, ?, ?)",
+        ("pca", "multiverse-pca", json.dumps(["rna"]), "1.0", "ACTIVE"),
+    )
+    cursor.execute(
+        "INSERT INTO models (slug, docker_image, supported_omics, version, status) VALUES (?, ?, ?, ?, ?)",
+        ("mofa", "multiverse-mofa", json.dumps(["rna", "atac"]), "1.0", "ACTIVE"),
+    )
 
-    # Scenario:
-    # dataset1 (rna) is compatible with pca.
-    # dataset2 (rna, atac) is compatible with pca and mofa.
-    # Suppose dataset2+pca already succeeded.
-    cursor.execute("INSERT INTO runs (dataset_id, model_name, status, output_path) VALUES (?, ?, ?, ?)",
-                   (2, "pca", "SUCCESS", "/path/to/output"))
-
-    # Suppose dataset1+pca failed previously.
-    cursor.execute("INSERT INTO runs (dataset_id, model_name, status, output_path) VALUES (?, ?, ?, ?)",
-                   (1, "pca", "FAILED", "/path/to/output2"))
+    # dataset2+pca already succeeded; dataset1+pca failed
+    cursor.execute(
+        "INSERT INTO runs (dataset_id, model_slug, model_version, status, output_path) VALUES (?, ?, ?, ?, ?)",
+        (2, "pca", "1.0", "SUCCESS", "/path/to/output"),
+    )
+    cursor.execute(
+        "INSERT INTO runs (dataset_id, model_slug, model_version, status, output_path) VALUES (?, ?, ?, ?, ?)",
+        (1, "pca", "1.0", "FAILED", "/path/to/output2"),
+    )
 
     plan = generate_execution_plan(conn)
 
-    # Expected results:
-    # 1. dataset1 + pca (since it failed)
-    # 2. dataset2 + mofa (since it hasn't run)
-
-    print(f"Generated Plan: {plan}")
+    # Expected: dataset1+pca (failed → retry) and dataset2+mofa (never run)
     assert len(plan) == 2
 
-    model_names = [p['model_name'] for p in plan]
-    dataset_names = [p['dataset_name'] for p in plan]
+    model_names = [p["model_name"] for p in plan]
+    dataset_names = [p["dataset_name"] for p in plan]
 
     assert "pca" in model_names
     assert "mofa" in model_names
     assert "dataset1" in dataset_names
     assert "dataset2" in dataset_names
 
-    print("Test passed!")
 
 if __name__ == "__main__":
     test_generate_execution_plan()

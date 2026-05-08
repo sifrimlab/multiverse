@@ -26,22 +26,18 @@ class NewModel(ModelFactory):
         pass
 ```
 
-### 2. Update the Model Registry
-Add an entry for your model in `model_registry.json` at the project root. This allows the system to perform dynamic routing.
+### 2. Register with a Model Manifest
+Create `store/models/<slug>/model.yaml` and register it via:
 
-```json
-{
-  "name": "new_model",
-  "docker_image": "multiverse-new_model:latest",
-  "supported_omics": ["rna", "atac"]
-}
+```bash
+make register-model slug=<slug>
 ```
 
-### 3. Create a Dockerfile
-Create a corresponding Dockerfile in the `containers/` directory. Ensure it installs all necessary dependencies and sets the entrypoint to run your model script.
+### 3. Create Container Context
+Place the Dockerfile under `store/models/<slug>/container/` and ensure it follows the Zero-Path contract.
 
 ### 4. Register in the Workflow
-Add your model class to the `run_models_with_user_params` function in `multiverse/main.py`.
+No manual router edits are required for normal benchmarking. Register your `model.yaml` and the CLI planner resolves runtime metadata from SQLite.
 
 ## Master-Worker Execution Flow
 
@@ -49,7 +45,7 @@ Multi-verse uses a Master-Worker architecture to ensure isolation and scalabilit
 
 ### Master Process (`multiverse.runner.cli`)
 1. **Validation**: Validates the user configuration against the Pydantic schema.
-2. **Registry Lookup**: Loads `model_registry.json` to identify available models and their requirements.
+2. **Registry Lookup**: Reads SQLite model metadata registered from `model.yaml`.
 3. **Omics Detection**: Inspects the input dataset to determine available omics (e.g., RNA, ATAC, ADT).
 4. **Dynamic Routing**: Filters the user's requested models. A model is only executed if all its `supported_omics` are present in the dataset.
 5. **Concurrent Image Preparation**: Pulls or builds the required Docker images in parallel using `asyncio`.
@@ -60,11 +56,12 @@ Multi-verse uses a Master-Worker architecture to ensure isolation and scalabilit
 
 ### Worker Process (Docker Containers)
 Each worker container runs a specific model wrapper. It:
-1. Loads the preprocessed data from `/data/input`.
+1. Loads the input dataset from `/input/data.h5mu`.
 2. Executes the `train()` method.
-3. Saves latent embeddings to `/data/outputs/embeddings.h5`.
-4. Generates a UMAP visualization at `/data/outputs/umap.png`.
-5. Calculates model-specific metrics and saves them to `/data/outputs/metrics.json`.
+3. Reads runtime parameters from `/output/job_spec.json`.
+4. Saves latent embeddings to `/output/embeddings.h5`.
+5. Optionally generates visualization artifacts (for example `/output/umap.png`).
+6. Calculates model-specific metrics and saves them to `/output/metrics.json`.
 
 ### Result Aggregation
 After all worker containers exit, the Master process:

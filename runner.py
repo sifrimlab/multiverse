@@ -43,7 +43,7 @@ Examples:
         print(f"Starting workflow with config: {args.config_path}")
         
         # Import here to allow --help to work without dependencies installed
-        from multiverse.main import main_workflow
+        from tools.legacy_local_runner import main_workflow
         
         # Execute the main workflow
         main_workflow(args.config_path)
