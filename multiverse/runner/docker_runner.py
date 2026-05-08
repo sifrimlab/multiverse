@@ -540,7 +540,7 @@ async def run_and_promote(
 
 
 async def build_images_concurrently(
-    image_tags: list, status_callback: callable = None
+    image_tags: list, status_callback: callable = None, max_concurrent: int = 3
 ):
     """Ensures all required Docker images for models are prepared concurrently.
 
@@ -548,17 +548,23 @@ async def build_images_concurrently(
         image_tags (list): A list of Docker image tags to pull or build.
         status_callback (callable, optional): A function called with (image_tag, status)
             to update the progress in real-time.
+        max_concurrent (int): Maximum number of images to build at the same time.
+            Conda/pip builds can consume several GB each; limiting concurrency
+            prevents "no space left on device" errors on shared hosts.
 
     Raises:
         RuntimeError: If one or more images fail to pull or build.
     """
-    client = docker.from_env()
     loop = asyncio.get_running_loop()
+    semaphore = asyncio.Semaphore(max_concurrent)
 
-    def prepare_image(tag):
-        return ensure_image_prepared(tag, status_callback=status_callback)
+    async def prepare_image(tag):
+        async with semaphore:
+            return await loop.run_in_executor(
+                None, ensure_image_prepared, tag, status_callback
+            )
 
-    tasks = [loop.run_in_executor(None, prepare_image, tag) for tag in image_tags]
+    tasks = [prepare_image(tag) for tag in image_tags]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     failures = [res for res in results if isinstance(res, Exception)]
@@ -614,7 +620,6 @@ async def run_models_concurrently(
             "volumes": _standard_volumes(data_path, model_output_dir),
             "detach": True,
             "remove": False,
-            "user": f"{os.getuid()}:{os.getgid()}",
             "mem_limit": mem_limit,
         }
 
@@ -721,7 +726,6 @@ async def run_jobs_concurrently(
             "volumes": _standard_volumes(job["dataset_path"], workspace_dir),
             "detach": True,
             "remove": False,
-            "user": f"{os.getuid()}:{os.getgid()}",
             "mem_limit": job_mem_limit,  # kernel hard-enforcer via cgroups
         }
 
@@ -844,7 +848,6 @@ def run_model_container(
         "volumes": _standard_volumes(input_dir, workspace_dir),
         "detach": True,
         "remove": False,
-        "user": f"{os.getuid()}:{os.getgid()}",
         "mem_limit": mem_limit,
     }
     _write_job_spec(
@@ -904,7 +907,6 @@ def run_job_container_sync(
         "volumes": _standard_volumes(job["dataset_path"], workspace_dir),
         "detach": True,
         "remove": False,
-        "user": f"{os.getuid()}:{os.getgid()}",
         "mem_limit": mem_limit,
     }
     if use_gpu:

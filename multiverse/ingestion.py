@@ -252,3 +252,43 @@ def register_from_manifest(manifest_path: str, update: Optional[bool] = None) ->
         "slug": slug,
         "message": f"Dataset '{manifest.name}' registered from manifest.",
     }
+
+
+def preprocess_dataset(manifest_path: str) -> str:
+    """Fuse raw modality files from a dataset manifest into a single processed.h5mu.
+
+    Reads every entry in ``raw_files``, creates a MuData object keyed by
+    modality name, and writes it to the placeholder path returned by
+    ``_processed_placeholder_path``.  Safe to re-run; overwrites any
+    previous output.
+
+    Returns the absolute path of the written file.
+    """
+    import anndata as ad
+    import mudata as md
+
+    path = Path(manifest_path).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"Manifest not found: {path}")
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    manifest = DatasetManifest(**raw)
+    dataset_dir = path.parent
+    processed_path = Path(_processed_placeholder_path(path))
+
+    # If registration created an empty directory at this path, remove it first.
+    if processed_path.is_dir():
+        processed_path.rmdir()
+    processed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    modalities: Dict[str, Any] = {}
+    for mod_name, rel_path in manifest.raw_files.items():
+        file_path = (dataset_dir / rel_path).resolve()
+        logger.info(f"Loading modality '{mod_name}' from {file_path}")
+        modalities[mod_name] = ad.read_h5ad(str(file_path))
+
+    logger.info(f"Building MuData with modalities: {list(modalities)}")
+    mdata = md.MuData(modalities)
+    logger.info(f"Writing processed MuData to {processed_path}")
+    mdata.write_h5mu(str(processed_path))
+    return str(processed_path)

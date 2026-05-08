@@ -19,7 +19,7 @@ from .docker_runner import (
     stop_db_writer,
 )
 from ..logging_utils import get_logger, setup_logging
-from ..ingestion import register_from_manifest, resolve_manifest_path
+from ..ingestion import register_from_manifest, resolve_manifest_path, preprocess_dataset
 from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR
 from ..models_ingest import (
     resolve_model_manifest_path,
@@ -608,7 +608,7 @@ def main():
         )
 
     import sys
-    known_commands = ["run", "register-dataset", "register-model", "init-db", "models"]
+    known_commands = ["run", "register-dataset", "preprocess-dataset", "register-model", "init-db", "models"]
 
     if len(sys.argv) > 1 and sys.argv[1] not in known_commands and not sys.argv[1].startswith("-h"):
         add_run_args(parser)
@@ -629,6 +629,13 @@ def main():
         action="store_true",
         help="Update existing registry row when manifest changed.",
     )
+
+    preproc_parser = subparsers.add_parser(
+        "preprocess-dataset",
+        help="Fuse raw modality files into processed.h5mu (run after register-dataset)",
+    )
+    preproc_parser.add_argument("--slug", required=False, help="Dataset slug under store/datasets/<slug>/")
+    preproc_parser.add_argument("--manifest", required=False, help="Explicit path to dataset.yaml")
 
     subparsers.add_parser("init-db", help="Initialize the registry database")
 
@@ -683,6 +690,10 @@ def main():
                 return
         print(result["message"])
         print(f"Dataset slug '{result['slug']}' registered with ID: {result['dataset_id']}")
+    elif args.command == "preprocess-dataset":
+        manifest_path = resolve_manifest_path(manifest_path=args.manifest, slug=args.slug)
+        output = preprocess_dataset(str(manifest_path))
+        print(f"Processed dataset written to: {output}")
     elif args.command == "run":
         execute_run(args)
     elif args.command == "register-model":
