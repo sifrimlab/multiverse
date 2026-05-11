@@ -1,14 +1,18 @@
 import json
+import os
 import re
 import sqlite3
 import subprocess
 import sys
+import urllib.request
+from datetime import timedelta
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components  # type: ignore[import-untyped]
 import yaml
-from multiverse.gui_utils import render_hyperparameters_form
+from multiverse.gui_utils import LIVE_METRIC_KEYS, fetch_live_metrics, render_hyperparameters_form
 from multiverse.registry import generate_compatibility_matrix
 from multiverse.registry_db import get_all_datasets, get_all_models, get_db_connection, init_db
 
@@ -23,6 +27,8 @@ _STATE_DEFAULTS: dict = {
     "planned_jobs": [],
     "run_mode": "Use User Params",
     "registry_dirty": False,
+    "active_experiment_id": None,
+    "active_experiment_name": "",
 }
 
 
@@ -555,10 +561,56 @@ def _render_parameters_tab() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tab: Execute  (T4.1 Resource Ledger + T4.2 Live DAG Monitor)
+# Tab: Execute  (T4.1 Resource Ledger + T4.2 Live DAG Monitor + T4.3 Live Metrics)
 # ---------------------------------------------------------------------------
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
+
+
+# Fragment auto-reruns every 5 s without a full page refresh.
+# @st.cache_data(ttl=5) inside fetch_live_metrics deduplicates the MLflow
+# API calls across concurrent sessions within each 5-second window.
+@st.fragment(run_every=timedelta(seconds=5))
+def _live_metrics_panel(experiment_name: str, tracking_uri: str) -> None:
+    rows = fetch_live_metrics(experiment_name, tracking_uri)
+
+    if not rows:
+        st.info(
+            f"No MLflow runs found for experiment **{experiment_name}** yet. "
+            "Metrics appear here as each job finishes logging."
+        )
+        return
+
+    df = pd.DataFrame(rows)
+
+    # Build column config: only include metric columns that have at least one
+    # non-empty history list so the table stays compact for sparse experiments.
+    col_cfg: dict = {
+        "Run": st.column_config.TextColumn("Run", width="medium"),
+        "Status": st.column_config.TextColumn("Status", width="small"),
+        "Updated": st.column_config.TextColumn("Updated", width="small"),
+    }
+    cols_to_show = ["Run", "Status", "Updated"]
+    for key in LIVE_METRIC_KEYS:
+        if key in df.columns and df[key].map(bool).any():
+            label = key.upper().replace("_", " ")
+            if key in ("ari", "nmi", "silhouette_score"):
+                col_cfg[key] = st.column_config.LineChartColumn(
+                    label, y_min=0.0, y_max=1.0, width="medium"
+                )
+            else:
+                col_cfg[key] = st.column_config.LineChartColumn(label, width="medium")
+            cols_to_show.append(key)
+
+    st.dataframe(
+        df[cols_to_show],
+        column_config=col_cfg,
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.caption(
+        f"Auto-refreshing every 5 s · {len(rows)} run(s) in experiment **{experiment_name}**"
+    )
 
 
 def _wave_simulate(job_memory: dict[str, float], cap_gb: float) -> list[dict]:
@@ -755,6 +807,37 @@ def _render_execute_tab() -> None:
                             job_statuses[k] = "🔴 Failed"
                 _refresh_status_table()
 
+    # ------------------------------------------------------------------
+    # T4.3: Live MLflow Metrics
+    # ------------------------------------------------------------------
+    st.divider()
+    st.subheader("Live MLflow Metrics")
+
+    mlflow_base = _get_mlflow_url()
+    if not _check_service(f"{mlflow_base}/health"):
+        st.info("MLflow is offline — start it with `make services-up` to see live metrics.")
+    else:
+        # Default to the experiment name used in the most recent manifest
+        saved_exp = st.session_state.get("active_experiment_name", "")
+        jb_exp_raw = st.session_state.get("jb_exp_name", "benchmark_run")
+        try:
+            jb_exp_slug = slugify_experiment_name(jb_exp_raw)
+        except ValueError:
+            jb_exp_slug = "benchmark_run"
+        default_exp = saved_exp or jb_exp_slug
+
+        exp_col, _ = st.columns([2, 3])
+        with exp_col:
+            monitor_exp = st.text_input(
+                "Experiment to monitor",
+                value=default_exp,
+                key="exec_live_exp_name",
+                help="MLflow experiment name. Auto-populated from the Job Builder manifest.",
+            )
+
+        if monitor_exp.strip():
+            _live_metrics_panel(monitor_exp.strip(), mlflow_base)
+
 
 # ---------------------------------------------------------------------------
 # Tab: Results (stub)
@@ -893,6 +976,217 @@ def _render_results_tab() -> None:
             except Exception:
                 st.text(job_spec_file.read_text(encoding="utf-8", errors="replace"))
 
+    # MLflow contextual routing — auto-detect experiment name from job_spec, then
+    # resolve to an MLflow experiment ID so the 🔬 tab can deep-link directly.
+    st.divider()
+    st.subheader("MLflow Deep-Link")
+    mlflow_base = _get_mlflow_url()
+    mlflow_live = _check_service(f"{mlflow_base}/health")
+
+    if not mlflow_live:
+        st.caption("MLflow is offline — start it with `make services-up` to enable deep-linking.")
+    else:
+        # Try auto-detection from job_spec.json
+        auto_exp_name: str | None = None
+        if job_spec_file.exists():
+            try:
+                spec_data = json.loads(job_spec_file.read_text(encoding="utf-8"))
+                auto_exp_name = (
+                    spec_data.get("run_settings", {}).get("experiment_name")
+                    or spec_data.get("globals", {}).get("experiment_name")
+                    or spec_data.get("experiment_name")
+                )
+            except Exception:
+                pass
+
+        if auto_exp_name:
+            exp_id = _resolve_mlflow_experiment_id(auto_exp_name, mlflow_base)
+            if exp_id:
+                st.session_state["active_experiment_id"] = exp_id
+                st.session_state["active_experiment_name"] = auto_exp_name
+                st.success(
+                    f"Active experiment set to **{auto_exp_name}** (ID: `{exp_id}`). "
+                    "Switch to the 🔬 Experiment Analysis tab to view it."
+                )
+            else:
+                st.info(
+                    f"Experiment `{auto_exp_name}` not found in MLflow yet "
+                    "(run may not have been tracked)."
+                )
+
+        # Always offer manual override
+        with st.expander("Set experiment manually", expanded=auto_exp_name is None):
+            manual_exp = st.text_input(
+                "MLflow experiment name",
+                value=st.session_state.get("active_experiment_name", ""),
+                key="manual_exp_name",
+                placeholder="benchmark_run",
+            )
+            col_set, col_clear = st.columns([2, 1])
+            with col_set:
+                if st.button("Set active experiment", key="btn_set_exp"):
+                    name = manual_exp.strip()
+                    if name:
+                        exp_id = _resolve_mlflow_experiment_id(name, mlflow_base)
+                        if exp_id:
+                            st.session_state["active_experiment_id"] = exp_id
+                            st.session_state["active_experiment_name"] = name
+                            st.success(f"Linked to experiment '{name}' (ID: {exp_id})")
+                        else:
+                            st.warning(f"Experiment '{name}' not found in MLflow.")
+            with col_clear:
+                if st.button("Clear", key="btn_clear_exp_results"):
+                    st.session_state["active_experiment_id"] = None
+                    st.session_state["active_experiment_name"] = ""
+                    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Observability helpers
+# ---------------------------------------------------------------------------
+
+def _check_service(url: str, timeout: float = 1.5) -> bool:
+    """Return True if the HTTP service responds with a non-5xx status."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status < 500
+    except Exception:
+        return False
+
+
+def _get_mlflow_url() -> str:
+    url = os.environ.get("MLFLOW_UI_URL", "") or os.environ.get("MLFLOW_TRACKING_URI", "")
+    if not url.startswith("http"):
+        url = "http://localhost:5000"
+    return url.rstrip("/")
+
+
+def _get_optuna_url() -> str:
+    url = os.environ.get("OPTUNA_UI_URL", "")
+    if not url.startswith("http"):
+        url = f"http://localhost:{os.environ.get('OPTUNA_PORT', '8080')}"
+    return url.rstrip("/")
+
+
+def _resolve_mlflow_experiment_id(experiment_name: str, mlflow_base: str) -> str | None:
+    """Call MLflow REST API to map experiment name → ID. No mlflow package import."""
+    import urllib.parse
+    encoded = urllib.parse.quote(experiment_name, safe="")
+    api_url = f"{mlflow_base}/api/2.0/mlflow/experiments/get-by-name?experiment_name={encoded}"
+    try:
+        with urllib.request.urlopen(api_url, timeout=2.0) as resp:
+            data = json.loads(resp.read().decode())
+            return str(data["experiment"]["experiment_id"])
+    except Exception:
+        return None
+
+
+def _render_observability_sidebar() -> None:
+    mlflow_base = _get_mlflow_url()
+    optuna_base = _get_optuna_url()
+    mlflow_up = _check_service(f"{mlflow_base}/health")
+    optuna_up = _check_service(optuna_base)
+
+    with st.sidebar:
+        st.subheader("Observability Services")
+        col_mf, col_op = st.columns(2)
+        with col_mf:
+            if mlflow_up:
+                st.success("MLflow")
+                st.markdown(f"[Open]({mlflow_base})")
+            else:
+                st.error("MLflow offline")
+                st.caption("`make services-up`")
+        with col_op:
+            if optuna_up:
+                st.success("Optuna")
+                st.markdown(f"[Open]({optuna_base})")
+            else:
+                st.error("Optuna offline")
+                st.caption("`make services-up`")
+
+
+# ---------------------------------------------------------------------------
+# Tab: Experiment Analysis (MLflow)
+# ---------------------------------------------------------------------------
+
+def _render_mlflow_tab() -> None:
+    mlflow_base = _get_mlflow_url()
+    mlflow_up = _check_service(f"{mlflow_base}/health")
+
+    st.header("Experiment Analysis")
+
+    if not mlflow_up:
+        st.warning(
+            "MLflow Tracking Server is not reachable. "
+            "Start it with `make services-up`, then refresh this tab."
+        )
+        st.link_button("Open MLflow UI (new tab)", mlflow_base)
+        return
+
+    exp_id = st.session_state.get("active_experiment_id")
+    if exp_id:
+        exp_name = st.session_state.get("active_experiment_name", exp_id)
+        deep_url = f"{mlflow_base}/#/experiments/{exp_id}"
+        col_info, col_clear = st.columns([4, 1])
+        with col_info:
+            st.info(f"Showing experiment **{exp_name}** — ID `{exp_id}`")
+        with col_clear:
+            if st.button("Show all", key="btn_mlflow_show_all"):
+                st.session_state["active_experiment_id"] = None
+                st.session_state["active_experiment_name"] = ""
+                st.rerun()
+    else:
+        deep_url = mlflow_base
+        st.caption(
+            "No active experiment selected. "
+            "Pick a run in the Results tab to deep-link here automatically."
+        )
+
+    col_link, col_h = st.columns([3, 1])
+    with col_link:
+        st.link_button("Open in new tab", deep_url)
+    with col_h:
+        iframe_h = st.slider("Height (px)", 400, 1200, 860, step=50, key="mlflow_iframe_h")
+
+    st.caption(
+        "If the frame appears blank your browser may be blocking mixed content "
+        "(HTTP iframe inside an HTTPS page). Use the button above to open in a new tab. "
+        "For remote deployments, front both services through a TLS-terminating reverse proxy."
+    )
+    components.iframe(deep_url, height=iframe_h, scrolling=True)
+
+
+# ---------------------------------------------------------------------------
+# Tab: Sweep Tracker (Optuna)
+# ---------------------------------------------------------------------------
+
+def _render_optuna_tab() -> None:
+    optuna_base = _get_optuna_url()
+    optuna_up = _check_service(optuna_base)
+
+    st.header("Sweep Tracker")
+
+    if not optuna_up:
+        st.warning(
+            "Optuna Dashboard is not reachable. "
+            "Start it with `make services-up`, then refresh this tab."
+        )
+        st.link_button("Open Optuna Dashboard (new tab)", optuna_base)
+        return
+
+    col_link, col_h = st.columns([3, 1])
+    with col_link:
+        st.link_button("Open in new tab", optuna_base)
+    with col_h:
+        iframe_h = st.slider("Height (px)", 400, 1200, 860, step=50, key="optuna_iframe_h")
+
+    st.caption(
+        "If the frame appears blank your browser may be blocking mixed content. "
+        "Use the button above to open in a new tab."
+    )
+    components.iframe(optuna_base, height=iframe_h, scrolling=True)
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -901,11 +1195,20 @@ def _render_results_tab() -> None:
 def main() -> None:
     st.set_page_config(page_title="Multiverse", layout="wide")
     _init_session_state()
+    _render_observability_sidebar()
 
     st.title("Multiverse Benchmarking Platform")
 
-    tab_registry, tab_jobs, tab_params, tab_execute, tab_results = st.tabs(
-        ["📦 Registry", "🧬 Job Builder", "⚙️ Parameters", "🚀 Execute", "📊 Results"]
+    tab_registry, tab_jobs, tab_params, tab_execute, tab_results, tab_mlflow, tab_optuna = st.tabs(
+        [
+            "📦 Registry",
+            "🧬 Job Builder",
+            "⚙️ Parameters",
+            "🚀 Execute",
+            "📊 Results",
+            "🔬 Experiment Analysis",
+            "📈 Sweep Tracker",
+        ]
     )
 
     with tab_registry:
@@ -922,6 +1225,12 @@ def main() -> None:
 
     with tab_results:
         _render_results_tab()
+
+    with tab_mlflow:
+        _render_mlflow_tab()
+
+    with tab_optuna:
+        _render_optuna_tab()
 
 
 if __name__ == "__main__":

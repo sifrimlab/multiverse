@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as _dt
+
 import streamlit as st
 
 
@@ -178,6 +180,84 @@ def _render_sweep_widget(key_prefix: str, param_name: str, spec: dict):
     # String fallback — sweep not supported; fall back to fixed widget
     st.caption(f"{param_name}: string type — sweep not supported, using fixed value")
     return _render_fixed_widget(key_prefix, param_name, spec)
+
+
+# ---------------------------------------------------------------------------
+# Live MLflow metrics (Execute tab — T4.3)
+# ---------------------------------------------------------------------------
+
+# Ordered list of metric keys the GUI will look for.  Bounded metrics (0–1)
+# get a fixed y-axis on their sparkline; others are rendered auto-scaled.
+LIVE_METRIC_KEYS: list[str] = ["ari", "nmi", "silhouette_score", "loss", "val_loss"]
+_BOUNDED_METRICS: frozenset[str] = frozenset({"ari", "nmi", "silhouette_score"})
+
+
+@st.cache_data(ttl=5)
+def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
+    """Poll MLflow for all runs in *experiment_name* and return DataFrame rows.
+
+    Each row dict contains:
+      - Run       str  — MLflow run name (or truncated run_id)
+      - Status    str  — emoji-prefixed status string
+      - Updated   str  — HH:MM:SS of last update
+      - <metric>  list[float] — history values (last 30 steps) for each key in
+                  LIVE_METRIC_KEYS that the run has logged, empty list otherwise.
+
+    Returns [] when the experiment doesn't exist or MLflow is unreachable.
+    The @st.cache_data(ttl=5) ensures at most one real API round-trip per
+    5-second window, shared across Streamlit sessions.
+    """
+    try:
+        from mlflow.tracking import MlflowClient  # type: ignore[import-untyped]  # lazy
+    except ImportError:
+        return []
+
+    _STATUS_ICONS = {
+        "RUNNING": "🔵 Running",
+        "FINISHED": "🟢 Finished",
+        "FAILED": "🔴 Failed",
+        "KILLED": "⚫ Killed",
+    }
+
+    try:
+        client = MlflowClient(tracking_uri=tracking_uri)
+        exp = client.get_experiment_by_name(experiment_name)
+        if exp is None:
+            return []
+
+        runs = client.search_runs(
+            experiment_ids=[exp.experiment_id],
+            order_by=["start_time DESC"],
+            max_results=50,
+        )
+
+        rows: list[dict] = []
+        for run in runs:
+            run_name = run.data.tags.get("mlflow.runName") or run.info.run_id[:8]
+            row: dict = {
+                "Run": run_name,
+                "Status": _STATUS_ICONS.get(run.info.status, run.info.status),
+            }
+
+            available = set(run.data.metrics.keys())
+            for key in LIVE_METRIC_KEYS:
+                if key in available:
+                    hist = client.get_metric_history(run.info.run_id, key)
+                    row[key] = [round(m.value, 4) for m in hist[-30:]]
+                else:
+                    row[key] = []
+
+            ts = run.info.end_time or run.info.start_time
+            row["Updated"] = (
+                _dt.datetime.fromtimestamp(ts / 1000).strftime("%H:%M:%S")
+                if ts
+                else "—"
+            )
+            rows.append(row)
+
+        return rows
+    except Exception:
+        return []
 
 
 def render_hyperparameters_form(schema: dict, key_prefix: str) -> dict:

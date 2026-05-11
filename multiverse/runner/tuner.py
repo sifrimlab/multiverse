@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from typing import Any, Dict
 
 from ..logging_utils import get_logger
@@ -76,13 +77,36 @@ def objective(trial: Any, job_manifest: Dict[str, Any]) -> float:
     return _extract_metric(metrics_payload, str(job_manifest["optimize_metric"]))
 
 
+def _apply_wal_mode_to_optuna_db(storage_uri: str) -> None:
+    """Apply WAL journal mode to the Optuna SQLite DB before the study is created.
+
+    WAL mode is a persistent DB property, so optuna-dashboard (and any other
+    reader) will benefit from concurrent reads without acquiring a write lock.
+    This is a no-op for non-SQLite backends.
+    """
+    prefix = "sqlite:///"
+    if not storage_uri.startswith(prefix):
+        return
+    db_path = storage_uri[len(prefix):]
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.commit()
+        conn.close()
+    except Exception as exc:
+        logger.warning(f"Could not apply WAL mode to Optuna DB '{db_path}': {exc}")
+
+
 def run_sweep(job: Dict[str, Any]) -> Dict[str, Any]:
     optuna = __import__("optuna")
 
     study_name = str(job.get("study_name", f"sweep_{job.get('dataset_name', 'dataset')}_{job.get('model_name_orig', 'model')}"))
-    storage_uri = str(job.get("study_storage", "sqlite:///optuna.db"))
+    storage_uri = str(job.get("study_storage", "sqlite:///store/optuna.db"))
     direction = str(job.get("direction", "maximize"))
     n_trials = int(job.get("n_trials", 10))
+
+    _apply_wal_mode_to_optuna_db(storage_uri)
 
     logger.info(
         f"Starting Optuna sweep study='{study_name}' storage='{storage_uri}' "

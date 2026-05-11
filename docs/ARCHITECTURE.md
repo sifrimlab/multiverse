@@ -11,28 +11,37 @@ through fixed mount paths. No orchestrator code runs inside a container.
 | Concept | What it means |
 |---|---|
 | **Registry** | SQLite database (`mvexp_state.db`) tracking datasets, models, and runs |
-| **Store** | Filesystem hierarchy under `store/` for raw data, workspaces, and artifacts |
+| **Store** | Filesystem hierarchy under `store/` for raw data, workspaces, artifacts, and service DBs |
 | **Zero-Path Contract** | Containers read from `/input/data.h5mu`, write to `/output/`. No hardcoded paths anywhere else |
 | **Workspace** | Ephemeral staging dir `store/workspaces/run_<id>/` used during execution |
 | **Artifact** | Immutable promoted dir `store/artifacts/<experiment>/<dataset>/<model>/<run_id>/` |
 | **Promotion** | `shutil.move(workspace → artifact)` — only happens on container exit 0 |
+| **Observability services** | MLflow server and Optuna Dashboard running as Docker Compose services, sharing `./store` |
+| **WAL mode** | All SQLite DBs use `PRAGMA journal_mode=WAL` for safe concurrent reads alongside writes |
 
 ---
 
 ## Filesystem Hierarchy
 
 ```
-mvexp_state.db                      ← SQLite registry (single file)
-store/
+mvexp_state.db                      ← SQLite registry (single file, WAL mode)
+store/                              ← shared volume root (host ↔ Docker services)
+  mlflow.db                         ← MLflow backend store (WAL mode; created by MLflow service)
+  optuna.db                         ← Optuna study storage (WAL mode; created by Optuna service)
   datasets/
-    raw/                            ← registered .h5mu / .h5ad files
+    <slug>/
+      dataset.yaml                  ← dataset manifest
+      data/
+        raw_rna.h5ad
+        raw_atac.h5ad
+        processed.h5mu              ← fused MuData written by preprocess-dataset
   models/
     pca/
       model.yaml                    ← model manifest (slug, version, image, omics)
       container/
         Dockerfile
         environment.yml
-    multivi/  mofa/  mowgli/  ...
+    multivi/  mofa/  mowgli/  cobolt/  totalvi/
   workspaces/
     run_abc123def456/               ← live staging dir (deleted or promoted on exit)
       job_spec.json                 ← written by orchestrator before container start
@@ -41,10 +50,10 @@ store/
       metrics.json
       umap.png
   artifacts/
-    benchmark_run/                  ← experiment name
+    benchmark_run/                  ← experiment name (from manifest globals)
       pbmc10k/                      ← dataset slug
         pca/                        ← model slug
-          run_abc123def456/         ← promoted workspace (immutable)
+          run_abc123def456/         ← promoted workspace (immutable after promotion)
             run_manifest.yaml       ← copy of the manifest that produced this run
             job_spec.json
             embeddings.h5
@@ -211,6 +220,84 @@ asyncio event loop (single thread)
 ```
 
 `max_parallel` defaults to `floor(available_host_RAM / mem_limit_per_job)` and can be overridden in `run_manifest.yaml` under `globals.max_parallel_jobs`.
+
+---
+
+## Observability Services
+
+MLflow and the Optuna Dashboard run as Docker Compose services defined in `docker-compose.yml`.
+They are **independent of the orchestrator** — benchmarks run whether or not the services are up.
+
+```
+docker-compose.yml
+├── mlflow      (python:3.12-slim + mlflow, port 5000)
+│     entrypoint: apply WAL mode to store/mlflow.db → mlflow server --backend-store-uri
+├── optuna-ui   (python:3.12-slim + optuna-dashboard, port 8080)
+│     entrypoint: apply WAL mode to store/optuna.db → optuna-dashboard
+└── streamlit   (profile: gui — optional, not started by make services-up)
+      mounts /var/run/docker.sock so the GUI can launch model containers
+```
+
+All three services mount `./store` as `/data` so they share the same SQLite databases and
+artifact directories as the host orchestrator. WAL mode is applied by each entrypoint script
+before the server starts; this is a persistent file property inherited by all subsequent
+connections (including SQLAlchemy / mlflow-tracking on the host side).
+
+```bash
+make services-up    # starts mlflow + optuna-ui in the background
+make services-down  # stops and removes containers
+make status         # table: container name · health · port bindings
+```
+
+Port overrides via environment variables: `MLFLOW_PORT` (default 5000), `OPTUNA_PORT` (default 8080).
+
+---
+
+## Streamlit GUI Architecture
+
+The GUI (`multiverse/gui.py`) is a 7-tab Streamlit application. It is a **thin client** —
+it does not import `mlflow` tracking or any model framework; it communicates with external
+services through HTTP (MLflow REST API, Optuna Dashboard HTTP).
+
+```
+gui.py
+├── Sidebar
+│     _render_observability_sidebar()  — urllib.request health-check every page load
+│
+├── Tab 1 — 📦 Registry         _render_registry_tab()
+├── Tab 2 — 🧬 Job Builder      _render_job_builder_tab()
+├── Tab 3 — ⚙️  Parameters      _render_parameters_tab()
+├── Tab 4 — 🚀 Execute          _render_execute_tab()
+│     ├── Resource Ledger        psutil RAM accounting + wave-admission simulation
+│     ├── Launch & Monitor       subprocess.Popen + live log streaming
+│     └── Live MLflow Metrics   _live_metrics_panel()  ← @st.fragment(run_every=5s)
+│                                  └── gui_utils.fetch_live_metrics()
+│                                        └── MlflowClient.search_runs() + get_metric_history()
+│                                              @st.cache_data(ttl=5)  — max 1 API call / 5 s
+│
+├── Tab 5 — 📊 Results          _render_results_tab()
+│     └── MLflow deep-link      _resolve_mlflow_experiment_id()  ← REST GET, no mlflow import
+│                                  → st.session_state["active_experiment_id"]
+│
+├── Tab 6 — 🔬 Experiment Analysis   _render_mlflow_tab()
+│     └── st.components.v1.iframe  src="{mlflow_base}/#/experiments/{id}"
+│
+└── Tab 7 — 📈 Sweep Tracker    _render_optuna_tab()
+      └── st.components.v1.iframe  src="{optuna_base}"
+```
+
+**Service URL resolution**
+
+| Env var | Default | Used for |
+|---|---|---|
+| `MLFLOW_UI_URL` | `http://localhost:5000` | GUI iframe + health check |
+| `MLFLOW_TRACKING_URI` | (fallback for `MLFLOW_UI_URL`) | also consumed by host-side tracking |
+| `OPTUNA_UI_URL` | `http://localhost:8080` | GUI iframe + health check |
+| `OPTUNA_PORT` | `8080` | fallback port when `OPTUNA_UI_URL` is absent |
+
+**Mixed-content note:** both iframes show a `st.caption` and a `st.link_button` fallback when
+the browser blocks HTTP iframes inside an HTTPS page (e.g. remote deployment behind TLS).
+In that case, front both services through the same TLS reverse proxy as Streamlit.
 
 ---
 

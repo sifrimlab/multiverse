@@ -248,7 +248,7 @@ Add a `search_space` block to your job in `run_manifest.yaml`:
   optimize_metric: silhouette_label
   direction: maximize
   n_trials: 20
-  study_storage: sqlite:///optuna.db
+  study_storage: sqlite:///store/optuna.db
   search_space:
     n_dims:
       type: int

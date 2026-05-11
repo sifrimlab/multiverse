@@ -97,9 +97,10 @@ jobs:
 
 ### Why `study_storage` matters
 
-Use SQLite-backed storage so interrupted sweeps can resume after reboot:
+Use SQLite-backed storage so interrupted sweeps can resume after reboot.
+The path must be inside `store/` so it is visible to the Optuna Dashboard service:
 
-- `sqlite:///optuna.db`
+- `sqlite:///store/optuna.db`
 
 ## Viewing Results in MLflow
 
@@ -109,13 +110,30 @@ If tracking is configured, successful runs are proxied to MLflow by the orchestr
 - metrics from `metrics.json`
 - full promoted artifact directory as run artifacts
 
-Start UI:
+Start the MLflow and Optuna Dashboard services:
 
 ```bash
-mlflow ui
+make services-up
+# MLflow  → http://localhost:5000
+# Optuna  → http://localhost:8080
 ```
 
-Then open `http://127.0.0.1:5000`.
+Port overrides: `MLFLOW_PORT=5001 OPTUNA_PORT=8081 make services-up`
+
+Alternatively, both dashboards are embedded directly inside the Streamlit GUI:
+
+- **🔬 Experiment Analysis tab** — MLflow UI iframe; deep-links to the active experiment when
+  a run is selected in the Results tab.
+- **📈 Sweep Tracker tab** — Optuna Dashboard iframe.
+
+## Live Metrics During a Run
+
+The **🚀 Execute tab** includes a "Live MLflow Metrics" panel that polls the MLflow Tracking
+API every 5 seconds and displays ARI, NMI, loss, and other logged metrics as sparklines —
+one row per MLflow run. No page refresh is needed; only the metrics table re-renders.
+
+The panel requires `make services-up` to be running. It defaults to the experiment name from
+the most recent manifest but can be changed to any experiment name.
 
 ## GUI Hyperparameter Forms
 

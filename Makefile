@@ -16,8 +16,35 @@ init:
 setup:
 	@echo "Installing dependencies using uv (dev + ml-legacy)..."
 	uv sync --group dev --group ml-legacy
-	@echo "Starting Multiverse Setup Wizard (Streamlit)..."
+	@echo "Starting Multiverse GUI (Streamlit)..."
 	uv run python -m streamlit run multiverse/gui.py
+
+# bootstrap: one-shot first-run initialisation after git clone.
+# Installs deps, creates the SQLite registry, and registers all built-in models.
+# Assumes Docker images for built-in models are already present (pull or build separately).
+.PHONY: bootstrap
+bootstrap: install init register-models
+	@echo ""
+	@echo "Bootstrap complete."
+	@echo "  Next steps:"
+	@echo "    make register-all-datasets   # if datasets already exist in store/datasets/"
+	@echo "    make services-up             # start MLflow + Optuna Dashboard"
+	@echo "    make setup                   # launch the Streamlit GUI"
+
+# register-all-datasets: batch-register every dataset.yaml found under store/datasets/.
+# Safe to re-run; uses --update to refresh existing registry rows.
+.PHONY: register-all-datasets
+register-all-datasets:
+	@echo "Scanning store/datasets/ for dataset.yaml manifests..."
+	@found=0; \
+	for yaml in store/datasets/*/dataset.yaml; do \
+		[ -f "$$yaml" ] || continue; \
+		slug=$$(basename $$(dirname "$$yaml")); \
+		echo "  → registering '$$slug'"; \
+		uv run python -m multiverse.runner.cli register-dataset --slug "$$slug" --update || true; \
+		found=$$((found + 1)); \
+	done; \
+	echo "Done — $$found dataset(s) processed."
 
 # --- Docker Image Builds ---
 # Dockerfiles live under docker-env/; build context is the repository root
@@ -65,6 +92,25 @@ build-totalvi:
 build-evaluate:
 	@echo "Building evaluation image..."
 	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/evaluation.Dockerfile -t multiverse-evaluate .
+
+
+# --- Observability Services ---
+
+.PHONY: services-up
+services-up:
+	@echo "Starting MLflow and Optuna dashboard services..."
+	docker compose up -d mlflow optuna-ui
+	@echo "MLflow  → http://localhost:$${MLFLOW_PORT:-5000}"
+	@echo "Optuna  → http://localhost:$${OPTUNA_PORT:-8080}"
+
+.PHONY: services-down
+services-down:
+	@echo "Stopping observability services..."
+	docker compose down
+
+.PHONY: status
+status:
+	docker compose ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
 
 
 # --- Orchestrator Runner ---

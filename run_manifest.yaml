@@ -7,15 +7,10 @@ jobs:
 - dataset_slug: pbmc10k
   model_name: Cobolt
   model_params:
-    device:
-      type: categorical
-      choices:
-      - cpu
-      - cuda
-      - cuda:0
+    device: cpu
     latent_dimensions: 20
     learning_rate: 0.001
-    num_epochs: 200
+    num_epochs: 20
     umap_random_state: 42
     umap_color_type: cell_type
     random_state: 42
@@ -23,7 +18,7 @@ jobs:
   model_name: MOFA
   model_params:
     device: cpu
-    n_iterations: 5000
+    n_iterations: 5
     n_factors: 20
     umap_random_state: 42
     umap_color_type: cell_type
@@ -35,7 +30,7 @@ jobs:
     optimizer: adam
     learning_rate: 0.001
     tol_inner: 1.0e-06
-    max_iter_inner: 500
+    max_iter_inner: 5
     umap_random_state: 42
     umap_color_type: cell_type
 - dataset_slug: pbmc10k
@@ -60,7 +55,7 @@ jobs:
     device: cpu
     latent_dimensions: 20
     learning_rate: 0.001
-    num_epochs: 200
+    num_epochs: 2
     umap_random_state: 42
     umap_color_type: cell_type
     random_state: 42
@@ -68,7 +63,7 @@ jobs:
   model_name: MOFA
   model_params:
     device: cpu
-    n_iterations: 5000
+    n_iterations: 5
     n_factors: 20
     umap_random_state: 42
     umap_color_type: cell_type
@@ -87,7 +82,7 @@ jobs:
   model_name: MultiVI
   model_params:
     device: cpu
-    max_epochs: 400
+    max_epochs: 4
     learning_rate: 0.001
     latent_dimensions: 20
     umap_random_state: 42
@@ -103,7 +98,7 @@ jobs:
   model_name: TotalVI
   model_params:
     device: cpu
-    max_epochs: 400
+    max_epochs: 4
     learning_rate: 0.001
     latent_dimensions: 20
     umap_random_state: 42

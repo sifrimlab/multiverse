@@ -1,0 +1,70 @@
+name: mvr-observability
+
+# Observability services for the Multiverse benchmarking platform.
+# All services share ./store as their data root so they see the same
+# SQLite databases and run artifacts as the host orchestrator.
+#
+# Usage:
+#   make services-up     — start mlflow + optuna-ui (background)
+#   make services-down   — stop and remove containers
+#   make status          — show container health / port bindings
+#
+# To also run Streamlit inside Docker (optional, requires Docker socket access):
+#   docker compose --profile gui up -d
+
+services:
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker-env/mlflow.Dockerfile
+    container_name: mvr-mlflow
+    restart: unless-stopped
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - ./store:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  optuna-ui:
+    build:
+      context: .
+      dockerfile: docker-env/optuna.Dockerfile
+    container_name: mvr-optuna
+    restart: unless-stopped
+    ports:
+      - "${OPTUNA_PORT:-8080}:8080"
+    volumes:
+      - ./store:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Streamlit is optional and runs in the 'gui' profile.
+  # It mounts the Docker socket so it can launch model containers.
+  # Prefer 'make setup' on the host for day-to-day use.
+  streamlit:
+    build:
+      context: .
+      dockerfile: docker-env/streamlit.Dockerfile
+    container_name: mvr-streamlit
+    restart: unless-stopped
+    ports:
+      - "${STREAMLIT_PORT:-8501}:8501"
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    profiles:
+      - gui
