@@ -7,45 +7,36 @@ jobs:
 - dataset_slug: pbmc10k
   model_name: Cobolt
   model_params:
-    device: cpu
-    latent_dimensions: 20
+    device: cuda:0
+    latent_dimensions: 2
     learning_rate: 0.001
     num_epochs: 2
     umap_random_state: 42
     umap_color_type: cell_type
     random_state: 42
 - dataset_slug: pbmc10k
-  model_name: PCA
-  model_params:
-    n_components: 50
-    device: cpu
-    umap_random_state: 42
-    umap_color_type: cell_type
-- dataset_slug: teaseq
   model_name: MOFA
   model_params:
-    device: cpu
-    n_iterations: 5
-    n_factors: 20
+    device: cuda:0
+    n_iterations: 2
+    n_factors: 2
     umap_random_state: 42
     umap_color_type: cell_type
-- dataset_slug: teaseq
+- dataset_slug: pbmc10k
   model_name: Mowgli
   model_params:
-    device: cpu
-    latent_dimensions: 20
+    device: cuda:0
+    latent_dimensions: 2
     optimizer: adam
     learning_rate: 0.001
     tol_inner: 1.0e-06
-    max_iter_inner: 500
+    max_iter_inner: 2
     umap_random_state: 42
     umap_color_type: cell_type
-- dataset_slug: teaseq
-  model_name: MultiVI
+- dataset_slug: pbmc10k
+  model_name: PCA
   model_params:
-    device: cuda
-    max_epochs: 2
-    learning_rate: 0.001
-    latent_dimensions: 20
+    n_components: 2
+    device: cpu
     umap_random_state: 42
     umap_color_type: cell_type

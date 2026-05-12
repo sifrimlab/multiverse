@@ -1,9 +1,11 @@
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import urllib.request
 from datetime import timedelta
 from pathlib import Path
@@ -13,6 +15,12 @@ import streamlit as st
 import streamlit.components.v1 as components  # type: ignore[import-untyped]
 import yaml
 from multiverse.gui_utils import LIVE_METRIC_KEYS, fetch_live_metrics, render_hyperparameters_form
+from multiverse.multiverse_config import (
+    DEFAULT_DOCKER_DATA_ROOT,
+    get_config,
+    get_docker_data_root,
+    save_config,
+)
 from multiverse.registry import generate_compatibility_matrix
 from multiverse.registry_db import get_all_datasets, get_all_models, get_db_connection, init_db
 
@@ -753,35 +761,43 @@ def _render_execute_tab() -> None:
                 f"{j['Dataset']}_{j['Model']}": "⏳ Pending"
                 for j in planned_jobs
             }
-            status_placeholder = st.empty()
 
-            def _refresh_status_table():
-                status_placeholder.dataframe(
-                    pd.DataFrame(
-                        [{"Job": k, "Status": v} for k, v in job_statuses.items()]
-                    ),
-                    width='stretch',
-                    hide_index=True,
-                )
-
-            _refresh_status_table()
+            log_lines: list[str] = []
 
             with st.status("Running pipeline…", expanded=True) as run_status:
+                tbl_placeholder = st.empty()
+                log_placeholder = st.empty()
+
+                def _refresh_status_table():
+                    tbl_placeholder.dataframe(
+                        pd.DataFrame(
+                            [{"Job": k, "Status": v} for k, v in job_statuses.items()]
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                _refresh_status_table()
+
+                env = {**os.environ, "PYTHONUNBUFFERED": "1"}
                 proc = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    bufsize=1,
+                    env=env,
                 )
                 for raw_line in proc.stdout:
                     clean = _ANSI_RE.sub("", raw_line).rstrip()
                     if not clean:
                         continue
-                    st.write(clean)
+                    log_lines.append(clean)
 
                     lc = clean.lower()
+                    clean_lower = clean.lower()
                     for job_key in job_statuses:
-                        if job_key not in clean:
+                        if job_key.lower() not in clean_lower:
                             continue
                         if any(w in lc for w in ("starting", "admitted", "running")):
                             job_statuses[job_key] = "🔵 Training"
@@ -789,7 +805,9 @@ def _render_execute_tab() -> None:
                             job_statuses[job_key] = "🟢 Done"
                         elif any(w in lc for w in ("failed", "error", "insufficient")):
                             job_statuses[job_key] = "🔴 Failed"
+
                     _refresh_status_table()
+                    log_placeholder.code("\n".join(log_lines[-40:]), language=None)
 
                 proc.wait()
                 if proc.returncode == 0:
@@ -806,6 +824,14 @@ def _render_execute_tab() -> None:
                         if v in ("⏳ Pending", "🔵 Training"):
                             job_statuses[k] = "🔴 Failed"
                 _refresh_status_table()
+
+            if log_lines:
+                st.download_button(
+                    "Download pipeline log",
+                    data="\n".join(log_lines).encode(),
+                    file_name="pipeline_output.log",
+                    mime="text/plain",
+                )
 
     # ------------------------------------------------------------------
     # T4.3: Live MLflow Metrics
@@ -1163,6 +1189,7 @@ def _render_mlflow_tab() -> None:
 
 def _render_optuna_tab() -> None:
     optuna_base = _get_optuna_url()
+    optuna_url = f"{optuna_base}/dashboard"
     optuna_up = _check_service(optuna_base)
 
     st.header("Sweep Tracker")
@@ -1172,25 +1199,116 @@ def _render_optuna_tab() -> None:
             "Optuna Dashboard is not reachable. "
             "Start it with `make services-up`, then refresh this tab."
         )
-        st.link_button("Open Optuna Dashboard (new tab)", optuna_base)
+        st.link_button("Open Optuna Dashboard (new tab)", optuna_url)
         return
 
-    col_link, col_h = st.columns([3, 1])
-    with col_link:
-        st.link_button("Open in new tab", optuna_base)
-    with col_h:
-        iframe_h = st.slider("Height (px)", 400, 1200, 860, step=50, key="optuna_iframe_h")
-
-    st.caption(
-        "If the frame appears blank your browser may be blocking mixed content. "
-        "Use the button above to open in a new tab."
+    st.info(
+        "Optuna Dashboard cannot be embedded due to its Content-Security-Policy. "
+        "Open it in a new tab using the button below."
     )
-    components.iframe(optuna_base, height=iframe_h, scrolling=True)
+    st.link_button("Open Optuna Dashboard", optuna_url)
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+def _render_settings_tab() -> None:
+    """Render the Settings tab for configuring Docker data root and other options."""
+    st.header("Settings")
+
+    current_root = get_docker_data_root()
+
+    st.subheader("Docker Data Root")
+    st.caption(f"Default: `{DEFAULT_DOCKER_DATA_ROOT}`")
+    st.write(f"**Current Docker data root:** `{current_root}`")
+
+    # Disk usage for current path.
+    if os.path.exists(current_root):
+        try:
+            usage = shutil.disk_usage(current_root)
+            total_gb = usage.total / (1024 ** 3)
+            used_gb = usage.used / (1024 ** 3)
+            free_gb = usage.free / (1024 ** 3)
+            st.write(
+                f"Disk usage at `{current_root}`: "
+                f"**{used_gb:.1f} GB used** / {total_gb:.1f} GB total "
+                f"({free_gb:.1f} GB free)"
+            )
+        except OSError as exc:
+            st.warning(f"Could not read disk usage: {exc}")
+    else:
+        st.info(f"Path `{current_root}` does not exist yet (it will be created by Docker on first use).")
+
+    new_root = st.text_input(
+        "Docker data root path",
+        value=current_root,
+        help="Absolute path where Docker will store images and containers.",
+    )
+
+    if st.button("Save & Apply"):
+        new_root = new_root.strip()
+        if not new_root:
+            st.error("Path must not be empty.")
+        elif not os.path.isabs(new_root):
+            st.error("Path must be absolute (start with '/').")
+        else:
+            # Persist to config.
+            cfg = get_config()
+            cfg["docker_data_root"] = new_root
+            save_config(cfg)
+
+            # Update daemon.json.
+            daemon_json_path = Path.home() / ".config" / "docker" / "daemon.json"
+            daemon_json_path.parent.mkdir(parents=True, exist_ok=True)
+            if daemon_json_path.exists():
+                try:
+                    with open(daemon_json_path) as fh:
+                        daemon_cfg = json.load(fh)
+                except json.JSONDecodeError:
+                    daemon_cfg = {}
+            else:
+                daemon_cfg = {}
+
+            daemon_cfg["data-root"] = new_root
+            with open(daemon_json_path, "w") as fh:
+                json.dump(daemon_cfg, fh, indent=2)
+
+            # Restart Docker daemon.
+            try:
+                subprocess.run(
+                    ["systemctl", "--user", "restart", "docker"],
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as exc:
+                st.error(f"Failed to restart Docker daemon: {exc.stderr.decode().strip()}")
+                return
+
+            # Wait up to 10 s for Docker to be responsive.
+            deadline = time.monotonic() + 10.0
+            ok = False
+            while time.monotonic() < deadline:
+                result = subprocess.run(
+                    ["docker", "info"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if result.returncode == 0:
+                    ok = True
+                    break
+                time.sleep(0.5)
+
+            if ok:
+                st.success(
+                    f"Docker data root updated to `{new_root}` and daemon restarted successfully."
+                )
+            else:
+                st.warning(
+                    f"Config saved and daemon restarted, but Docker did not become responsive "
+                    f"within 10 s. Check `systemctl --user status docker`."
+                )
+
 
 def main() -> None:
     st.set_page_config(page_title="Multiverse", layout="wide")
@@ -1199,7 +1317,7 @@ def main() -> None:
 
     st.title("Multiverse Benchmarking Platform")
 
-    tab_registry, tab_jobs, tab_params, tab_execute, tab_results, tab_mlflow, tab_optuna = st.tabs(
+    tab_registry, tab_jobs, tab_params, tab_execute, tab_results, tab_mlflow, tab_optuna, tab_settings = st.tabs(
         [
             "📦 Registry",
             "🧬 Job Builder",
@@ -1208,6 +1326,7 @@ def main() -> None:
             "📊 Results",
             "🔬 Experiment Analysis",
             "📈 Sweep Tracker",
+            "⚙️ Settings",
         ]
     )
 
@@ -1231,6 +1350,9 @@ def main() -> None:
 
     with tab_optuna:
         _render_optuna_tab()
+
+    with tab_settings:
+        _render_settings_tab()
 
 
 if __name__ == "__main__":

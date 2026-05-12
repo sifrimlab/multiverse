@@ -9,11 +9,72 @@ import psutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+import subprocess
+import time
 from ..logging_utils import get_logger
 from ..registry_db import ARTIFACTS_DIR, WORKSPACES_DIR, get_db_connection
 from ..tracking import log_successful_run_to_mlflow
+from ..multiverse_config import get_docker_data_root
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Docker data-root configuration
+# ---------------------------------------------------------------------------
+
+def ensure_docker_data_root() -> None:
+    """Sync ~/.config/docker/daemon.json with the configured docker_data_root.
+
+    If the stored data-root differs from what is currently in daemon.json (or
+    is absent), the file is updated and the Docker systemd user service is
+    restarted.  Waits up to 10 s for the daemon to become responsive again.
+    """
+    desired = get_docker_data_root()
+    daemon_json_path = Path.home() / ".config" / "docker" / "daemon.json"
+
+    # Read existing daemon.json (or start with an empty dict).
+    daemon_json_path.parent.mkdir(parents=True, exist_ok=True)
+    if daemon_json_path.exists():
+        with open(daemon_json_path) as fh:
+            try:
+                daemon_cfg = json.load(fh)
+            except json.JSONDecodeError:
+                daemon_cfg = {}
+    else:
+        daemon_cfg = {}
+
+    current = daemon_cfg.get("data-root", "")
+    if current == desired:
+        logger.debug("docker data-root already set to %s — no restart needed", desired)
+        return
+
+    logger.info("Updating docker data-root: %r -> %r", current or "<unset>", desired)
+    daemon_cfg["data-root"] = desired
+    with open(daemon_json_path, "w") as fh:
+        json.dump(daemon_cfg, fh, indent=2)
+
+    # Restart the user Docker daemon.
+    subprocess.run(
+        ["systemctl", "--user", "restart", "docker"],
+        check=True,
+    )
+    logger.info("docker systemd user service restarted; waiting for daemon …")
+
+    # Poll docker info for up to 10 s.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            logger.info("Docker daemon is responsive with data-root=%s", desired)
+            return
+        time.sleep(0.5)
+
+    logger.warning("Docker daemon did not become responsive within 10 s after restart")
 
 # ---------------------------------------------------------------------------
 # Single-writer DB actor

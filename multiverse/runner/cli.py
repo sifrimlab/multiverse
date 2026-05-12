@@ -15,6 +15,7 @@ from .docker_runner import (
     run_jobs_concurrently,
     run_job_container_sync,
     ensure_image_prepared,
+    ensure_docker_data_root,
     start_db_writer,
     stop_db_writer,
 )
@@ -444,6 +445,12 @@ async def run_workflow_async(args: argparse.Namespace):
         tasks_status[tag] = "Queued"
 
     result_summary: Dict[str, str] = {}
+
+    # Ensure Docker data root is configured before any build/run, and print it
+    # so the path is visible in logs and terminal output for debugging.
+    ensure_docker_data_root()
+    from ..multiverse_config import get_docker_data_root
+    console.print(f"[bold]Docker data root:[/bold] {get_docker_data_root()}")
 
     with Live(generate_status_table(tasks_status), refresh_per_second=4) as live:
         def update_status(name, status):

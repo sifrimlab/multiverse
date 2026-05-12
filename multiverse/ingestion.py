@@ -285,7 +285,17 @@ def preprocess_dataset(manifest_path: str) -> str:
     for mod_name, rel_path in manifest.raw_files.items():
         file_path = (dataset_dir / rel_path).resolve()
         logger.info(f"Loading modality '{mod_name}' from {file_path}")
-        modalities[mod_name] = ad.read_h5ad(str(file_path))
+        suffix = file_path.suffix.lower()
+        if suffix == ".h5ad":
+            modalities[mod_name] = ad.read_h5ad(str(file_path))
+        elif suffix == ".h5":
+            import scanpy as sc
+            modalities[mod_name] = sc.read_10x_h5(str(file_path))
+        else:
+            raise ValueError(
+                f"Unsupported format for modality '{mod_name}': {file_path}. "
+                "Convert to .h5ad or .h5 (10x CellRanger) first."
+            )
 
     logger.info(f"Building MuData with modalities: {list(modalities)}")
     mdata = md.MuData(modalities)

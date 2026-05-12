@@ -4,16 +4,15 @@ set -e
 DATA_DIR="${DATA_DIR:-/data}"
 DB_PATH="$DATA_DIR/optuna.db"
 
-# Pre-create the DB with WAL mode so the dashboard starts even before
-# the orchestrator creates its first study.
+# Bootstrap the DB with Optuna's own schema so the dashboard can open it
+# with skip_table_creation=True even before any study has been created.
 python3 - <<'PYEOF'
-import sqlite3, os
+import os
+import optuna
+
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 db = os.environ.get("DATA_DIR", "/data") + "/optuna.db"
-conn = sqlite3.connect(db)
-conn.execute("PRAGMA journal_mode=WAL")
-conn.execute("PRAGMA synchronous=NORMAL")
-conn.commit()
-conn.close()
+optuna.storages.RDBStorage(f"sqlite:///{db}")
 PYEOF
 
 exec optuna-dashboard "sqlite:///$DB_PATH" --host 0.0.0.0 --port 8080

@@ -57,7 +57,7 @@ def log_successful_run_to_mlflow(
         run_settings.get("mlflow_tracking_uri")
         or job_context.get("mlflow_tracking_uri")
         or os.getenv("MLFLOW_TRACKING_URI")
-        or "file:./mlruns"
+        or "http://localhost:5000"
     )
     experiment_name = (
         run_settings.get("mlflow_experiment_name")
