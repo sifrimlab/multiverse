@@ -1,0 +1,17 @@
+name: multiverse_mofa
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - pip
+  - ipykernel
+  - python=3.11
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.1
+  - scanpy==1.10.3
+  - pip:
+      - mofapy2==0.7.2
+      - muon==0.1.7
+      - jaxlib==0.4.34
+      - louvain==0.8.2

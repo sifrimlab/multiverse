@@ -38,7 +38,12 @@ store/
 mvexp_state.db
 optuna_demo.db
 run_manifests.yaml
+run_manifest.yaml
+*.db*
 
 # IDEs
 .vscode/
 .idea/
+
+!/store/models/
+!/store/models/**

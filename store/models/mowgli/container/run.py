@@ -1,0 +1,73 @@
+"""Mowgli container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+import random
+
+import mowgli
+import numpy as np
+import scanpy as sc
+import torch
+
+from mvr_worker import (
+    OUTPUT_DIR,
+    build_model_config,
+    get_logger,
+    load_input_mudata,
+    load_job_spec,
+    save_embeddings,
+    setup_container_logging,
+)
+
+logger = get_logger(__name__)
+
+_DEVICE_MAP = {"cpu": "cpu", "cuda": "cuda", "cuda:0": "cuda:0"}
+
+
+def main() -> None:
+    setup_container_logging(OUTPUT_DIR)
+    job_spec = load_job_spec()
+    config = build_model_config("mowgli", job_spec, OUTPUT_DIR)
+
+    seed = config.get("seed") or 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    params = config["model"].get("mowgli", {})
+    latent_dim = params.get("latent_dimensions", 20)
+    optimizer = params.get("optimizer", "adam")
+    lr = params.get("learning_rate", 0.001)
+    tol_inner = params.get("tol_inner", 1e-6)
+    max_iter_inner = params.get("max_iter_inner", 500)
+    device = _DEVICE_MAP.get(params.get("device", "cpu"), "cpu")
+
+    mdata = load_input_mudata()
+
+    # Mowgli requires highly_variable annotation on every modality var.
+    for mod in list(mdata.mod.keys()):
+        adata = mdata[mod]
+        if "highly_variable" not in adata.var.columns:
+            if mod == "rna":
+                sc.pp.normalize_total(adata, target_sum=1e4)
+                sc.pp.log1p(adata)
+                sc.pp.highly_variable_genes(adata, n_top_genes=min(2000, adata.n_vars))
+            else:
+                sc.pp.normalize_total(adata, target_sum=1e4)
+                sc.pp.log1p(adata)
+                sc.pp.highly_variable_genes(adata, n_top_genes=min(20000, adata.n_vars))
+
+    logger.info(f"Running Mowgli with latent_dim={latent_dim}, device={device}")
+    model = mowgli.models.MowgliModel(latent_dim=latent_dim)
+    model.train(
+        mdata,
+        device=device,
+        optim_name=optimizer,
+        lr=lr,
+        tol_inner=tol_inner,
+        max_iter_inner=max_iter_inner,
+    )
+
+    save_embeddings(mdata.obsm["W_OT"], OUTPUT_DIR)
+    logger.info("Mowgli run complete.")
+
+
+if __name__ == "__main__":
+    main()

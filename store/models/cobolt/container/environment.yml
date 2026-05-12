@@ -1,0 +1,17 @@
+name: multiverse_cobolt
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - pip
+  - ipykernel
+  - python=3.11
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.1
+  - scanpy==1.10.3
+  - pip:
+      - muon==0.1.7
+      - jaxlib==0.4.34
+      - louvain==0.8.2
+      - git+https://github.com/epurdom/cobolt.git#egg=cobolt
