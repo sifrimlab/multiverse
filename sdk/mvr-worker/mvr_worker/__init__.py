@@ -1,3 +1,4 @@
+from .device import resolve_device
 from .io import (
     INPUT_DATA_PATH,
     JOB_SPEC_PATH,
@@ -20,6 +21,7 @@ __all__ = [
     "get_logger",
     "load_input_mudata",
     "load_job_spec",
+    "resolve_device",
     "save_embeddings",
     "setup_container_logging",
     "setup_logging",

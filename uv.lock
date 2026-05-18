@@ -2756,7 +2756,7 @@ ml-legacy = [
     { name = "scanpy", specifier = "==1.10.3" },
     { name = "scib-metrics" },
     { name = "scvi-tools", specifier = "==1.2.0" },
-    { name = "streamlit", specifier = ">=1.30.0" },
+    { name = "streamlit", specifier = ">=1.33.0" },
     { name = "torch" },
 ]
 

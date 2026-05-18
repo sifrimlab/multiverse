@@ -1,13 +1,27 @@
 from __future__ import annotations
 
 import importlib
+import math
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+
+def sanitize_nan_inf(obj: Any) -> Any:
+    """Recursively replace NaN and +/-Inf float values with None."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {key: sanitize_nan_inf(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_nan_inf(value) for value in obj]
+    if isinstance(obj, tuple):
+        return tuple(sanitize_nan_inf(value) for value in obj)
+    return obj
 
 
 def _to_flat_float_metrics(metrics_obj: Dict[str, Any], prefix: str = "") -> Dict[str, float]:
@@ -15,6 +29,8 @@ def _to_flat_float_metrics(metrics_obj: Dict[str, Any], prefix: str = "") -> Dic
     flat: Dict[str, float] = {}
     for key, value in metrics_obj.items():
         metric_key = f"{prefix}.{key}" if prefix else str(key)
+        if key == "history":
+            continue
         if isinstance(value, dict):
             flat.update(_to_flat_float_metrics(value, prefix=metric_key))
             continue
@@ -36,6 +52,100 @@ def _to_flat_str_params(params_obj: Dict[str, Any], prefix: str = "") -> Dict[st
             continue
         flat[param_key] = str(value)
     return flat
+
+
+def _coerce_float_list(values: Any) -> List[float]:
+    if not isinstance(values, list):
+        return []
+    out: List[float] = []
+    for item in values:
+        try:
+            value = float(item)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value):
+            out.append(value)
+    return out
+
+
+def split_metrics_payload(metrics: Dict[str, Any]) -> Tuple[Dict[str, float], Dict[str, List[float]]]:
+    """Split metrics.json into final scalars and per-epoch time series."""
+    scalars: Dict[str, float] = {}
+    histories: Dict[str, List[float]] = {}
+
+    history_block = metrics.get("history")
+    if isinstance(history_block, dict):
+        for key, values in history_block.items():
+            series = _coerce_float_list(values)
+            if series:
+                histories[str(key)] = series
+
+    for key, value in metrics.items():
+        if key == "history":
+            continue
+        if isinstance(value, list):
+            series = _coerce_float_list(value)
+            if series:
+                histories[str(key)] = series
+                scalars[str(key)] = series[-1]
+            continue
+        if isinstance(value, (int, float)):
+            scalars[str(key)] = float(value)
+        elif isinstance(value, dict):
+            scalars.update(_to_flat_float_metrics({key: value}))
+
+    for key, series in histories.items():
+        scalars.setdefault(key, series[-1])
+
+    return scalars, histories
+
+
+def _log_metric_histories(mlflow: Any, histories: Dict[str, List[float]]) -> None:
+    for name, series in histories.items():
+        for step, value in enumerate(series):
+            mlflow.log_metric(name, value, step=step)
+
+
+def _log_final_scalars(
+    mlflow: Any,
+    scalars: Dict[str, float],
+    histories: Dict[str, List[float]],
+) -> None:
+    standalone = {k: v for k, v in scalars.items() if k not in histories}
+    if not standalone:
+        return
+    if histories:
+        final_step = max(len(series) for series in histories.values()) - 1
+        mlflow.log_metrics(standalone, step=final_step)
+    else:
+        mlflow.log_metrics(standalone)
+
+
+def find_metrics_json(workspace_dir: str) -> Optional[str]:
+    """Return the path to metrics.json under a run workspace, if present."""
+    root = os.path.join(workspace_dir, "metrics.json")
+    if os.path.isfile(root):
+        return root
+    for dirpath, _, filenames in os.walk(workspace_dir):
+        if "metrics.json" in filenames:
+            return os.path.join(dirpath, "metrics.json")
+    return None
+
+
+def load_run_metrics(workspace_dir: str) -> Dict[str, Any]:
+    """Load metrics.json from workspace root or nested model output."""
+    path = find_metrics_json(workspace_dir)
+    if not path:
+        return {}
+    try:
+        import json
+
+        with open(path, "r", encoding="utf-8") as fp:
+            loaded = json.load(fp)
+        return sanitize_nan_inf(loaded) if isinstance(loaded, dict) else {}
+    except Exception as exc:
+        logger.warning("Failed reading metrics.json from %s: %s", path, exc)
+        return {}
 
 
 def log_successful_run_to_mlflow(
@@ -69,24 +179,72 @@ def log_successful_run_to_mlflow(
     mlflow.set_experiment(experiment_name)
 
     params = _to_flat_str_params(job_spec.get("hyperparameters", {}))
-    metrics_flat = _to_flat_float_metrics(metrics)
+    scalars, histories = split_metrics_payload(metrics)
+    dataset_name = (
+        job_context.get("dataset_name")
+        or job_context.get("dataset_slug")
+        or "dataset"
+    )
     run_name = (
-        f"{job_context.get('dataset_name', 'dataset')}"
+        f"{dataset_name}"
         f"-{job_spec.get('model_name', job_context.get('model_name_orig', 'model'))}"
         f"-{Path(artifacts_dir).name}"
     )
 
-    with mlflow.start_run(run_name=run_name):
-        mlflow_tags = {}
-        if isinstance(run_settings.get("mlflow_tags"), dict):
-            mlflow_tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
-        if "optuna_trial_id" in run_settings:
-            mlflow_tags["optuna_trial_id"] = str(run_settings["optuna_trial_id"])
-        if mlflow_tags:
-            mlflow.set_tags(mlflow_tags)
-        if params:
-            mlflow.log_params(params)
-        if metrics_flat:
-            mlflow.log_metrics(metrics_flat)
-        mlflow.log_artifacts(artifacts_dir)
+    start_kwargs = {"run_name": run_name}
+    try:
+        import inspect
+        if "log_system_metrics" in inspect.signature(mlflow.start_run).parameters:
+            start_kwargs["log_system_metrics"] = True
+    except Exception:
+        pass
 
+    with mlflow.start_run(**start_kwargs):
+        try:
+            mlflow_tags = {}
+            if isinstance(run_settings.get("mlflow_tags"), dict):
+                mlflow_tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
+            if "optuna_trial_id" in run_settings:
+                mlflow_tags["optuna_trial_id"] = str(run_settings["optuna_trial_id"])
+            if mlflow_tags:
+                try:
+                    mlflow.set_tags(mlflow_tags)
+                except Exception as exc:
+                    logger.warning("MLflow set_tags failed: %s", exc)
+            if params:
+                try:
+                    mlflow.log_params(params)
+                except Exception as exc:
+                    logger.warning("MLflow log_params failed: %s", exc)
+            if histories:
+                try:
+                    _log_metric_histories(mlflow, histories)
+                except Exception as exc:
+                    logger.warning("MLflow metric history logging failed: %s", exc)
+            try:
+                _log_final_scalars(mlflow, scalars, histories)
+            except Exception as exc:
+                logger.warning("MLflow final scalar logging failed: %s", exc)
+            _log_artifacts_filtered(mlflow, artifacts_dir)
+        except Exception as exc:
+            logger.warning("MLflow run body raised; marking FINISHED with partial data: %s", exc)
+
+
+_ARTIFACT_SKIP_NAMES = {".promotion_complete"}
+
+
+def _log_artifacts_filtered(mlflow: Any, artifacts_dir: str) -> None:
+    """Log artifacts file-by-file, skipping markers and tolerating per-file errors."""
+    if not os.path.isdir(artifacts_dir):
+        return
+    for dirpath, _, filenames in os.walk(artifacts_dir):
+        rel_dir = os.path.relpath(dirpath, artifacts_dir)
+        artifact_path = None if rel_dir in (".", "") else rel_dir
+        for filename in filenames:
+            if filename in _ARTIFACT_SKIP_NAMES:
+                continue
+            full = os.path.join(dirpath, filename)
+            try:
+                mlflow.log_artifact(full, artifact_path=artifact_path)
+            except Exception as exc:
+                logger.warning("MLflow log_artifact failed for %s: %s", full, exc)

@@ -1,9 +1,11 @@
 import json
 import os
 import re
+import queue
 import shutil
 import sqlite3
 import subprocess
+import threading
 import sys
 import time
 import urllib.request
@@ -14,6 +16,10 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components  # type: ignore[import-untyped]
 import yaml
+from multiverse.gui_artifacts import render_artifact_tree, render_download_button, render_log_viewer
+from multiverse.gui_navigation import go_to, render_top_nav, render_workflow_stepper
+from multiverse.gui_telemetry import track
+from multiverse.gui_state import bump_editor_version, get_state, init_state
 from multiverse.gui_utils import LIVE_METRIC_KEYS, fetch_live_metrics, render_hyperparameters_form
 from multiverse.multiverse_config import (
     DEFAULT_DOCKER_DATA_ROOT,
@@ -23,26 +29,6 @@ from multiverse.multiverse_config import (
 )
 from multiverse.registry import generate_compatibility_matrix
 from multiverse.registry_db import get_all_datasets, get_all_models, get_db_connection, init_db
-
-
-# ---------------------------------------------------------------------------
-# Session state keys
-# ---------------------------------------------------------------------------
-
-_STATE_DEFAULTS: dict = {
-    "selected_datasets": [],
-    "selected_models": [],
-    "planned_jobs": [],
-    "run_mode": "Use User Params",
-    "registry_dirty": False,
-    "active_experiment_id": None,
-    "active_experiment_name": "",
-}
-
-
-def _init_session_state() -> None:
-    for key, default in _STATE_DEFAULTS.items():
-        st.session_state.setdefault(key, default)
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +65,12 @@ def build_run_manifest(
 ) -> dict:
     run_user_params = run_mode == "Use User Params"
     run_gridsearch = run_mode == "Run Gridsearch"
+    selected_pairs = {(job["Dataset"], job["Model"]) for job in planned_jobs}
+    scoped_pair_params = {
+        pair: params
+        for pair, params in pair_params.items()
+        if pair in selected_pairs and isinstance(params, dict)
+    }
     manifest = {
         "globals": {
             "experiment_name": slugify_experiment_name(experiment_name),
@@ -95,10 +87,33 @@ def build_run_manifest(
             {
                 "dataset_slug": dataset_name_to_slug[ds_name],
                 "model_name": mod_name,
-                "model_params": pair_params.get((ds_name, mod_name), {}) or {},
+                "model_params": scoped_pair_params.get((ds_name, mod_name), {}) or {},
             }
         )
     return manifest
+
+
+def render_manifest_errors(errors: list[dict], *, title: str = "Manifest validation failed") -> None:
+    st.error(title)
+    if not errors:
+        return
+    for err in errors:
+        code = err.get("code", "invalid")
+        field = err.get("field", "manifest")
+        message = err.get("message", "")
+        with st.expander(f"{code}: {field}", expanded=True):
+            st.write(message)
+            st.caption("Fix the manifest or registry entry, then launch again.")
+    st.dataframe(pd.DataFrame(errors), width="stretch", hide_index=True)
+
+
+def paginate(total_count_fn, page_fn, page_size: int = 50, key: str = "page") -> list[dict]:
+    total = int(total_count_fn())
+    n_pages = max(1, (total + page_size - 1) // page_size)
+    page = st.number_input("Page", min_value=1, max_value=n_pages, value=1, key=key)
+    rows = page_fn(limit=page_size, offset=(int(page) - 1) * page_size)
+    st.caption(f"Page {page} of {n_pages} · {total} total rows")
+    return rows
 
 
 def _parse_memory_gb(mem_str: str) -> float:
@@ -162,6 +177,7 @@ def _render_registry_tab() -> None:
     st.header("Asset Registry")
 
     if st.button("🔄 Refresh Registry"):
+        track("registry_refreshed")
         fetch_registry_data.clear()
         st.session_state["registry_dirty"] = False
         st.rerun()
@@ -185,7 +201,7 @@ def _render_registry_tab() -> None:
                     }
                     for d in datasets
                 ]
-                st.dataframe(pd.DataFrame(ds_rows), width='stretch')
+                st.dataframe(pd.DataFrame(ds_rows), width="stretch")
             else:
                 st.caption("No datasets registered.")
 
@@ -202,7 +218,7 @@ def _render_registry_tab() -> None:
                     }
                     for m in models
                 ]
-                st.dataframe(pd.DataFrame(md_rows), width='stretch')
+                st.dataframe(pd.DataFrame(md_rows), width="stretch")
             else:
                 st.caption("No models registered.")
 
@@ -278,6 +294,7 @@ def _render_registry_tab() -> None:
                         "Registering dataset…",
                     )
                     if ok:
+                        track("dataset_registered", source="fields", manifest_path=str(manifest_path))
                         st.session_state["registry_dirty"] = True
                         fetch_registry_data.clear()
         else:
@@ -297,6 +314,7 @@ def _render_registry_tab() -> None:
                         "Registering dataset…",
                     )
                     if ok:
+                        track("dataset_registered", source="manifest", manifest_path=ds_manifest_path.strip())
                         st.session_state["registry_dirty"] = True
                         fetch_registry_data.clear()
 
@@ -320,6 +338,7 @@ def _render_registry_tab() -> None:
                     cmd.append("--build")
                 ok = _stream_subprocess(cmd, "Registering model…")
                 if ok:
+                    track("model_registered", manifest_path=md_manifest_path.strip(), build_local=build_local)
                     st.session_state["registry_dirty"] = True
                     fetch_registry_data.clear()
 
@@ -338,6 +357,8 @@ def _render_job_builder_tab() -> None:
 
     if not datasets:
         st.warning("No datasets found in registry. Register a dataset in the Registry tab first.")
+        if st.button("Go to Registry ->", key="shortcut_jobs_registry"):
+            go_to("registry")
         return
 
     dataset_name_to_slug = {
@@ -348,9 +369,33 @@ def _render_job_builder_tab() -> None:
         for d in datasets
     }
 
-    # --- Read-only compatibility legend ---
+    # --- Selection-first compatibility matrix ---
     st.subheader("Compatibility Matrix")
     matrix_df = generate_compatibility_matrix(datasets, models)
+
+    dataset_names = [d["name"] for d in datasets]
+    model_names = [m["name"] for m in models]
+    default_datasets = dataset_names if len(dataset_names) <= 10 else []
+    default_models = model_names if len(model_names) <= 10 else []
+    previous_datasets = [name for name in st.session_state.get("selected_datasets", []) if name in dataset_names]
+    previous_models = [name for name in st.session_state.get("selected_models", []) if name in model_names]
+    selected_datasets = st.multiselect(
+        "Datasets",
+        options=dataset_names,
+        default=previous_datasets or default_datasets,
+        key="selected_datasets",
+    )
+    selected_models = st.multiselect(
+        "Models",
+        options=model_names,
+        default=previous_models or default_models,
+        key="selected_models",
+    )
+
+    if not selected_datasets or not selected_models:
+        st.info("Select at least one dataset and one model to preview compatibility and build jobs.")
+        st.session_state["planned_jobs"] = []
+        return
 
     def _color_compat(val):
         if val == "Compatible":
@@ -361,25 +406,32 @@ def _render_job_builder_tab() -> None:
             return "background-color: #ffcccb; color: #000000"
         return ""
 
-    st.dataframe(matrix_df.style.map(_color_compat), width='stretch')
+    visible_matrix = matrix_df.loc[selected_datasets, selected_models]
+    st.dataframe(visible_matrix.style.map(_color_compat), width="stretch")
 
     # --- Editable job selection matrix ---
     st.subheader("Select Jobs")
     rows = []
-    for ds in datasets:
-        for m in models:
+    for ds_name in selected_datasets:
+        for mod_name in selected_models:
             compat = (
-                matrix_df.loc[ds["name"], m["name"]]
-                if ds["name"] in matrix_df.index and m["name"] in matrix_df.columns
+                matrix_df.loc[ds_name, mod_name]
+                if ds_name in matrix_df.index and mod_name in matrix_df.columns
                 else "Incompatible"
             )
             rows.append({
                 "Selected": compat in ("Compatible", "Partial"),
-                "Dataset": ds["name"],
-                "Model": m["name"],
+                "Dataset": ds_name,
+                "Model": mod_name,
                 "Compatibility": compat,
             })
     editor_df = pd.DataFrame(rows)
+
+    editor_signature = tuple((row["Dataset"], row["Model"], row["Compatibility"]) for row in rows)
+    if st.session_state.get("job_matrix_signature") != editor_signature:
+        st.session_state["job_matrix_signature"] = editor_signature
+        bump_editor_version()
+    editor_key = f"job_matrix_editor_v{get_state().editor_version}"
 
     edited = st.data_editor(
         editor_df,
@@ -389,9 +441,9 @@ def _render_job_builder_tab() -> None:
             "Model": st.column_config.TextColumn("Model", disabled=True),
             "Compatibility": st.column_config.TextColumn("Compatibility", disabled=True),
         },
-        width='stretch',
+        width="stretch",
         hide_index=True,
-        key="job_matrix_editor",
+        key=editor_key,
     )
 
     bad = edited["Selected"] & (edited["Compatibility"] == "Incompatible")
@@ -441,8 +493,10 @@ def _render_job_builder_tab() -> None:
     if planned_jobs:
         st.divider()
         st.subheader("Generate Run Manifest")
-        experiment_name_input = st.text_input(
-            "Experiment Name", value="benchmark_run", key="jb_exp_name"
+        st.text_input(
+            "Experiment Name",
+            key="experiment_name",
+            help="Shared with the Execute tab's live metrics panel.",
         )
         random_seed = st.number_input(
             "Random Seed", min_value=0, step=1, value=42, key="jb_seed"
@@ -455,11 +509,29 @@ def _render_job_builder_tab() -> None:
             key="jb_run_mode",
         )
         st.session_state["run_mode"] = run_mode
+        manifest_path = st.text_input("Manifest save path", value="run_manifest.yaml", key="jb_manifest_path")
+
+        with st.expander("Load manifest settings", expanded=False):
+            load_path = st.text_input("Manifest to load", value=manifest_path, key="jb_load_manifest_path")
+            if st.button("Load Manifest", key="btn_load_manifest_settings"):
+                try:
+                    loaded = yaml.safe_load(Path(load_path).read_text(encoding="utf-8")) or {}
+                    globals_cfg = loaded.get("globals", {}) if isinstance(loaded, dict) else {}
+                    if "experiment_name" in globals_cfg:
+                        st.session_state["experiment_name"] = str(globals_cfg["experiment_name"])
+                    if globals_cfg.get("run_gridsearch"):
+                        st.session_state["run_mode"] = "Run Gridsearch"
+                    elif globals_cfg.get("run_user_params"):
+                        st.session_state["run_mode"] = "Use User Params"
+                    st.success("Loaded manifest settings.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not load manifest: {exc}")
 
         if st.button("Generate Run Manifest", key="btn_gen_manifest"):
             try:
                 manifest = build_run_manifest(
-                    experiment_name=experiment_name_input,
+                    experiment_name=st.session_state.get("experiment_name", "benchmark_run"),
                     random_seed=int(random_seed),
                     run_mode=run_mode,
                     planned_jobs=planned_jobs,
@@ -470,10 +542,11 @@ def _render_job_builder_tab() -> None:
                 st.error(str(exc))
                 return
 
-            manifest_path = "run_manifest.yaml"
+            manifest_path = manifest_path.strip() or "run_manifest.yaml"
             with open(manifest_path, "w") as fh:
                 yaml.safe_dump(manifest, fh, default_flow_style=False, sort_keys=False)
 
+            track("manifest_generated", n_jobs=len(planned_jobs), run_mode=run_mode, manifest_path=manifest_path)
             st.success(f"Manifest saved to `{manifest_path}`")
             st.code(f"make benchmark config={manifest_path}")
             st.code(
@@ -492,6 +565,8 @@ def _render_parameters_tab() -> None:
     planned_jobs: list[dict] = st.session_state.get("planned_jobs", [])
     if not planned_jobs:
         st.info("Plan your jobs in the Job Builder tab first.")
+        if st.button("Go to Job Builder ->", key="shortcut_params_jobs"):
+            go_to("jobs")
         return
 
     _, models = fetch_registry_data()
@@ -546,7 +621,7 @@ def _render_parameters_tab() -> None:
         run_mode = st.session_state.get("run_mode", "Use User Params")
         try:
             manifest = build_run_manifest(
-                experiment_name=st.session_state.get("jb_exp_name", "benchmark_run"),
+                experiment_name=st.session_state.get("experiment_name", "benchmark_run"),
                 random_seed=int(st.session_state.get("jb_seed", 42)),
                 run_mode=run_mode,
                 planned_jobs=planned_jobs,
@@ -557,10 +632,11 @@ def _render_parameters_tab() -> None:
             st.error(str(exc))
             return
 
-        manifest_path = "run_manifest.yaml"
+        manifest_path = st.session_state.get("jb_manifest_path", "run_manifest.yaml") or "run_manifest.yaml"
         with open(manifest_path, "w") as fh:
             yaml.safe_dump(manifest, fh, default_flow_style=False, sort_keys=False)
 
+        track("manifest_generated", n_jobs=len(planned_jobs), run_mode=run_mode, manifest_path=manifest_path)
         st.success(f"Manifest saved to `{manifest_path}`")
         st.code(
             yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False),
@@ -614,7 +690,7 @@ def _live_metrics_panel(experiment_name: str, tracking_uri: str) -> None:
         df[cols_to_show],
         column_config=col_cfg,
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
     st.caption(
         f"Auto-refreshing every 5 s · {len(rows)} run(s) in experiment **{experiment_name}**"
@@ -714,7 +790,7 @@ def _render_execute_tab() -> None:
         n_waves = wave_df["Wave"].nunique()
         if n_waves > 1:
             st.info(f"{n_waves} waves needed to fit all jobs within the {host_ram_cap:.1f} GiB cap.")
-        st.dataframe(wave_df, width='stretch', hide_index=True)
+        st.dataframe(wave_df, width="stretch", hide_index=True)
 
     st.divider()
 
@@ -740,15 +816,33 @@ def _render_execute_tab() -> None:
 
     if not planned_jobs:
         st.warning("No jobs planned. Go to the Job Builder tab first.")
+        if st.button("Go to Job Builder ->", key="shortcut_execute_jobs"):
+            go_to("jobs")
 
-    if st.button("Launch Run", key="btn_launch_run", disabled=not planned_jobs):
+    if st.button("Launch Run", key="btn_launch_run", disabled=(not planned_jobs or st.session_state.get("is_running", False))):
+        repo_root = Path(__file__).resolve().parents[1]
         manifest_file = Path(manifest_path_input.strip())
+        if not manifest_file.is_absolute():
+            manifest_file = (repo_root / manifest_file).resolve()
         if not manifest_file.exists():
             st.error(
                 f"Manifest not found: `{manifest_file}`. "
                 "Generate it in the Job Builder or Parameters tab first."
             )
         else:
+            from multiverse.runner.cli import parse_manifest
+
+            conn = get_db_connection()
+            try:
+                parsed_manifest = parse_manifest(str(manifest_file), conn)
+            finally:
+                conn.close()
+            if not parsed_manifest.ok:
+                track("error_shown", component="execute_preflight", error_kind="manifest_validation")
+                render_manifest_errors(parsed_manifest.errors)
+                st.stop()
+
+            track("run_launched", n_jobs=len(planned_jobs), manifest_path=str(manifest_file))
             cmd = [
                 sys.executable, "-m", "multiverse.runner.cli", "run",
                 "--manifest", str(manifest_file),
@@ -758,72 +852,118 @@ def _render_execute_tab() -> None:
 
             # Build initial status table keyed by CLI job name format
             job_statuses: dict[str, str] = {
-                f"{j['Dataset']}_{j['Model']}": "⏳ Pending"
+                f"{j['Dataset']}_{j['Model']}": "Pending"
                 for j in planned_jobs
             }
-
             log_lines: list[str] = []
+            stdout_q: queue.Queue[str | None] = queue.Queue()
+            stderr_q: queue.Queue[str | None] = queue.Queue()
 
-            with st.status("Running pipeline…", expanded=True) as run_status:
-                tbl_placeholder = st.empty()
-                log_placeholder = st.empty()
+            def _drain_pipe(pipe, out_q):
+                try:
+                    for line in iter(pipe.readline, ""):
+                        out_q.put(line)
+                finally:
+                    out_q.put(None)
+                    try:
+                        pipe.close()
+                    except Exception:
+                        pass
 
-                def _refresh_status_table():
-                    tbl_placeholder.dataframe(
-                        pd.DataFrame(
-                            [{"Job": k, "Status": v} for k, v in job_statuses.items()]
-                        ),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                _refresh_status_table()
-
-                env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    env=env,
+            def _refresh_status_table(placeholder):
+                placeholder.dataframe(
+                    pd.DataFrame([{"Job": k, "Status": v} for k, v in job_statuses.items()]),
+                    width="stretch",
+                    hide_index=True,
                 )
-                for raw_line in proc.stdout:
-                    clean = _ANSI_RE.sub("", raw_line).rstrip()
-                    if not clean:
-                        continue
-                    log_lines.append(clean)
 
-                    lc = clean.lower()
-                    clean_lower = clean.lower()
-                    for job_key in job_statuses:
-                        if job_key.lower() not in clean_lower:
-                            continue
-                        if any(w in lc for w in ("starting", "admitted", "running")):
-                            job_statuses[job_key] = "🔵 Training"
-                        elif any(w in lc for w in ("success", "completed", "promoted")):
-                            job_statuses[job_key] = "🟢 Done"
-                        elif any(w in lc for w in ("failed", "error", "insufficient")):
-                            job_statuses[job_key] = "🔴 Failed"
+            st.session_state["is_running"] = True
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            proc = None
+            try:
+                with st.status("Running pipeline...", expanded=True) as run_status:
+                    tbl_placeholder = st.empty()
+                    log_placeholder = st.empty()
+                    cancel_slot = st.empty()
+                    _refresh_status_table(tbl_placeholder)
 
-                    _refresh_status_table()
-                    log_placeholder.code("\n".join(log_lines[-40:]), language=None)
-
-                proc.wait()
-                if proc.returncode == 0:
-                    run_status.update(label="Pipeline completed successfully ✓", state="complete")
-                    for k, v in job_statuses.items():
-                        if v == "⏳ Pending":
-                            job_statuses[k] = "🟢 Done"
-                else:
-                    run_status.update(
-                        label=f"Pipeline exited with code {proc.returncode} ✗",
-                        state="error",
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                        env=env,
+                        cwd=str(repo_root),
                     )
-                    for k, v in job_statuses.items():
-                        if v in ("⏳ Pending", "🔵 Training"):
-                            job_statuses[k] = "🔴 Failed"
-                _refresh_status_table()
+                    threading.Thread(target=_drain_pipe, args=(proc.stdout, stdout_q), daemon=True).start()
+                    threading.Thread(target=_drain_pipe, args=(proc.stderr, stderr_q), daemon=True).start()
+
+                    stdout_done = stderr_done = False
+                    _cancel_btn_idx = 0
+                    while proc.poll() is None or not (stdout_done and stderr_done):
+                        if cancel_slot.button("Cancel Run", key=f"btn_cancel_run_{_cancel_btn_idx}") and proc.poll() is None:
+                            proc.terminate()
+                            run_status.update(label="Pipeline cancellation requested", state="running")
+
+                        while True:
+                            try:
+                                raw_line = stdout_q.get_nowait()
+                            except queue.Empty:
+                                break
+                            if raw_line is None:
+                                stdout_done = True
+                                continue
+                            clean = _ANSI_RE.sub("", raw_line).rstrip()
+                            if clean:
+                                log_lines.append(clean)
+
+                        while True:
+                            try:
+                                raw_line = stderr_q.get_nowait()
+                            except queue.Empty:
+                                break
+                            if raw_line is None:
+                                stderr_done = True
+                                continue
+                            clean = raw_line.strip()
+                            if not clean:
+                                continue
+                            try:
+                                event = json.loads(clean)
+                            except json.JSONDecodeError:
+                                log_lines.append(_ANSI_RE.sub("", clean))
+                                continue
+                            event_name = event.get("event")
+                            job_name = event.get("job")
+                            if event_name == "job_start" and job_name in job_statuses:
+                                job_statuses[job_name] = "Training"
+                            elif event_name == "job_end" and job_name in job_statuses:
+                                job_statuses[job_name] = "Done" if event.get("status") == "SUCCESS" else "Failed"
+                            elif event_name == "error":
+                                log_lines.append(f"ERROR {event.get('kind')}: {event.get('message', '')}")
+
+                        _refresh_status_table(tbl_placeholder)
+                        log_placeholder.code("\n".join(log_lines[-40:]), language=None)
+                        _cancel_btn_idx += 1
+                        time.sleep(0.5)
+
+                    if proc.returncode == 0:
+                        track("run_completed", status="success", returncode=proc.returncode)
+                        run_status.update(label="Pipeline completed successfully", state="complete")
+                        for k, v in job_statuses.items():
+                            if v == "Pending":
+                                job_statuses[k] = "Done"
+                    else:
+                        track("run_completed", status="failed", returncode=proc.returncode)
+                        run_status.update(label=f"Pipeline exited with code {proc.returncode}", state="error")
+                        for k, v in job_statuses.items():
+                            if v in ("Pending", "Training"):
+                                job_statuses[k] = "Failed"
+                    _refresh_status_table(tbl_placeholder)
+            finally:
+                st.session_state["is_running"] = False
+                st.session_state["pending_launch"] = None
 
             if log_lines:
                 st.download_button(
@@ -843,50 +983,64 @@ def _render_execute_tab() -> None:
     if not _check_service(f"{mlflow_base}/health"):
         st.info("MLflow is offline — start it with `make services-up` to see live metrics.")
     else:
-        # Default to the experiment name used in the most recent manifest
-        saved_exp = st.session_state.get("active_experiment_name", "")
-        jb_exp_raw = st.session_state.get("jb_exp_name", "benchmark_run")
+        # The Job Builder writes to st.session_state["experiment_name"]; reflect it
+        # here so the live metrics panel always tracks the same name without a
+        # second, drift-prone text input.
+        exp_raw = st.session_state.get("experiment_name", "benchmark_run") or "benchmark_run"
         try:
-            jb_exp_slug = slugify_experiment_name(jb_exp_raw)
+            exp_slug = slugify_experiment_name(exp_raw)
         except ValueError:
-            jb_exp_slug = "benchmark_run"
-        default_exp = saved_exp or jb_exp_slug
+            exp_slug = "benchmark_run"
+        st.caption(f"Monitoring MLflow experiment: `{exp_slug}` (edit in the Job Builder tab).")
 
-        exp_col, _ = st.columns([2, 3])
-        with exp_col:
-            monitor_exp = st.text_input(
-                "Experiment to monitor",
-                value=default_exp,
-                key="exec_live_exp_name",
-                help="MLflow experiment name. Auto-populated from the Job Builder manifest.",
-            )
-
-        if monitor_exp.strip():
-            _live_metrics_panel(monitor_exp.strip(), mlflow_base)
+        if exp_slug:
+            _live_metrics_panel(exp_slug, mlflow_base)
 
 
 # ---------------------------------------------------------------------------
 # Tab: Results (stub)
 # ---------------------------------------------------------------------------
 
-def _fetch_runs(status_filter: str | None = None) -> list[dict]:
-    """Query the runs table, optionally filtered by status."""
+def _count_runs(status_filter: str | None = None) -> int:
+    """Count runs, optionally filtered by status."""
+    init_db()
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        if status_filter:
+            cursor.execute("SELECT COUNT(*) FROM runs WHERE status = ?", (status_filter,))
+        else:
+            cursor.execute("SELECT COUNT(*) FROM runs")
+        return int(cursor.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _fetch_runs(
+    status_filter: str | None = None,
+    *,
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict]:
+    """Query the runs table, optionally filtered by status and page."""
     init_db()
     conn = get_db_connection()
     try:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+        sql = (
+            "SELECT run_id, dataset_id, model_slug, model_version, model_name, status, output_path, failure_reason "
+            "FROM runs"
+        )
+        params: list = []
         if status_filter:
-            cursor.execute(
-                "SELECT run_id, dataset_id, model_name, status, output_path "
-                "FROM runs WHERE status = ? ORDER BY run_id DESC",
-                (status_filter,),
-            )
-        else:
-            cursor.execute(
-                "SELECT run_id, dataset_id, model_name, status, output_path "
-                "FROM runs ORDER BY run_id DESC"
-            )
+            sql += " WHERE status = ?"
+            params.append(status_filter)
+        sql += " ORDER BY run_id DESC"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+        cursor.execute(sql, params)
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
@@ -920,10 +1074,17 @@ def _render_results_tab() -> None:
             st.cache_data.clear()
 
     filter_val = None if status_choice == "All" else status_choice
-    runs = _fetch_runs(filter_val)
+    runs = paginate(
+        lambda: _count_runs(filter_val),
+        lambda limit, offset: _fetch_runs(filter_val, limit=limit, offset=offset),
+        page_size=50,
+        key="results_page",
+    )
 
     if not runs:
         st.info("No runs found. Launch a benchmarking run from the Execute tab first.")
+        if st.button("Go to Execute ->", key="shortcut_results_execute"):
+            go_to("execute")
         return
 
     # Summary table
@@ -933,24 +1094,50 @@ def _render_results_tab() -> None:
             "Model": r["model_name"] or "—",
             "Status": r["status"],
             "Output Path": r["output_path"] or "—",
+            "Failure Reason": r.get("failure_reason") or "",
         }
         for r in runs
     ]
-    st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
+    st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
+
+    retryable = [
+        r for r in runs
+        if str(r.get("failure_reason") or "").startswith("VALIDATION_ERROR:")
+    ]
+    if retryable:
+        st.subheader("Validation Retries")
+        for r in retryable:
+            cols = st.columns([4, 1])
+            with cols[0]:
+                st.caption(
+                    f"Run {r['run_id']} — {r.get('model_name') or r.get('model_slug') or 'unknown'} — {r.get('failure_reason')}"
+                )
+            with cols[1]:
+                if st.button("Retry", key=f"retry_validation_{r['run_id']}"):
+                    conn = get_db_connection()
+                    try:
+                        conn.execute(
+                            "UPDATE runs SET status = 'QUEUED', failure_reason = NULL WHERE run_id = ?",
+                            (r["run_id"],),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    st.rerun()
 
     # Drill-down selector
-    success_runs = [r for r in runs if r["status"] == "SUCCESS"]
-    if not success_runs:
-        st.info("No SUCCESS runs to inspect yet.")
-        return
-
     st.subheader("Drill Down")
     run_labels = [
-        f"Run {r['run_id']} — {r['model_name'] or 'unknown'}"
-        for r in success_runs
+        f"Run {r['run_id']} — {r['status']} — {r['model_name'] or r.get('model_slug') or 'unknown'}"
+        for r in runs
     ]
     selected_label = st.selectbox("Select a run", options=run_labels, key="results_run_selector")
-    selected_run = success_runs[run_labels.index(selected_label)]
+    selected_run = runs[run_labels.index(selected_label)]
+
+    if selected_run["status"] == "FAILED":
+        track("error_shown", component="results_drilldown", error_kind="failed_run")
+        st.error(selected_run.get("failure_reason") or "Run failed without a recorded failure reason.")
+
     artifact_dir = Path(selected_run["output_path"]) if selected_run["output_path"] else None
 
     if not artifact_dir or not artifact_dir.exists():
@@ -958,8 +1145,11 @@ def _render_results_tab() -> None:
         return
 
     # Metrics
-    metrics_file = artifact_dir / "metrics.json"
-    if metrics_file.exists():
+    from multiverse.tracking import find_metrics_json
+
+    metrics_path = find_metrics_json(str(artifact_dir))
+    if metrics_path:
+        metrics_file = Path(metrics_path)
         try:
             raw_metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
             flat = _flatten_dict(raw_metrics)
@@ -970,25 +1160,25 @@ def _render_results_tab() -> None:
             if not metrics_df.empty:
                 col_table, col_chart = st.columns([1, 1])
                 with col_table:
-                    st.dataframe(metrics_df, width='stretch', hide_index=True)
+                    st.dataframe(metrics_df, width="stretch", hide_index=True)
                 with col_chart:
                     chart_df = metrics_df.set_index("Metric")["Value"]
                     st.bar_chart(chart_df)
             else:
+                st.warning("No numeric metrics available for this run.")
                 st.json(raw_metrics)
         except Exception as exc:
             st.error(f"Could not parse metrics.json: {exc}")
     else:
         st.info("No metrics.json found in artifact directory.")
 
-    # Container log
+    # Artifacts and container log
+    st.subheader("Artifacts")
+    render_artifact_tree(artifact_dir)
+
     log_file = artifact_dir / "container.log"
     with st.expander("Container Log", expanded=False):
-        if log_file.exists():
-            log_text = log_file.read_text(encoding="utf-8", errors="replace")
-            st.text(log_text if log_text.strip() else "(empty log)")
-        else:
-            st.info("No container.log found.")
+        render_log_viewer(log_file)
 
     # Provenance note
     job_spec_file = artifact_dir / "job_spec.json"
@@ -996,6 +1186,7 @@ def _render_results_tab() -> None:
     st.caption(f"Artifact directory: `{artifact_dir}`")
     if job_spec_file.exists():
         st.caption(f"Job spec: `{job_spec_file}`")
+        render_download_button(job_spec_file, "Download job_spec.json")
         with st.expander("Job Spec", expanded=False):
             try:
                 st.json(json.loads(job_spec_file.read_text(encoding="utf-8")))
@@ -1131,6 +1322,9 @@ def _render_observability_sidebar() -> None:
                 st.error("Optuna offline")
                 st.caption("`make services-up`")
 
+        st.divider()
+        render_workflow_stepper()
+
 
 # ---------------------------------------------------------------------------
 # Tab: Experiment Analysis (MLflow)
@@ -1168,6 +1362,8 @@ def _render_mlflow_tab() -> None:
             "No active experiment selected. "
             "Pick a run in the Results tab to deep-link here automatically."
         )
+        if st.button("Go to Results ->", key="shortcut_mlflow_results"):
+            go_to("results")
 
     col_link, col_h = st.columns([3, 1])
     with col_link:
@@ -1312,46 +1508,34 @@ def _render_settings_tab() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Multiverse", layout="wide")
-    _init_session_state()
+    init_state()
     _render_observability_sidebar()
 
     st.title("Multiverse Benchmarking Platform")
+    if st.session_state.get("registry_dirty"):
+        st.warning("Registry changed. Refresh the registry data before building or launching new jobs.")
 
-    tab_registry, tab_jobs, tab_params, tab_execute, tab_results, tab_mlflow, tab_optuna, tab_settings = st.tabs(
-        [
-            "📦 Registry",
-            "🧬 Job Builder",
-            "⚙️ Parameters",
-            "🚀 Execute",
-            "📊 Results",
-            "🔬 Experiment Analysis",
-            "📈 Sweep Tracker",
-            "⚙️ Settings",
-        ]
-    )
+    previous_tab = st.session_state.get("_last_tab")
+    active_tab = render_top_nav()
+    if previous_tab != active_tab:
+        track("tab_switched", tab=active_tab, from_tab=previous_tab)
+        st.session_state["_last_tab"] = active_tab
 
-    with tab_registry:
+    if active_tab == "registry":
         _render_registry_tab()
-
-    with tab_jobs:
+    elif active_tab == "jobs":
         _render_job_builder_tab()
-
-    with tab_params:
+    elif active_tab == "params":
         _render_parameters_tab()
-
-    with tab_execute:
+    elif active_tab == "execute":
         _render_execute_tab()
-
-    with tab_results:
+    elif active_tab == "results":
         _render_results_tab()
-
-    with tab_mlflow:
+    elif active_tab == "mlflow":
         _render_mlflow_tab()
-
-    with tab_optuna:
+    elif active_tab == "optuna":
         _render_optuna_tab()
-
-    with tab_settings:
+    elif active_tab == "settings":
         _render_settings_tab()
 
 

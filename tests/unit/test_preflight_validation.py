@@ -155,3 +155,18 @@ class TestValidatePendingJobs:
         validated, warnings = validate_pending_jobs([job])
         runnable = [j for j in validated if not j.get("_skipped")]
         assert len(runnable) == 1
+
+
+    def test_empty_anndata_is_skipped(self, tmp_path):
+        from multiverse.runner.cli import validate_pending_jobs
+
+        path = str(tmp_path / "empty.h5ad")
+        adata = ad.AnnData(X=np.zeros((0, 3)), obs={"batch": [], "cell_type": []})
+        adata.write_h5ad(path)
+
+        job = _make_job(dataset_path=path, batch_key="batch", cell_type_key="cell_type")
+        validated, _ = validate_pending_jobs([job])
+
+        skipped = [j for j in validated if j.get("_skipped")]
+        assert len(skipped) == 1
+        assert "zero cells" in skipped[0]["_skip_reason"]

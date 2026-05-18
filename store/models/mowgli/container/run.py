@@ -12,13 +12,12 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
+    resolve_device,
     save_embeddings,
     setup_container_logging,
 )
 
 logger = get_logger(__name__)
-
-_DEVICE_MAP = {"cpu": "cpu", "cuda": "cuda", "cuda:0": "cuda:0"}
 
 
 def main() -> None:
@@ -37,7 +36,7 @@ def main() -> None:
     lr = params.get("learning_rate", 0.001)
     tol_inner = params.get("tol_inner", 1e-6)
     max_iter_inner = params.get("max_iter_inner", 500)
-    device = _DEVICE_MAP.get(params.get("device", "cpu"), "cpu")
+    device = resolve_device(params.get("device", "cpu"))
 
     mdata = load_input_mudata()
 

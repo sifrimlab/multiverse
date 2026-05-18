@@ -9,8 +9,27 @@ from scib_metrics.benchmark import BioConservation, BatchCorrection, Benchmarker
 from .config import load_config
 from .data_utils import load_datasets, dataset_select
 from .logging_utils import get_logger, setup_logging
+from .tracking import sanitize_nan_inf
 
 logger = get_logger(__name__)
+
+
+def _warn_unrequested_result_columns(results_df, requested_metrics: dict | None) -> None:
+    if not requested_metrics:
+        return
+    requested = set()
+    for values in requested_metrics.values():
+        if isinstance(values, list):
+            requested.update(str(v) for v in values)
+    if not requested:
+        return
+    returned = set(map(str, results_df.columns))
+    extra = returned - requested
+    missing = requested - returned
+    if extra:
+        logger.warning("Benchmark returned unrequested metric columns: %s", sorted(extra))
+    if missing:
+        logger.warning("Benchmark did not return requested metric columns: %s", sorted(missing))
 
 
 def determine_valid_metrics(
@@ -89,14 +108,21 @@ def aggregate_results(model_status: dict, output_dir: str):
 
         model_metrics_path = os.path.join(output_dir, model_name, "metrics.json")
         if os.path.exists(model_metrics_path):
-            with open(model_metrics_path, "r") as f:
-                final_results[model_name] = json.load(f)
+            try:
+                with open(model_metrics_path, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict) and loaded:
+                    final_results[model_name] = sanitize_nan_inf(loaded)
+                else:
+                    logger.warning("Metrics for %s were empty or not a JSON object; omitting.", model_name)
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning("Failed reading metrics for %s from %s: %s", model_name, model_metrics_path, exc)
         else:
             final_results[model_name] = {"status": "success", "info": "Metrics file not found, but model succeeded."}
 
     results_file = os.path.join(output_dir, "results.json")
-    with open(results_file, "w") as f:
-        json.dump(final_results, f, indent=4)
+    with open(results_file, "w", encoding="utf-8") as f:
+        json.dump(sanitize_nan_inf(final_results), f, indent=4)
 
     logger.info(f"Aggregated results saved to {results_file}")
     return final_results
@@ -188,15 +214,16 @@ def evaluate_single_run(
         logger.error(f"Error during benchmark: {e}")
         return {}
     results_df = bm.get_results(min_max_scale=False)
+    _warn_unrequested_result_columns(results_df, requested_metrics)
 
     if results_df.empty:
         logger.warning("No results found.")
         return {}
 
-    metrics = results_df.to_dict("dict")
+    metrics = sanitize_nan_inf(results_df.to_dict("dict"))
 
     metrics_path = os.path.join(output_dir, "metrics.json")
-    with open(metrics_path, "w") as f:
+    with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=4)
 
     logger.info(f"Metrics saved to {metrics_path}")
@@ -323,15 +350,17 @@ class Evaluator:
 
         bm.benchmark()
         results_df = bm.get_results(min_max_scale=False)
+        requested_metrics = self.config_dict.get("metrics")
+        _warn_unrequested_result_columns(results_df, requested_metrics)
         bm.plot_results_table(min_max_scale=False, show=False, save_dir=self.output_dir)
         if results_df.empty:
             logger.warning(f"No results found for {self.dataset_name}.")
             return
 
-        metrics = results_df.to_dict("dict")
+        metrics = sanitize_nan_inf(results_df.to_dict("dict"))
         logger.info(f"Evaluation metrics: {metrics}")
         try:
-            with open(self.metrics_filepath, "w") as f:
+            with open(self.metrics_filepath, "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=4)
             logger.info(f"Metrics saved to {self.metrics_filepath}")
         except IOError as e:

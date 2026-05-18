@@ -115,3 +115,30 @@ def test_evaluate_single_run(tmp_path):
     with open(output_dir / "metrics.json", "r") as f:
         saved_metrics = json.load(f)
     assert saved_metrics == metrics
+
+
+
+def test_aggregate_results_omits_malformed_metrics(tmp_path):
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    bad_dir = output_dir / "bad_model"
+    bad_dir.mkdir()
+    (bad_dir / "metrics.json").write_text("{not-json", encoding="utf-8")
+
+    results = aggregate_results({"bad_model": "success"}, str(output_dir))
+
+    assert "bad_model" not in results
+    with open(output_dir / "results.json", encoding="utf-8") as f:
+        assert json.load(f) == {}
+
+
+def test_aggregate_results_sanitizes_nan_inf(tmp_path):
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    model_dir = output_dir / "model_ok"
+    model_dir.mkdir()
+    (model_dir / "metrics.json").write_text('{"nan": NaN, "inf": Infinity, "ok": 1.0}', encoding="utf-8")
+
+    results = aggregate_results({"model_ok": "success"}, str(output_dir))
+
+    assert results == {"model_ok": {"nan": None, "inf": None, "ok": 1.0}}

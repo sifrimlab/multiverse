@@ -2,7 +2,11 @@ import argparse
 import json
 import os
 import asyncio
-from typing import Dict, List, Tuple
+import signal
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 from rich.live import Live
 from rich.table import Table
 from rich.console import Console
@@ -16,12 +20,14 @@ from .docker_runner import (
     run_job_container_sync,
     ensure_image_prepared,
     ensure_docker_data_root,
+    _supervise_container,
+    mark_active_runs_failed_direct,
     start_db_writer,
     stop_db_writer,
 )
 from ..logging_utils import get_logger, setup_logging
 from ..ingestion import register_from_manifest, resolve_manifest_path, preprocess_dataset
-from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR
+from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR, recover_orphaned_runs
 from ..models_ingest import (
     resolve_model_manifest_path,
     load_model_manifest,
@@ -33,7 +39,36 @@ import yaml
 logger = get_logger(__name__)
 console = Console()
 
+
+def emit_event(event: str, **payload: Any) -> None:
+    record = {"event": event, **payload}
+    print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
+
 # Required omics per model slug. Empty set means any combination is acceptable.
+
+
+@dataclass
+class ParsedManifest:
+    path: Path
+    data: Dict[str, Any] = field(default_factory=dict)
+    plan: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[Dict[str, str]] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+class ManifestValidationError(ValueError):
+    def __init__(self, parsed: ParsedManifest):
+        self.parsed = parsed
+        message = "; ".join(f"{e['field']}: {e['message']}" for e in parsed.errors)
+        super().__init__(message or "manifest validation failed")
+
+
+def _manifest_error(field: str, message: str, code: str = "invalid") -> Dict[str, str]:
+    return {"field": field, "message": message, "code": code}
+
 MODEL_REQUIRED_OMICS = {
     "multivi": {"rna", "atac"},
     "totalvi": {"rna", "adt"},
@@ -42,6 +77,12 @@ MODEL_REQUIRED_OMICS = {
     "mowgli": set(),
     "pca": set(),
 }
+
+
+@dataclass
+class _PeekResult:
+    value: Any
+    error: str | None = None
 
 
 def _import_h5py():
@@ -56,41 +97,113 @@ def _import_h5py():
     return h5py
 
 
-def _read_obs_columns(path: str) -> set:
-    """Return the set of obs column names from an h5ad or h5mu file via h5py."""
+def _peek_obs_columns(path: str) -> _PeekResult:
+    """Return obs columns plus a structured error if the HDF5 header is unreadable."""
     try:
         h5py = _import_h5py()
         with h5py.File(path, "r") as f:
             obs = f.get("obs")
-            if obs is not None:
-                return {k for k in obs.keys() if not k.startswith("_")}
-    except Exception as exc:
+            if obs is None:
+                return _PeekResult(set(), "missing_obs")
+            return _PeekResult({k for k in obs.keys() if not k.startswith("_")})
+    except PermissionError as exc:
+        logger.debug(f"Permission denied reading obs columns from {path}: {exc}")
+        return _PeekResult(set(), "permission_denied")
+    except (OSError, KeyError, ValueError) as exc:
         logger.debug(f"Could not read obs columns from {path}: {exc}")
-    return set()
+        return _PeekResult(set(), "file_unreadable")
 
 
-def _read_batch_count(path: str, batch_key: str) -> int:
-    """Return number of unique batch values. 0 if unreadable."""
+def _read_obs_columns(path: str) -> set:
+    """Return the set of obs column names from an h5ad or h5mu file via h5py."""
+    result = _peek_obs_columns(path)
+    return result.value if isinstance(result.value, set) else set()
+
+
+def _peek_obs_count(path: str) -> _PeekResult:
+    """Return n_obs from obs/_index, or first obs column, without loading X."""
+    try:
+        h5py = _import_h5py()
+        with h5py.File(path, "r") as f:
+            obs = f.get("obs")
+            if obs is None:
+                return _PeekResult(0, "missing_obs")
+            if "_index" in obs:
+                return _PeekResult(int(obs["_index"].shape[0]))
+            for key in obs.keys():
+                node = obs[key]
+                if hasattr(node, "shape"):
+                    return _PeekResult(int(node.shape[0]))
+                if "codes" in node:
+                    return _PeekResult(int(node["codes"].shape[0]))
+            return _PeekResult(0, "zero_cells")
+    except PermissionError as exc:
+        logger.debug(f"Permission denied reading obs count from {path}: {exc}")
+        return _PeekResult(0, "permission_denied")
+    except (OSError, KeyError, ValueError) as exc:
+        logger.debug(f"Could not read obs count from {path}: {exc}")
+        return _PeekResult(0, "file_unreadable")
+
+
+def _read_obs_count(path: str) -> int:
+    result = _peek_obs_count(path)
+    return int(result.value or 0)
+
+
+def _peek_batch_count(path: str, batch_key: str) -> _PeekResult:
+    """Return number of unique batch values plus structured error if unreadable."""
     try:
         h5py = _import_h5py()
         with h5py.File(path, "r") as f:
             obs = f.get("obs")
             if obs is None or batch_key not in obs:
-                return 0
+                return _PeekResult(0, "missing_batch_key")
             batch_node = obs[batch_key]
-            # Categorical encoding: values are stored under 'codes', categories under 'categories'
             if "categories" in batch_node:
-                return int(batch_node["categories"].shape[0])
-            # Plain array
+                return _PeekResult(int(batch_node["categories"].shape[0]))
             import numpy as np
-            return int(len(set(batch_node[:])))
-    except Exception as exc:
+            return _PeekResult(int(len(set(batch_node[:]))))
+    except PermissionError as exc:
+        logger.debug(f"Permission denied reading batch count from {path}: {exc}")
+        return _PeekResult(0, "permission_denied")
+    except (OSError, KeyError, ValueError) as exc:
         logger.debug(f"Could not read batch count from {path}: {exc}")
-    return 0
+        return _PeekResult(0, "file_unreadable")
+
+
+def _read_batch_count(path: str, batch_key: str) -> int:
+    """Return number of unique batch values. 0 if unreadable."""
+    result = _peek_batch_count(path, batch_key)
+    return int(result.value or 0)
+
+
+def _record_validation_failure(job: Dict[str, Any], reason: str) -> None:
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO runs
+            (dataset_id, model_slug, model_version, model_name, status, output_path, failure_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job.get("dataset_id"),
+                job.get("model_slug", job.get("model_name", "")),
+                job.get("model_version", "0.0.0"),
+                job.get("model_name", job.get("model_slug", "")),
+                "FAILED",
+                job.get("output_path", ""),
+                f"VALIDATION_ERROR:{reason}",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def validate_pending_jobs(
     pending_jobs: List[Dict],
+    record_failures: bool = False,
 ) -> Tuple[List[Dict], List[str]]:
     """Pre-flight validation gate.
 
@@ -104,7 +217,15 @@ def validate_pending_jobs(
 
     # Cache per dataset_id so each file is opened at most once.
     obs_cache: Dict[int, set] = {}
+    obs_error_cache: Dict[int, str | None] = {}
+    obs_count_cache: Dict[int, _PeekResult] = {}
     batch_count_cache: Dict[int, int] = {}
+
+    def skip_job(job: Dict[str, Any], reason: str, message: str) -> None:
+        logger.warning(message)
+        if record_failures:
+            _record_validation_failure(job, reason)
+        validated.append({**job, "_skipped": True, "_skip_reason": message})
 
     for job in pending_jobs:
         dataset_id = job["dataset_id"]
@@ -118,34 +239,56 @@ def validate_pending_jobs(
         # 1. Required omics check
         required = MODEL_REQUIRED_OMICS.get(model_slug, set())
         if required and not required.issubset(omics_available):
-            logger.warning(
+            missing = required - omics_available
+            skip_job(
+                job,
+                "missing_required_omics",
                 f"[SKIP] {dataset_name}/{model_slug}: model requires omics {required}, "
-                f"dataset has {omics_available}"
+                f"dataset has {omics_available}",
             )
-            job["_skip_reason"] = f"missing required omics {required - omics_available}"
-            validated.append({**job, "_skipped": True})
+            continue
+
+        if dataset_id not in obs_count_cache:
+            obs_count_cache[dataset_id] = _peek_obs_count(dataset_path)
+        obs_count = obs_count_cache[dataset_id]
+        if obs_count.error in {"file_unreadable", "permission_denied"}:
+            skip_job(job, obs_count.error, f"[SKIP] {dataset_name}/{model_slug}: dataset file unreadable ({obs_count.error})")
+            continue
+        if int(obs_count.value or 0) == 0:
+            skip_job(job, "zero_cells", f"[SKIP] {dataset_name}/{model_slug}: dataset has zero cells")
             continue
 
         # 2. Batch key presence check (only if registry declares a batch_key)
         if batch_key:
             if dataset_id not in obs_cache:
                 obs_cache[dataset_id] = _read_obs_columns(dataset_path)
+                if obs_cache[dataset_id]:
+                    obs_error_cache[dataset_id] = None
+                else:
+                    obs_error_cache[dataset_id] = _peek_obs_columns(dataset_path).error
             obs_cols = obs_cache[dataset_id]
-            if obs_cols and batch_key not in obs_cols:
-                logger.warning(
-                    f"[SKIP] {dataset_name}/{model_slug}: batch_key '{batch_key}' "
-                    f"not found in dataset obs columns"
+            obs_error = obs_error_cache.get(dataset_id)
+            if obs_error in {"file_unreadable", "permission_denied"}:
+                skip_job(job, obs_error, f"[SKIP] {dataset_name}/{model_slug}: dataset obs unreadable ({obs_error})")
+                continue
+            if batch_key not in obs_cols:
+                skip_job(
+                    job,
+                    "missing_batch_key",
+                    f"[SKIP] {dataset_name}/{model_slug}: batch_key '{batch_key}' not found in dataset obs columns",
                 )
-                job["_skip_reason"] = f"batch_key '{batch_key}' absent from dataset obs"
-                validated.append({**job, "_skipped": True})
                 continue
 
         # 3. Cell type key warning (don't skip)
         if cell_type_key:
             if dataset_id not in obs_cache:
                 obs_cache[dataset_id] = _read_obs_columns(dataset_path)
+                if obs_cache[dataset_id]:
+                    obs_error_cache[dataset_id] = None
+                else:
+                    obs_error_cache[dataset_id] = _peek_obs_columns(dataset_path).error
             obs_cols = obs_cache[dataset_id]
-            if obs_cols and cell_type_key not in obs_cols:
+            if cell_type_key not in obs_cols:
                 msg = (
                     f"dataset '{dataset_name}': cell_type_key '{cell_type_key}' not found "
                     f"— supervised metrics will be skipped"
@@ -174,8 +317,94 @@ def validate_pending_jobs(
 
 def load_manifest(manifest_path: str) -> Dict:
     """Loads and parses the run manifest YAML file."""
-    with open(manifest_path, 'r') as f:
-        return yaml.safe_load(f)
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        loaded = yaml.safe_load(f)
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
+    """Parse, validate, and dry-run a run manifest against the live registry."""
+    path = Path(manifest_path).expanduser().resolve()
+    parsed = ParsedManifest(path=path)
+
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            loaded = yaml.safe_load(fp)
+    except FileNotFoundError:
+        parsed.errors.append(_manifest_error("manifest", f"file not found: {path}", "file_not_found"))
+        return parsed
+    except UnicodeDecodeError as exc:
+        parsed.errors.append(_manifest_error("manifest", f"file is not valid UTF-8: {exc}", "unicode_error"))
+        return parsed
+    except yaml.YAMLError as exc:
+        parsed.errors.append(_manifest_error("manifest", f"YAML syntax error: {exc}", "yaml_error"))
+        return parsed
+
+    if not isinstance(loaded, dict):
+        parsed.errors.append(_manifest_error("manifest", "top-level document must be a mapping", "schema_error"))
+        return parsed
+    parsed.data = loaded
+
+    jobs = loaded.get("jobs")
+    if not isinstance(jobs, list) or not jobs:
+        parsed.errors.append(_manifest_error("jobs", "manifest must contain at least one job", "schema_error"))
+        return parsed
+
+    cursor = db_conn.cursor()
+    for idx, job in enumerate(jobs):
+        field_prefix = f"jobs[{idx}]"
+        if not isinstance(job, dict):
+            parsed.errors.append(_manifest_error(field_prefix, "job must be a mapping", "schema_error"))
+            continue
+
+        dataset_key = job.get("dataset_slug") or job.get("dataset_id")
+        if not dataset_key:
+            parsed.errors.append(_manifest_error(f"{field_prefix}.dataset_slug", "dataset_slug or dataset_id is required", "schema_error"))
+        else:
+            cursor.execute(
+                "SELECT status FROM datasets WHERE (slug = ? OR name = ?) LIMIT 1",
+                (dataset_key, dataset_key),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                parsed.errors.append(_manifest_error(f"{field_prefix}.dataset_slug", f"dataset '{dataset_key}' is not registered", "stale_dataset_slug"))
+            elif row[0] != "READY":
+                parsed.errors.append(_manifest_error(f"{field_prefix}.dataset_slug", f"dataset '{dataset_key}' is {row[0]}, not READY", "dataset_not_ready"))
+
+        if isinstance(job.get("models"), list):
+            models_to_run = list(job.get("models", []))
+        elif job.get("model_name"):
+            models_to_run = [job.get("model_name")]
+        else:
+            models_to_run = []
+        if not models_to_run:
+            parsed.errors.append(_manifest_error(f"{field_prefix}.models", "models or model_name is required", "schema_error"))
+        for model_name in models_to_run:
+            model_key = str(model_name).strip().lower()
+            cursor.execute(
+                "SELECT status FROM models WHERE slug = ? ORDER BY version DESC LIMIT 1",
+                (model_key,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                parsed.errors.append(_manifest_error(f"{field_prefix}.models", f"model '{model_name}' is not registered", "stale_model_slug"))
+            elif row[0] != "ACTIVE":
+                parsed.errors.append(_manifest_error(f"{field_prefix}.models", f"model '{model_name}' is {row[0]}, not ACTIVE", "model_not_active"))
+
+    if parsed.errors:
+        return parsed
+
+    parsed.plan = generate_execution_plan_from_manifest(db_conn, parsed.data)
+    if not parsed.plan:
+        parsed.errors.append(_manifest_error("jobs", "manifest dry-run produced no runnable jobs", "empty_plan"))
+    return parsed
+
+
+def require_parsed_manifest(manifest_path: str, db_conn) -> ParsedManifest:
+    parsed = parse_manifest(manifest_path, db_conn)
+    if not parsed.ok:
+        raise ManifestValidationError(parsed)
+    return parsed
 
 
 def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dict]:
@@ -382,168 +611,261 @@ async def run_workflow_async(args: argparse.Namespace):
     os.makedirs(args.output, exist_ok=True)
     setup_logging(args.output)
 
-    # Start the single-writer DB actor.  All DB writes from parallel worker
-    # coroutines are funnelled through this task; the planner and GUI use
-    # their own short-lived read connections (WAL mode keeps them non-blocking).
-    _db_writer = start_db_writer()
+    loop = asyncio.get_running_loop()
+    current_task = asyncio.current_task()
+    previous_handlers: dict[int, Any] = {}
+    reattach_specs: List[Tuple[Any, int, str, str]] = []
 
-    conn = get_db_connection()
-    manifest_data = {}
-    if hasattr(args, "manifest") and args.manifest:
-        manifest_data = load_manifest(args.manifest)
-        pending_jobs = generate_execution_plan_from_manifest(conn, manifest_data)
-    else:
-        pending_jobs = generate_execution_plan(conn)
-    conn.close()
-
-    # ResourcePool capacity — override via manifest globals.host_ram_gb if set
-    host_ram_gb: float | None = manifest_data.get("globals", {}).get("host_ram_gb")
-
-    if not pending_jobs:
-        logger.info("No pending jobs to execute.")
-        return
-
-    # Pre-flight validation gate
-    validated_jobs, pre_flight_warnings = validate_pending_jobs(pending_jobs)
-    runnable_jobs = [j for j in validated_jobs if not j.get("_skipped")]
-
-    if not runnable_jobs:
-        logger.info("All jobs were skipped after pre-flight validation.")
-        _print_run_summary(validated_jobs, {}, pre_flight_warnings)
-        return
-
-    experiment_name = os.path.basename(os.path.normpath(args.output)) if args.output else "default_experiment"
-    models_info = []
-    for job in runnable_jobs:
-        job_entry = {
-            "name": f"{job['dataset_name']}_{job['model_name']}",
-            "image": job['model_image'],
-            "dataset_path": job['dataset_path'],
-            "output_path": job['output_path'],
-            "dataset_id": job['dataset_id'],
-            "model_name_orig": job['model_name'],
-            "model_slug": job.get("model_slug", job["model_name"]),
-            "model_version": job.get("model_version", "0.0.0"),
-            "experiment_name": experiment_name,
-            "mode": job.get("mode", "run"),
-            "model_params": job.get("model_params", {}) or {},
-            "search_space": job.get("search_space", {}),
-            "optimize_metric": job.get("optimize_metric"),
-            "n_trials": job.get("n_trials", 10),
-            "direction": job.get("direction", "maximize"),
-            "study_storage": job.get("study_storage", "sqlite:///optuna.db"),
-            "metrics": job.get("metrics", {}),
-        }
-        if job.get("mem_limit"):
-            job_entry["mem_limit"] = job["mem_limit"]
-        models_info.append(job_entry)
-
-    tasks_status = {m["name"]: "Pending" for m in models_info}
-    # Deduplicated image tags from all runnable jobs
-    image_tags = list(set(m["image"] for m in models_info))
-    for tag in image_tags:
-        tasks_status[tag] = "Queued"
-
-    result_summary: Dict[str, str] = {}
-
-    # Ensure Docker data root is configured before any build/run, and print it
-    # so the path is visible in logs and terminal output for debugging.
-    ensure_docker_data_root()
-    from ..multiverse_config import get_docker_data_root
-    console.print(f"[bold]Docker data root:[/bold] {get_docker_data_root()}")
-
-    with Live(generate_status_table(tasks_status), refresh_per_second=4) as live:
-        def update_status(name, status):
-            tasks_status[name] = status
-            live.update(generate_status_table(tasks_status))
-
-        # 1. Build/pull ALL required images before any job starts
-        update_status("Image Preparation", "In Progress")
+    def _request_shutdown() -> None:
+        logger.warning("Shutdown requested; cancelling active workflow tasks")
         try:
-            await build_images_concurrently(image_tags, status_callback=update_status)
-            update_status("Image Preparation", "Ready")
-        except Exception as e:
-            update_status("Image Preparation", f"Failed: {e}")
+            marked = mark_active_runs_failed_direct("CANCELLED")
+            if marked:
+                emit_event("status", job="orchestrator", status="marked_cancelled", count=marked)
+        except Exception as exc:
+            emit_event("error", kind="direct_write_failed", message=str(exc))
+        if current_task is not None:
+            current_task.cancel()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            previous_handlers[sig] = signal.getsignal(sig)
+            loop.add_signal_handler(sig, _request_shutdown)
+        except (NotImplementedError, RuntimeError):
+            previous_handlers[sig] = signal.signal(sig, lambda _sig, _frame: _request_shutdown())
+
+    writer_started = False
+    conn = None
+    try:
+        docker_client = None
+        docker_unavailable: Exception | None = None
+        try:
+            import docker  # type: ignore
+            docker_client = docker.from_env()
+            try:
+                docker_client.ping()
+            except Exception as exc:
+                emit_event("error", kind="docker_daemon_offline", message=str(exc))
+                raise RuntimeError(f"Docker daemon is not reachable: {exc}") from exc
+        except Exception as exc:
+            docker_unavailable = exc
+            logger.warning("Docker client unavailable during recovery: %s", exc)
+            emit_event("error", kind="docker_client_unavailable", message=str(exc))
+
+        def _collect_reattach(container, run_id, output_path):
+            labels = ((getattr(container, "attrs", {}) or {}).get("Config", {}) or {}).get("Labels", {}) or {}
+            workspace_dir = labels.get("multiverse.run.workspace_dir") or output_path
+            final_artifact_dir = labels.get("multiverse.run.final_artifact_dir") or output_path
+            reattach_specs.append((container, int(run_id), str(workspace_dir), str(final_artifact_dir)))
+
+        recover_orphaned_runs(docker_client=docker_client, reattach_callback=_collect_reattach)
+
+        conn = get_db_connection()
+        manifest_data: Dict[str, Any] = {}
+        if hasattr(args, "manifest") and args.manifest:
+            parsed_manifest = require_parsed_manifest(args.manifest, conn)
+            manifest_data = parsed_manifest.data
+            pending_jobs = parsed_manifest.plan
+        else:
+            pending_jobs = generate_execution_plan(conn)
+        conn.close()
+        conn = None
+
+        host_ram_gb: float | None = manifest_data.get("globals", {}).get("host_ram_gb")
+
+        if not pending_jobs and not reattach_specs:
+            logger.info("No pending jobs to execute.")
+            return
+        if docker_unavailable is not None:
+            raise RuntimeError(f"Docker is unavailable; refusing to queue jobs: {docker_unavailable}") from docker_unavailable
+
+        # Start the single-writer DB actor only after planning/recovery succeeds. All DB
+        # writes from parallel worker coroutines are funnelled through this task.
+        start_db_writer()
+        writer_started = True
+
+        reattach_tasks = [
+            asyncio.create_task(
+                _supervise_container(container, run_id, workspace_dir, final_artifact_dir),
+                name=f"reattach_run_{run_id}",
+            )
+            for container, run_id, workspace_dir, final_artifact_dir in reattach_specs
+        ]
+
+        if not pending_jobs:
+            if reattach_tasks:
+                await asyncio.gather(*reattach_tasks)
+            return
+
+        validated_jobs, pre_flight_warnings = validate_pending_jobs(pending_jobs, record_failures=True)
+        runnable_jobs = [j for j in validated_jobs if not j.get("_skipped")]
+
+        if not runnable_jobs:
+            logger.info("All jobs were skipped after pre-flight validation.")
             _print_run_summary(validated_jobs, {}, pre_flight_warnings)
             return
 
-        # 2. Run all jobs in parallel
-        update_status("Model Execution", "In Progress")
+        experiment_name = os.path.basename(os.path.normpath(args.output)) if args.output else "default_experiment"
+        models_info = []
+        for job in runnable_jobs:
+            job_entry = {
+                "name": f"{job['dataset_name']}_{job['model_name']}",
+                "image": job['model_image'],
+                "dataset_path": job['dataset_path'],
+                "output_path": job['output_path'],
+                "dataset_id": job['dataset_id'],
+                "model_name_orig": job['model_name'],
+                "model_slug": job.get("model_slug", job["model_name"]),
+                "model_version": job.get("model_version", "0.0.0"),
+                "experiment_name": experiment_name,
+                "mode": job.get("mode", "run"),
+                "model_params": job.get("model_params", {}) or {},
+                "search_space": job.get("search_space", {}),
+                "optimize_metric": job.get("optimize_metric"),
+                "n_trials": job.get("n_trials", 10),
+                "direction": job.get("direction", "maximize"),
+                "study_storage": job.get("study_storage", "sqlite:///optuna.db"),
+                "metrics": job.get("metrics", {}),
+            }
+            if job.get("mem_limit"):
+                job_entry["mem_limit"] = job["mem_limit"]
+            models_info.append(job_entry)
 
-        sweep_jobs = [m for m in models_info if m.get("mode") == "sweep"]
-        run_jobs = [m for m in models_info if m.get("mode") != "sweep"]
+        tasks_status = {m["name"]: "Pending" for m in models_info}
+        image_tags = list(set(m["image"] for m in models_info))
+        for tag in image_tags:
+            tasks_status[tag] = "Queued"
 
-        if run_jobs:
-            result_summary.update(
-                await run_jobs_concurrently(
-                    run_jobs,
-                    args.seed,
-                    status_callback=update_status,
-                    host_ram_gb=host_ram_gb,
-                )
-            )
-        if sweep_jobs:
-            from .tuner import run_sweep
+        result_summary: Dict[str, str] = {}
 
-            for sweep_job in sweep_jobs:
-                try:
-                    result = run_sweep({
-                        "name": sweep_job["name"],
-                        "image": sweep_job["image"],
-                        "dataset_id": sweep_job["dataset_id"],
-                        "dataset_name": sweep_job["dataset_name"],
-                        "dataset_path": sweep_job["dataset_path"],
-                        "model_name_orig": sweep_job["model_name_orig"],
-                        "model_slug": sweep_job.get("model_slug", sweep_job["model_name_orig"]),
-                        "model_version": sweep_job.get("model_version", "0.0.0"),
-                        "experiment_name": sweep_job.get("experiment_name", "default_experiment"),
-                        "model_params": sweep_job.get("model_params", {}) or {},
-                        "search_space": sweep_job.get("search_space", {}),
-                        "optimize_metric": sweep_job.get("optimize_metric"),
-                        "n_trials": sweep_job.get("n_trials", 10),
-                        "direction": sweep_job.get("direction", "maximize"),
-                        "study_storage": sweep_job.get("study_storage", "sqlite:///optuna.db"),
-                        "seed": args.seed,
-                    })
-                    logger.info(
-                        f"Sweep completed for {sweep_job['name']} best={result['best_value']} params={result['best_params']}"
+        ensure_docker_data_root()
+        from ..multiverse_config import get_docker_data_root
+        console.print(f"[bold]Docker data root:[/bold] {get_docker_data_root()}")
+
+        with Live(generate_status_table(tasks_status), refresh_per_second=4) as live:
+            def update_status(name, status):
+                tasks_status[name] = status
+                if status in {"Starting", "Running"} or "In Progress" in str(status):
+                    emit_event("job_start", job=name, status=status)
+                elif status in {"Success", "Ready"} or "Success" in str(status):
+                    emit_event("job_end", job=name, status="SUCCESS")
+                elif "Failed" in str(status) or "Error" in str(status):
+                    emit_event("job_end", job=name, status="FAILED", message=str(status))
+                else:
+                    emit_event("status", job=name, status=status)
+                live.update(generate_status_table(tasks_status))
+
+            update_status("Image Preparation", "In Progress")
+            try:
+                await build_images_concurrently(image_tags, status_callback=update_status)
+                update_status("Image Preparation", "Ready")
+            except Exception as e:
+                update_status("Image Preparation", f"Failed: {e}")
+                _print_run_summary(validated_jobs, {}, pre_flight_warnings)
+                return
+
+            update_status("Model Execution", "In Progress")
+
+            sweep_jobs = [m for m in models_info if m.get("mode") == "sweep"]
+            run_jobs = [m for m in models_info if m.get("mode") != "sweep"]
+
+            if run_jobs:
+                result_summary.update(
+                    await run_jobs_concurrently(
+                        run_jobs,
+                        args.seed,
+                        status_callback=update_status,
+                        host_ram_gb=host_ram_gb,
                     )
-                    result_summary[sweep_job["name"]] = "success"
-                    update_status(sweep_job["name"], "Success")
-                except Exception as exc:
-                    logger.error(f"Sweep failed for {sweep_job['name']}: {exc}")
-                    result_summary[sweep_job["name"]] = "failed"
-                    update_status(sweep_job["name"], "Failed")
+                )
+            if sweep_jobs:
+                from .tuner import run_sweep
 
-        failed_models = [name for name, status in result_summary.items() if status == "failed"]
-        if failed_models:
-            update_status("Model Execution", f"Completed with failures: {failed_models}")
-        else:
-            update_status("Model Execution", "Success")
+                for sweep_job in sweep_jobs:
+                    try:
+                        result = run_sweep({
+                            "name": sweep_job["name"],
+                            "image": sweep_job["image"],
+                            "dataset_id": sweep_job["dataset_id"],
+                            "dataset_name": sweep_job["dataset_name"],
+                            "dataset_path": sweep_job["dataset_path"],
+                            "model_name_orig": sweep_job["model_name_orig"],
+                            "model_slug": sweep_job.get("model_slug", sweep_job["model_name_orig"]),
+                            "model_version": sweep_job.get("model_version", "0.0.0"),
+                            "experiment_name": sweep_job.get("experiment_name", "default_experiment"),
+                            "model_params": sweep_job.get("model_params", {}) or {},
+                            "search_space": sweep_job.get("search_space", {}),
+                            "optimize_metric": sweep_job.get("optimize_metric"),
+                            "n_trials": sweep_job.get("n_trials", 10),
+                            "direction": sweep_job.get("direction", "maximize"),
+                            "study_storage": sweep_job.get("study_storage", "sqlite:///optuna.db"),
+                            "seed": args.seed,
+                        })
+                        logger.info(
+                            f"Sweep completed for {sweep_job['name']} best={result['best_value']} params={result['best_params']}"
+                        )
+                        result_summary[sweep_job["name"]] = "success"
+                        update_status(sweep_job["name"], "Success")
+                    except Exception as exc:
+                        logger.error(f"Sweep failed for {sweep_job['name']}: {exc}")
+                        result_summary[sweep_job["name"]] = "failed"
+                        update_status(sweep_job["name"], "Failed")
 
-    # End-of-run summary (outside Live context so it renders cleanly)
-    _print_run_summary(validated_jobs, result_summary, pre_flight_warnings)
+            failed_models = [name for name, status in result_summary.items() if status == "failed"]
+            if failed_models:
+                update_status("Model Execution", f"Completed with failures: {failed_models}")
+            else:
+                update_status("Model Execution", "Success")
 
-    # Drain the DB queue and shut down the writer task gracefully.
-    # This guarantees all PROMOTING→SUCCESS updates are committed before
-    # execute_run returns and before any downstream evaluation step reads
-    # the runs table.
-    await stop_db_writer()
+        if reattach_tasks:
+            reattach_results = await asyncio.gather(*reattach_tasks, return_exceptions=True)
+            for result in reattach_results:
+                if isinstance(result, Exception):
+                    logger.error("Recovered container supervision failed: %s", result)
+
+        _print_run_summary(validated_jobs, result_summary, pre_flight_warnings)
+    except asyncio.CancelledError:
+        logger.warning("Workflow cancelled; DB writer will be drained before exit")
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+        if writer_started:
+            await asyncio.shield(stop_db_writer())
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.remove_signal_handler(sig)
+                previous = previous_handlers.get(sig)
+                if previous is not None:
+                    signal.signal(sig, previous)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
 
 
 def execute_run(args: argparse.Namespace):
     """Executes the model running logic — always uses async/parallel for registry jobs."""
-    # Registry-based runs (from manifest or DB) always go through the async parallel path.
     conn = get_db_connection()
-    if hasattr(args, "manifest") and args.manifest:
-        manifest_data = load_manifest(args.manifest)
-        pending_jobs = generate_execution_plan_from_manifest(conn, manifest_data)
+    try:
+        if hasattr(args, "manifest") and args.manifest:
+            parsed_manifest = require_parsed_manifest(args.manifest, conn)
+            pending_jobs = parsed_manifest.plan
+        else:
+            pending_jobs = generate_execution_plan(conn)
+    except ManifestValidationError as exc:
+        conn.close()
+        console.print("[bold red]Manifest validation failed:[/]")
+        for err in exc.parsed.errors:
+            console.print(f"  [red]-[/] {err['field']}: {err['message']} ({err['code']})")
+        raise SystemExit(2) from exc
     else:
-        pending_jobs = generate_execution_plan(conn)
-    conn.close()
+        conn.close()
 
     if pending_jobs:
-        asyncio.run(run_workflow_async(args))
+        try:
+            asyncio.run(run_workflow_async(args))
+        except KeyboardInterrupt:
+            logger.warning("Workflow interrupted by user")
+            raise SystemExit(130)
 
         if args.evaluate:
             logger.info("Starting evaluation of results.")

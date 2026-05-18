@@ -1,261 +1,216 @@
-# Multi-verse
+# mvexp
 
-[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+**Reproducible benchmarking for multimodal single-cell integration, without making bioinformaticians become infrastructure engineers.**
 
-**Benchmark any multimodal single-cell integration model — in any language — with one YAML file.**
+mvexp is an MLOps platform for academic biological integration studies. You bring the scientific objects you already use in notebooks: `AnnData`, `MuData`, batch annotations, cell-type labels, and model questions. mvexp handles the repetitive infrastructure around registration, model execution, parameter tracking, artifacts, Optuna sweeps, and MLflow comparison.
 
-Multi-verse is a language-agnostic MLOps platform for multimodal single-cell integration.
-Write a manifest, register your dataset, and the platform handles parallel container dispatch,
-seed injection, automatic HPO via Optuna, MLflow provenance, and an end-of-run comparison table.
-Built-in models cover RNA, ATAC, and protein modalities; adding an R or Julia model takes 15 minutes.
+The goal is simple: make it easier to run a defensible benchmark and easier to explain exactly what you did in a paper.
 
-| What you get | How |
+## Who This Is For
+
+mvexp is designed for researchers who are comfortable with Scanpy, Seurat, MuData, and Jupyter, but do not want every benchmark to become a Docker and orchestration project.
+
+You should be able to answer scientific questions such as:
+
+- Which integration model best preserves my annotated cell populations?
+- Does batch correction remove donor or chemistry effects without erasing biology?
+- Are conclusions stable across random seeds and hyperparameters?
+- Can I attach enough provenance for a reviewer to reproduce my benchmark?
+
+## What mvexp Handles for You
+
+| You focus on | mvexp handles |
 |---|---|
-| Reproducible results | Seeds flow from manifest → `job_spec.json` → every framework call |
-| Fair comparison | All models run in parallel, isolated containers with the same data mount |
-| Automated HPO | Optuna sweeps across any hyperparameter defined in the model's JSON schema |
-| Full provenance | Every artifact dir contains the exact manifest that produced it |
-| No framework lock-in | Container I/O contract works for Python, R, Julia, or shell scripts |
+| Biological question and dataset curation | Dataset registration and compatibility checks |
+| Batch and cell-type metadata | Metric eligibility and clear warnings |
+| Model choice and hyperparameters | Safe, parallel execution without hand-running containers |
+| Comparing embeddings and metrics | Results tables, artifacts, MLflow tracking, and Optuna sweeps |
+| Writing a reproducible Methods section | `run_manifest.yaml`, `job_spec.json`, metrics, logs, and provenance artifacts |
+
+## How the Workflow Feels
+
+1. Prepare your `AnnData` or `MuData` object in Jupyter.
+2. Save it under `store/datasets/<dataset-slug>/data/`.
+3. Open the Streamlit GUI.
+4. Register the dataset in the Registry tab.
+5. Choose dataset x model pairs in Job Builder.
+6. Set parameters in the Parameters tab.
+7. Launch the run in Execute.
+8. Review metrics, embeddings, logs, and artifacts in Results and MLflow.
+9. Bring the selected `embeddings.h5` back into Jupyter for figures and downstream analysis.
 
 ## Quick Start
 
-### Prerequisites
+Prerequisites:
 
 - Python 3.12+
-- [uv](https://github.com/astral-sh/uv)
-- Docker (with Compose v2)
+- `uv`
+- Docker with Compose v2
 
-### From a fresh clone (datasets already in `store/`)
-
-Two commands bring the system from a fresh clone to a running benchmark when datasets and model
-containers have already been migrated into the repository:
+Set up the platform:
 
 ```bash
-make bootstrap              # install deps · init SQLite registry · register all built-in models
-make register-all-datasets  # scan store/datasets/*/dataset.yaml and register each one
-```
-
-Then start the benchmark:
-
-```bash
-make benchmark MANIFEST=run_manifest.yaml
-```
-
-Or launch the GUI for an interactive session:
-
-```bash
-make services-up   # start MLflow + Optuna Dashboard in the background
-make setup         # launch the Streamlit GUI (http://localhost:8501)
-```
-
-### Step-by-step (first-time setup)
-
-```bash
-# 1. Install Python deps and initialise the SQLite registry
-make install
-make init
-
-# 2. Register built-in model containers
-make register-models
-
-# 3. Register your datasets (one per slug, or batch-register all at once)
-make register slug=pbmc10k
-make register-all-datasets   # alternative: scan store/datasets/ automatically
-
-# 4. (Optional) Start observability services
+make bootstrap
 make services-up
-#   MLflow  → http://localhost:5000
-#   Optuna  → http://localhost:8080
-
-# 5. Open the GUI or run headlessly
-make setup                                        # GUI at http://localhost:8501
-make benchmark MANIFEST=run_manifest.yaml         # headless CLI
+make setup
 ```
 
-## Observability Services
+Then open the GUI at `http://localhost:8501`.
 
-MLflow and the Optuna Dashboard run as Docker Compose services that are **decoupled from the
-Streamlit GUI**. Start them before or after the GUI — the orchestrator does not require them
-to be running to execute benchmarks.
+In the GUI:
 
-```bash
-make services-up    # start MLflow + Optuna Dashboard (detached)
-make services-down  # stop both
-make status         # show container health and port bindings
+1. Open the **Registry** tab.
+2. Expand **Register New Dataset**.
+3. Either provide an existing `dataset.yaml`, or switch on **Build manifest from fields**.
+4. Click **Register Dataset**.
+5. Open **Job Builder** and select compatible dataset x model pairs.
+6. Open **Parameters** and set model hyperparameters.
+7. Open **Execute** and click **Launch Run**.
+8. Open **Results** to inspect completed runs and artifact paths.
+
+For a full guided tutorial, see [Getting Started](docs/GETTING_STARTED.md).
+
+## The Jupyter Bridge
+
+Most users should keep doing their exploratory work in notebooks. mvexp is meant to sit between notebook curation and notebook interpretation.
+
+### Save a MuData Object for mvexp
+
+```python
+from pathlib import Path
+
+import mudata as md
+
+# Assume you already created these in Scanpy:
+# adata_rna  : AnnData with RNA counts/features
+# adata_atac : AnnData with ATAC counts/features
+
+dataset_dir = Path("store/datasets/pbmc_rna_atac")
+data_dir = dataset_dir / "data"
+data_dir.mkdir(parents=True, exist_ok=True)
+
+mdata = md.MuData({
+    "rna": adata_rna,
+    "atac": adata_atac,
+})
+
+# Shared sample/cell metadata used by evaluation.
+mdata.obs["batch"] = adata_rna.obs["batch"].astype(str)
+mdata.obs["cell_type"] = adata_rna.obs["cell_type"].astype(str)
+
+mdata.write_h5mu(data_dir / "processed.h5mu")
 ```
 
-| Service | Default URL | Purpose |
+Create the dataset manifest next to the data:
+
+```python
+import yaml
+
+manifest = {
+    "name": "PBMC RNA+ATAC",
+    "omics": ["rna", "atac"],
+    "raw_files": {
+        "rna": "data/processed.h5mu",
+        "atac": "data/processed.h5mu",
+    },
+    "metadata_keys": {
+        "batch": "batch",
+        "cell_type": "cell_type",
+    },
+}
+
+with open(dataset_dir / "dataset.yaml", "w") as f:
+    yaml.safe_dump(manifest, f, sort_keys=False)
+```
+
+Then register `store/datasets/pbmc_rna_atac/dataset.yaml` in the GUI Registry tab.
+
+### Read an Embedding Back into Jupyter
+
+After a successful run, copy the artifact path from the Results tab. The embedding file contains one HDF5 dataset named `latent`.
+
+```python
+from pathlib import Path
+
+import h5py
+import mudata as md
+import scanpy as sc
+
+artifact_dir = Path("store/artifacts/benchmark_run/pbmc_rna_atac/pca/run_abc123def456")
+
+with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
+    latent = f["latent"][:]
+
+mdata = md.read_h5mu("store/datasets/pbmc_rna_atac/data/processed.h5mu")
+adata = mdata["rna"].copy()
+adata.obsm["X_mvexp_pca"] = latent
+
+sc.pp.neighbors(adata, use_rep="X_mvexp_pca")
+sc.tl.umap(adata)
+sc.pl.umap(adata, color=["batch", "cell_type"])
+```
+
+See [Data Preparation](docs/DATA_PREPARATION.md) for more detailed examples for `AnnData`, `MuData`, RNA+ATAC, and RNA+ADT studies.
+
+## Data State: Biological Assumptions
+
+mvexp does not decide what counts as appropriate biological preprocessing for your study. It makes your choices explicit and reproducible.
+
+Recommended expectations:
+
+- Use matrices in the state expected by the selected model. Count-based probabilistic models generally expect count-like input; PCA-style baselines are often run on normalized/log-transformed features.
+- Keep raw counts available when possible, especially for RNA, ATAC, and ADT models that assume count data.
+- Preserve feature annotations such as `feature_types` when models need to distinguish genes, peaks, and proteins.
+- Provide a `batch`-like column for technical or donor effects you want assessed.
+- Provide a `cell_type`-like column when you want supervised bio-conservation metrics such as ARI, NMI, label silhouette, or cLISI.
+- Store metadata columns as categorical or string-like values, not mixed Python objects.
+- Record HVG selection and filtering choices in your notebook or supplementary methods.
+
+The platform checks whether metadata columns exist and whether batch metrics are meaningful. It does not silently invent biological labels.
+
+## Publishing and Reproducibility
+
+Every run is designed to leave a Methods trail:
+
+- `run_manifest.yaml` records the selected datasets, models, parameters, metrics, experiment name, and seed.
+- `job_spec.json` records the exact runtime instructions passed to each model container.
+- `metrics.json` records model-level metrics and histories when available.
+- `embeddings.h5` records the latent representation used for downstream evaluation.
+- logs and provenance artifacts document what ran and where outputs were written.
+
+For a paper, include `run_manifest.yaml` and `provenance.json` when it is present in the run directory as Supplementary Material. Together with the archived input data, these files are the reproducibility contract for the benchmark: they record what was run, with which parameters, seed, metrics, and artifacts. In your Methods section, describe the dataset state, metadata keys, selected models, random seed, and metric families.
+
+## Documentation Map
+
+The docs follow Diátaxis:
+
+| Type | Document | Purpose |
 |---|---|---|
-| MLflow | http://localhost:5000 | Experiment tracking, run comparison, artifact browser |
-| Optuna Dashboard | http://localhost:8080 | Hyperparameter sweep visualisation |
+| Tutorial | [Getting Started](docs/GETTING_STARTED.md) | First complete run from notebook object to results. |
+| How-To | [Data Preparation](docs/DATA_PREPARATION.md) | Practical recipes for making data acceptable to mvexp. |
+| How-To | [Migrate from v1 to v2](docs/HOWTO_MIGRATE_V1_to_V2.md) | Move from the old manual workflow to the GUI and registry. |
+| Reference | [Models Glossary](docs/reference/MODELS_GLOSSARY.md) | Built-in model assumptions and hyperparameters. |
+| Reference | [Evaluation Metrics](docs/reference/EVALUATION_METRICS.md) | Bio-conservation and batch-correction metric definitions. |
+| Explanation | [Architecture](docs/ARCHITECTURE.md) | How the platform works internally. |
 
-Both services share `./store` as their data root, so they read the same SQLite databases
-(`store/mlflow.db`, `store/optuna.db`) and artifact directories as the host orchestrator.
-All SQLite connections use `PRAGMA journal_mode=WAL` for safe concurrent reads and writes.
+## Cookbook Preview
 
-Port overrides: `MLFLOW_PORT=5001 OPTUNA_PORT=8081 make services-up`
+- **RNA+ATAC Integration for PBMC Multiome**: prepare paired RNA and ATAC modalities, compare MultiVI, MOFA, Mowgli, Cobolt, and PCA, then inspect whether immune cell labels remain separated.
+- **CITE-seq RNA+ADT Protein Integration**: prepare RNA and antibody-derived tags for TotalVI, evaluate protein-aware latent structure, and bring embeddings back into Scanpy.
+- **Cross-Donor Batch Correction in an Atlas Subset**: register donor metadata as the batch key, compare models by bio-conservation and batch-correction metrics, and produce a reproducible Methods bundle.
 
-## Streamlit GUI
+## How to Cite mvexp
 
-The GUI is a 7-tab Streamlit application launched with `make setup`:
+Until a formal paper or DOI is available, cite the repository or archived release used for the benchmark. Include the mvexp version or commit hash, `run_manifest.yaml`, and run provenance artifacts with Supplementary Material.
 
-| Tab | What it does |
-|---|---|
-| 📦 Registry | Browse registered datasets and models; register new assets |
-| 🧬 Job Builder | Select dataset × model pairs; view the compatibility matrix |
-| ⚙️ Parameters | Set per-job hyperparameters from each model's JSON schema |
-| 🚀 Execute | Launch a run; monitor job status live; view a RAM wave-admission plan |
-| 📊 Results | Browse completed runs; drill into metrics, logs, and provenance |
-| 🔬 Experiment Analysis | MLflow UI embedded inline; deep-links to the active experiment |
-| 📈 Sweep Tracker | Optuna Dashboard embedded inline |
+Suggested wording:
 
-**Sidebar:** shows live reachability of MLflow and Optuna (green/red indicator updated on each
-page load). Links open the respective service in a new tab if the iframe is blocked by the
-browser's mixed-content policy.
-
-**Live metrics panel (Execute tab):** polls the MLflow Tracking API every 5 seconds via a
-`@st.fragment` so only the metrics table re-renders — no full page rerun. Requires
-`make services-up` to be running.
-
-**Contextual routing:** selecting a run in the Results tab automatically resolves its MLflow
-experiment ID and deep-links the Experiment Analysis iframe to
-`/#/experiments/<id>`.
-
-## Architecture
-
+```text
+Integration benchmarks were executed with mvexp (version/commit: <commit>). The full
+benchmark recipe, including datasets, models, hyperparameters, random seed, and requested
+metrics, is provided as Supplementary File X (`run_manifest.yaml`). Per-run provenance and
+model artifacts are archived with the analysis.
 ```
-dataset.yaml + model.yaml
-        │
-        ▼
- SQLite Registry (datasets, models, runs)
-        │
-        ▼
- Orchestrator Planner
-        │
-        ├─ Pre-flight Validation Gate
-        │   ├─ Omics compatibility check (skip incompatible jobs)
-        │   ├─ batch_key presence check (skip if absent from obs)
-        │   ├─ cell_type_key warning (warn, don't skip)
-        │   └─ Single-batch warning (warn, don't skip)
-        │
-        ├─ Parallel Image Build/Pull (all images built before any job starts)
-        │
-        ├─ Parallel Container Execution (asyncio.gather)
-        │   ├─ /input/data.h5mu  (read-only mount)
-        │   ├─ /output/job_spec.json  (seed, hyperparameters, metrics config)
-        │   └─ /output/{embeddings,metrics,umap}
-        │
-        ├─ Workspace Promotion (exit_code == 0 → atomic move to artifacts/)
-        │
-        └─ End-of-Run Summary Table (success / failed / skipped per job + warnings)
-```
-
-## Configuration Reference
-
-### `run_manifest.yaml` globals
-
-```yaml
-globals:
-  experiment_name: benchmark_run
-  random_seed: 42              # Seed passed to ALL model containers
-  metrics:                     # Optional: which scib-metrics benchmarks to run
-    bio_conservation:
-      - silhouette_label
-      - nmi_ari_cluster_labels_leiden
-    batch_correction:
-      - graph_connectivity
-      - ilisi_knn
-```
-
-### Per-job fields
-
-```yaml
-jobs:
-  - dataset_slug: pbmc10k
-    model_name: PCA
-    model_params:
-      n_components: 50
-      device: cpu
-    metrics:                   # Optional: override globals for this job
-      model_metrics:           # Controls which per-model metrics are computed
-        - total_variance
-```
-
-### Dataset registration (`dataset.yaml`)
-
-```yaml
-slug: pbmc10k
-name: PBMC 10k
-path: store/datasets/pbmc10k/data.h5mu
-omics_available: [rna, atac]
-batch_key: batch              # Must exist in dataset.obs; used for batch-correction metrics
-cell_type_key: cell_type      # Used for supervised metrics; absence triggers a warning
-```
-
-## Pre-flight Validation
-
-Before any container starts, the orchestrator validates each planned job:
-
-| Check | Outcome |
-|---|---|
-| Dataset missing required omics for the model | Job **skipped** with explanation |
-| `batch_key` absent from dataset `.obs` | Job **skipped** with explanation |
-| `cell_type_key` absent from dataset `.obs` | **Warning** only — job proceeds, supervised metrics skipped |
-| Only 1 unique batch value | **Warning** only — job proceeds, batch-correction metrics skipped |
-
-Skipped and warned jobs appear in the end-of-run summary table.
-
-## Reproducibility
-
-The `random_seed` in `run_manifest.yaml` (or `--seed` on the CLI) is written into `job_spec.json` and consumed by every model container:
-
-| Model | Seed calls |
-|---|---|
-| PCA | `random.seed`, `numpy.random.seed` |
-| MultiVI | `scvi.settings.seed` (covers PyTorch + NumPy + random) |
-| TotalVI | `scvi.settings.seed` |
-| MOFA | `random.seed`, `numpy.random.seed` |
-| Mowgli | `random.seed`, `numpy.random.seed`, `torch.manual_seed` |
-| Cobolt | `random.seed`, `numpy.random.seed`, `torch.manual_seed` |
-
-UMAP is seeded separately via the `umap_random_state` model parameter.
-
-## Metrics
-
-Each model writes `metrics.json` on completion:
-
-| Model | Default metrics |
-|---|---|
-| PCA | `total_variance` |
-| MultiVI | `silhouette_score` (if cell type labels available) |
-| TotalVI | `elbo_train`, `reconstruction_loss_train` |
-| MOFA | `total_variance` |
-| Mowgli | `ot_loss` |
-| Cobolt | `loss` |
-
-To restrict which metrics are computed, add `metrics.model_metrics` to a job in `run_manifest.yaml`.
-
-Full multi-model benchmarking (scib-metrics: silhouette, NMI/ARI, iLISI, kBET, etc.) runs via the evaluation container after all model jobs complete.
-
-## Design Principles
-
-- **Contract over code:** any language/runtime is allowed (Python, R, Julia, etc.) if the container obeys the mount contract.
-- **Data-centric and model-centric workflows:** run 1 dataset against N models, or 1 model against N datasets.
-- **Immutable artifacts:** only successful runs are promoted.
-- **Fail fast on data issues:** incompatible jobs are skipped before containers start, not discovered inside them.
-- **Resumable sweeps:** Optuna uses persistent SQLite study storage.
-- **Schema-driven UX:** GUI hyperparameter fields are generated from each model's JSON schema.
-
-## Key Docs
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — sequence diagram, DB schema, container contract, concurrency model, observability services, GUI architecture
-- [docs/GUI.md](docs/GUI.md) — Streamlit GUI tab reference, session state keys, live metrics panel, iframe deep-links
-- [docs/BENCHMARKING.md](docs/BENCHMARKING.md) — manifest structure, sweep configuration, live metrics, MLflow/Optuna viewing
-- [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) — model onboarding tutorial (15-minute walkthrough for any language)
-- [docs/DATA_REGISTRATION.md](docs/DATA_REGISTRATION.md)
-- [docs/MODEL_REGISTRATION.md](docs/MODEL_REGISTRATION.md)
-- [docs/MODEL_CONTAINERS.md](docs/MODEL_CONTAINERS.md)
-- [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

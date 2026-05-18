@@ -188,7 +188,16 @@ def _render_sweep_widget(key_prefix: str, param_name: str, spec: dict):
 
 # Ordered list of metric keys the GUI will look for.  Bounded metrics (0–1)
 # get a fixed y-axis on their sparkline; others are rendered auto-scaled.
-LIVE_METRIC_KEYS: list[str] = ["ari", "nmi", "silhouette_score", "loss", "val_loss"]
+LIVE_METRIC_KEYS: list[str] = [
+    "ari",
+    "nmi",
+    "silhouette_score",
+    "loss",
+    "val_loss",
+    "elbo_train",
+    "reconstruction_loss_train",
+    "ot_loss",
+]
 _BOUNDED_METRICS: frozenset[str] = frozenset({"ari", "nmi", "silhouette_score"})
 
 

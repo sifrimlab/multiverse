@@ -103,20 +103,17 @@ class MowgliModel(ModelFactory):
         """
         requested = self.config_dict.get("metrics", {}).get("model_metrics")
         metrics = {}
+        history: dict = {}
         if hasattr(self, "loss"):
             if requested is None or "ot_loss" in requested:
-                logger.info(f"Optimal Transport Loss (Mowgli): {self.loss}")
-                metrics["ot_loss"] = str(-self.loss)
+                ot_loss = float(-self.loss)
+                logger.info(f"Optimal Transport Loss (Mowgli): {ot_loss}")
+                metrics["ot_loss"] = ot_loss
         else:
             logger.warning("Loss not available in the model.")
-
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+        if hasattr(self.model, "losses") and self.model.losses:
+            history["ot_loss"] = [float(-value) for value in self.model.losses]
+        self.write_metrics(metrics, history=history or None)
 
 
 def main():

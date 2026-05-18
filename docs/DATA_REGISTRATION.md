@@ -1,86 +1,107 @@
-# Data Registration Guide
+# Data Registration
 
-This guide is for rookie bioinformaticians onboarding new datasets into Multiverse.
+This tutorial explains how to make a dataset visible to mvexp through the GUI-first Ingestion Wizard.
 
-## What You Are Creating
+Use [Data Preparation](DATA_PREPARATION.md) for notebook-side formatting details. This page focuses on onboarding the prepared files into the platform.
 
-Each dataset is a self-contained package under:
+## What Registration Does
 
-`store/datasets/<slug>/`
+Registration tells mvexp:
 
-Required structure:
+- what the dataset is called;
+- which modalities are available;
+- where the prepared files live;
+- which `.obs` column is the batch key;
+- which `.obs` column is the cell-type key.
 
-```text
-store/datasets/
-└── <slug>/
-    ├── dataset.yaml
-    └── data/
-        ├── <raw files...>
-        └── processed.h5mu   # created/managed by processing pipeline
-```
+Registration does not change your biology. It creates a reproducible dataset record for benchmarking.
 
-## Step 1: Create the Dataset Folder
+[IMAGE: Registry Tab Ingestion Wizard]
 
-1. Choose a filesystem-safe slug, for example `pbmc10k`.
-2. Create:
-   - `store/datasets/pbmc10k/data/`
-3. Place your raw source files inside `data/`.
+## Tutorial: Register a Dataset Visually
 
-## Step 2: Write `dataset.yaml`
+1. Start mvexp and open the Streamlit GUI.
+2. Open the **Registry** tab.
+3. Expand **Register New Dataset**.
+4. Switch on **Build manifest from fields** if you do not already have a `dataset.yaml`.
+5. Enter a descriptive dataset name, for example `PBMC Multiome RNA+ATAC`.
+6. Select available omics: `rna`, `atac`, `adt`, or `other`.
+7. Enter the path to each prepared `.h5ad` or `.h5mu` file.
+8. Enter `batch_key`, for example `donor_id`, `sample`, or `chemistry`.
+9. Enter `cell_type_key`, for example `cell_type`, `annotation`, or `cell_ontology_class`.
+10. Click **Register Dataset**.
+11. Click **Refresh Registry**.
+12. Confirm the dataset appears with status `READY`.
 
-Place `dataset.yaml` next to `data/`.
+## Hello World Dataset
 
-Example:
+Minimal RNA-only dataset manifest:
 
 ```yaml
-name: "PBMC 10k"
-omics: ["rna", "atac"]
+name: "Hello PBMC RNA"
+omics: ["rna"]
 raw_files:
   rna: "data/rna.h5ad"
-  atac: "data/atac.h5ad"
 metadata_keys:
-  batch: "donor_id"
+  batch: "batch"
   cell_type: "cell_type"
 ```
 
-### Schema Notes
+Folder layout:
 
-- `name` (string): human-readable dataset name.
-- `omics` (list): available modalities (`rna`, `atac`, `adt`, ...).
-- `raw_files` (mapping): modality to relative path inside dataset folder.
-- `metadata_keys.batch` (string): observation key used for batch-aware metrics.
-- `metadata_keys.cell_type` (string, optional): observation key used for label-aware metrics.
-
-## Step 3: Migrate Legacy Data (Optional)
-
-If your data are still in a legacy/unstructured folder, use:
-
-```bash
-python -m multiverse.migrate_data --source /path/to/legacy --dest ./store/datasets --dry-run
-python -m multiverse.migrate_data --source /path/to/legacy --dest ./store/datasets
+```text
+store/datasets/hello_pbmc/
+  dataset.yaml
+  data/
+    rna.h5ad
 ```
 
-The migration utility discovers compatible files, proposes metadata mappings, and materializes dataset packages.
+Notebook-side sanity check:
 
-## Step 4: Register the Dataset
+```python
+import scanpy as sc
 
-Use Make:
-
-```bash
-make register slug=pbmc10k
+adata = sc.read_h5ad("store/datasets/hello_pbmc/data/rna.h5ad")
+assert "batch" in adata.obs
+assert "cell_type" in adata.obs
+assert adata.n_obs > 0
+assert adata.n_vars > 0
 ```
 
-Or register by explicit manifest path:
+## Reference: `dataset.yaml` Fields
 
-```bash
-make register manifest=store/datasets/pbmc10k/dataset.yaml
+| Field | Required | Meaning | Example |
+|---|---|---|---|
+| `name` | Yes | Human-readable dataset name. | `PBMC Multiome RNA+ATAC` |
+| `omics` | Yes | Modalities available in the dataset. | `["rna", "atac"]` |
+| `raw_files` | Yes | Mapping from modality to file path relative to the dataset folder. | `rna: "data/rna.h5ad"` |
+| `metadata_keys.batch` | Recommended | `.obs` column used for batch-correction metrics. | `donor_id` |
+| `metadata_keys.cell_type` | Optional | `.obs` column used for supervised bio-conservation metrics. | `cell_type` |
+
+## Explanation: Why Metadata Keys Matter
+
+The same embedding can look good or bad depending on the biological question. `batch_key` tells mvexp which technical or donor grouping should be mixed. `cell_type_key` tells mvexp which biological labels should be preserved.
+
+```mermaid
+flowchart TD
+    A[Prepared AnnData or MuData] --> B[batch_key]
+    A --> C[cell_type_key]
+    B --> D[Batch-correction metrics]
+    C --> E[Bio-conservation metrics]
+    D --> F[Comparison report]
+    E --> F
 ```
 
-Registration updates the SQLite registry and makes the dataset selectable in benchmark planning.
+## Common Errors
 
-## Checklist Before Benchmarking
+| Symptom | Likely cause | What to do |
+|---|---|---|
+| Dataset does not appear after registration | Registry view is cached. | Click **Refresh Registry**. |
+| Registration fails with missing file | `raw_files` path is wrong. | Make paths relative to `store/datasets/<slug>/`. |
+| Batch metrics are skipped | Batch column missing or has one value. | Check `adata.obs[batch_key].value_counts()` in Jupyter. |
+| Label metrics are skipped | `cell_type_key` missing or misspelled. | Confirm the column name exactly matches `.obs`. |
+| A model is incompatible | Dataset modalities do not match model requirements. | Choose a compatible model in Job Builder. |
 
-- Folder exists under `store/datasets/<slug>/`.
-- `dataset.yaml` is valid and references existing files.
-- Dataset is registered (`make register ...`) and appears as `READY` in registry-driven workflows.
+## How to Cite Registered Data
 
+For publications, archive the `dataset.yaml` file with the notebook that produced the `.h5ad` or `.h5mu`. In Methods, report the matrix state, filtering, normalization, batch key, and cell-type key.

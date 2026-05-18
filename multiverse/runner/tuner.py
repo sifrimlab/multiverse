@@ -6,6 +6,7 @@ import sqlite3
 from typing import Any, Dict
 
 from ..logging_utils import get_logger
+from ..tracking import load_run_metrics
 from .docker_runner import run_job_container_sync
 
 logger = get_logger(__name__)
@@ -30,16 +31,20 @@ def sample_hyperparameters(trial: Any, distributions: Dict[str, Dict[str, Any]])
 
 
 def _extract_metric(metrics: Dict[str, Any], metric_name: str) -> float:
+    optuna = __import__("optuna")
+    if metric_name == "history":
+        raise optuna.TrialPruned("Metric 'history' is not a scalar optimize target")
     if metric_name in metrics and isinstance(metrics[metric_name], (int, float)):
         return float(metrics[metric_name])
-    # fallback: dotted path traversal for nested metrics
     cur: Any = metrics
     for key in metric_name.split("."):
-        if not isinstance(cur, dict) or key not in cur:
-            raise KeyError(f"Metric '{metric_name}' not found in metrics.json")
-        cur = cur[key]
+        if not isinstance(cur, dict):
+            raise optuna.TrialPruned(f"Metric '{metric_name}' not found in metrics.json")
+        cur = cur.get(key)
+        if cur is None:
+            raise optuna.TrialPruned(f"Metric '{metric_name}' not found in metrics.json")
     if not isinstance(cur, (int, float)):
-        raise TypeError(f"Metric '{metric_name}' is not numeric")
+        raise optuna.TrialPruned(f"Metric '{metric_name}' is not numeric")
     return float(cur)
 
 
@@ -68,11 +73,9 @@ def objective(trial: Any, job_manifest: Dict[str, Any]) -> float:
         logger.warning(f"Trial {trial.number} failed container execution; pruning.")
         raise optuna.exceptions.TrialPruned()
 
-    metrics_path = os.path.join(result["output_path"], "metrics.json")
-    if not os.path.exists(metrics_path):
+    metrics_payload = load_run_metrics(result["output_path"])
+    if not metrics_payload:
         raise RuntimeError(f"metrics.json missing for successful trial at {result['output_path']}")
-    with open(metrics_path, "r", encoding="utf-8") as fp:
-        metrics_payload = json.load(fp)
 
     return _extract_metric(metrics_payload, str(job_manifest["optimize_metric"]))
 

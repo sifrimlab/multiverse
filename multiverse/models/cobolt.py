@@ -8,6 +8,7 @@ from cobolt.utils import SingleData, MultiomicDataset
 from cobolt.model import Cobolt
 
 from .base import ModelFactory
+from .metrics_utils import series_to_float_list
 from ..data_utils import anndata_concatenate
 from ..logging_utils import get_logger
 from ..utils import get_device
@@ -136,19 +137,18 @@ class CoboltModel(ModelFactory):
         """
         requested = self.config_dict.get("metrics", {}).get("model_metrics")
         metrics = {}
+        history: dict = {}
         if hasattr(self, "loss"):
             if requested is None or "loss" in requested:
                 logger.info(f"Cobolt Loss: {self.loss}")
-                metrics["loss"] = self.loss
+                metrics["loss"] = float(self.loss)
         else:
             logger.warning("Loss not available in the model.")
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+        if hasattr(self.model, "history") and self.model.history and "loss" in self.model.history:
+            loss_series = series_to_float_list(self.model.history["loss"])
+            if loss_series:
+                history["loss"] = loss_series
+        self.write_metrics(metrics, history=history or None)
 
 
 def main():

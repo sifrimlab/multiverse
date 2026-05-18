@@ -11,6 +11,7 @@ from ..data_utils import anndata_concatenate
 from ..logging_utils import get_logger
 from ..utils import get_device
 from .base import ModelFactory
+from .metrics_utils import scvi_history_to_dict
 from .runtime_io import (
     build_model_config,
     load_input_mudata,
@@ -116,6 +117,9 @@ class MultiVIModel(ModelFactory):
         """
         requested = self.config_dict.get("metrics", {}).get("model_metrics")
         metrics = {}
+        history = scvi_history_to_dict(
+            self.model.history if hasattr(self.model, "history") else None
+        )
         if self.latent_key in self.dataset.obsm:
             latent = self.dataset.obsm[self.latent_key]
             if (requested is None or "silhouette_score" in requested):
@@ -123,19 +127,17 @@ class MultiVIModel(ModelFactory):
                     labels = self.dataset.obs[self.umap_color_type]
                     silhouette = silhouette_score(latent, labels)
                     logger.info(f"Silhouette Score (MultiVI): {silhouette}")
-                    metrics["silhouette_score"] = silhouette
+                    metrics["silhouette_score"] = float(silhouette)
                 else:
                     logger.warning("Labels not found for clustering evaluation.")
         else:
             logger.warning("Latent representation (X_multivi) not found.")
 
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+        filtered_history = {}
+        for key, series in history.items():
+            if requested is None or key in requested:
+                filtered_history[key] = series
+        self.write_metrics(metrics, history=filtered_history or None)
 
 def main():
     setup_container_logging()

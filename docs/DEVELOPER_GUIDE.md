@@ -1,135 +1,62 @@
 # Developer Guide
 
-This document provides technical details for developers who want to contribute to the Multi-verse project.
+This explanation is for maintainers extending mvexp. It is intentionally separate from the researcher tutorials: implementation detail should support the GUI-first workflow, not replace it.
 
-## How to Add a New Model
+## Maintainer Mental Model
 
-To integrate a new multimodal integration method, follow these steps:
-
-### 1. Create the Model Wrapper
-Create a new Python file in `multiverse/models/` (e.g., `new_model.py`). Define a class that inherits from `ModelFactory`.
-
-```python
-from .base import ModelFactory
-
-class NewModel(ModelFactory):
-    def __init__(self, dataset, dataset_name, config_path: str, is_gridsearch=False):
-        super().__init__(dataset, dataset_name, model_name="new_model", config_path=config_path, is_gridsearch=is_gridsearch)
-        # Initialize model-specific parameters from self.model_params.get("new_model")
-
-    def train(self):
-        # Implementation of the training process
-        pass
-
-    def evaluate_model(self):
-        # Implementation of model-specific evaluation
-        pass
+```mermaid
+flowchart TD
+    A[Prepared notebook data] --> B[Ingestion Wizard]
+    B --> C[Registry records]
+    C --> D[Planner]
+    D --> E[Zero-Path runner]
+    E --> F[Model container]
+    F --> G[Artifacts]
+    G --> H[Comparison reports]
 ```
 
-### 2. Register with a Model Manifest
-Create `store/models/<slug>/model.yaml` and register it via:
+## Core Boundaries
 
-```bash
-make register-model slug=<slug>
-```
+| Boundary | Contract |
+|---|---|
+| Dataset ingestion | `dataset.yaml` plus prepared `.h5ad` or `.h5mu`. |
+| Model registration | `model.yaml` plus hyperparameter schema. |
+| Runtime | `/input/data.h5mu`, `/output/job_spec.json`, `/output/`. |
+| Evaluation | `embeddings.h5` and metadata keys determine valid metrics. |
+| Reporting | Metrics and artifacts are tied back to the run recipe. |
 
-### 3. Create Container Context
-Place the Dockerfile under `store/models/<slug>/container/` and ensure it follows the Zero-Path contract.
+## Development Priorities
 
-### 4. Register in the Workflow
-No manual router edits are required for normal benchmarking. Register your `model.yaml` and the CLI planner resolves runtime metadata from SQLite.
+1. Preserve reproducibility artifacts.
+2. Keep normal researcher workflows visual and sequential.
+3. Make errors actionable in the GUI.
+4. Keep model interfaces language-agnostic.
+5. Prefer explicit metadata over hidden notebook state.
 
-## Master-Worker Execution Flow
+## Reference: Dataset Package
 
-Multi-verse uses a Master-Worker architecture to ensure isolation and scalability.
+| Path | Purpose |
+|---|---|
+| `store/datasets/<slug>/dataset.yaml` | Dataset metadata and modality/file mapping. |
+| `store/datasets/<slug>/data/` | Prepared input files. |
 
-### Master Process (`multiverse.runner.cli`)
-1. **Validation**: Validates the user configuration against the Pydantic schema.
-2. **Registry Lookup**: Reads SQLite model metadata registered from `model.yaml`.
-3. **Omics Detection**: Inspects the input dataset to determine available omics (e.g., RNA, ATAC, ADT).
-4. **Dynamic Routing**: Filters the user's requested models. A model is only executed if all its `supported_omics` are present in the dataset.
-5. **Concurrent Image Preparation**: Pulls or builds the required Docker images in parallel using `asyncio`.
-6. **Parallel Execution**: Spins up a Docker container for each eligible model.
-   - **Isolation**: Each worker runs in its own container.
-   - **Read-Only Mounts**: The input data directory is mounted as read-only (`ro`) to prevent accidental data corruption.
-   - **Shared Output**: Each worker writes its results to a dedicated subdirectory in the output directory.
+## Reference: Model Package
 
-### Worker Process (Docker Containers)
-Each worker container runs a specific model wrapper. It:
-1. Loads the input dataset from `/input/data.h5mu`.
-2. Executes the `train()` method.
-3. Reads runtime parameters from `/output/job_spec.json`.
-4. Saves latent embeddings to `/output/embeddings.h5`.
-5. Optionally generates visualization artifacts (for example `/output/umap.png`).
-6. Calculates model-specific metrics and saves them to `/output/metrics.json`.
+| Path | Purpose |
+|---|---|
+| `store/models/<slug>/model.yaml` | Model metadata and runtime image. |
+| `schemas/models/<slug>.hyperparameters.schema.json` | GUI and sweep parameter contract. |
+| `store/models/<slug>/container/` | Runtime packaging. |
 
-### Result Aggregation
-After all worker containers exit, the Master process:
-1. Checks the exit codes of all containers.
-2. Aggregates the `metrics.json` from successful runs.
-3. Triggers the `Evaluator` to compute comparative `scIB-metrics` (ARI, NMI, etc.) across all successful models.
-4. Generates a final `results.json` in the root output directory.
+## Common Errors
 
+| Issue | Maintainer response |
+|---|---|
+| Researchers see stack traces | Convert expected failures into clear status messages. |
+| A feature requires hand-written paths | Move path handling into registry or Zero-Path mapping. |
+| Metrics disappear silently | Report why the metric was skipped. |
+| Docs mention old commands | Rewrite around GUI actions and maintainer-only references. |
 
-This section is designed to be added to your `README.md`. It explains the "why" and "how" of the new directory structure, making it clear to the rookie bioinformatician exactly where to put their data and why that structure is enforced.
+## Citation and Release Practice
 
-***
-
-## Data Storage & Organization
-
-To ensure the Multi-verse pipeline remains automated, reproducible, and scalable, we enforce a **Dataset-Centric** storage structure. Instead of loose files, every dataset is treated as a self-contained "Package."
-
-### 1. Recommended Directory Structure
-All datasets managed by the Multi-verse system should reside within the `store/datasets/` directory. Each dataset must be organized as follows:
-
-```text
-store/datasets/
-├── <dataset_slug>/            # A filesystem-safe name (e.g., pbmc-10k-v3)
-│   ├── dataset.yaml           # Manifest file describing your data
-│   └── data/                  # Standardized data folder
-│       ├── raw.h5ad           # Original raw source file
-│       └── processed.h5mu     # Generated by the preprocessor
-```
-
-### 2. The `dataset.yaml` Manifest
-The `dataset.yaml` file acts as the "Brain" for each dataset. This file allows the system to automatically detect modalities and mapping keys without human intervention.
-
-**Example `dataset.yaml`:**
-```yaml
-name: "PBMC 10k v3"
-omics: ["rna", "atac"]
-raw_files:
-  rna: "data/raw_rna.h5ad"
-  atac: "data/raw_atac.h5ad"
-metadata_keys:
-  batch: "donor_id"
-  cell_type: "cell_ontology_class"
-```
-
-### 3. Best Practices for Data Management
-To keep your pipeline production-ready, follow these rules:
-
-*   **Self-Contained:** Every folder in `store/datasets/` should represent exactly one dataset. If you have train/test splits, define them in the `dataset.yaml` or handle them during the pre-processing stage.
-*   **Immutability:** Do **not** modify the `raw.h5ad` file once registered. The pipeline creates a `processed.h5mu` file that serves as the "Source of Truth" for all models.
-*   **Slugified Naming:** Use simple, filesystem-safe names for folders (e.g., `pbmc-10k` instead of `PBMC 10k (Final version)`). Avoid spaces and special characters.
-*   **Standardized Naming:** Inside the `/data` folder, name your raw files clearly (e.g., `rna.h5ad`, `atac.h5ad`, `adt.h5ad`). This allows the system to auto-detect modalities.
-
-### 4. How to Register a New Dataset
-Instead of manually moving files, use the provided CLI tool to ensure your registry stays in sync with your storage:
-
-```bash
-# This automatically validates the dataset structure, 
-# copies it into the store, and updates the SQLite Registry.
-make register slug=my-dataset
-```
-
-***
-
-### Pro-Tip for Migration
-If you have an existing directory of raw data, do not move it manually. Use our migration utility to wrap your existing files into the new structure safely:
-
-```bash
-# This will walk your existing data folder, generate dataset.yaml 
-# files for each sub-folder, and prepare them for registration.
-python -m multiverse.migrate_data --source /mnt/data/my_research/
-```
+For academic adoption, releases should make citation easy. Tag versions, keep changelogs, and ensure run artifacts include enough information to cite the exact software state used in a manuscript.

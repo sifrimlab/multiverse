@@ -1,40 +1,68 @@
-# Orchestrator Runner
+# Runner
 
-This document explains how to use the central orchestrator to run the Multi-verse pipeline.
+This reference explains what the runner does behind the GUI. Most researchers should launch runs from the Streamlit **Execute** tab, not by calling runner modules directly.
 
-## Usage
+## What the Runner Does
 
-The main entrypoint for the orchestrator is the `multiverse.runner.cli` module. You can run it from the root of the repository.
+The runner turns a GUI-generated benchmark plan into reproducible model executions.
 
-### Command
-
-```bash
-python -m multiverse.runner.cli --models <model1> <model2> ... --input /path/to/input_dir --output /path/to/output_dir
+```mermaid
+flowchart LR
+    A[run_manifest.yaml] --> B[Validate datasets and models]
+    B --> C[Prepare Zero-Path workspaces]
+    C --> D[Run model containers]
+    D --> E[Promote successful artifacts]
+    E --> F[Results and comparison reports]
 ```
 
-### Arguments
+## Tutorial: Use the Runner Through the GUI
 
-- `--models`: A space-separated list of the models you want to run (e.g., `pca multivi mowgli`). This is a required argument.
-- `--input`: The path to the directory containing the input data. This directory should contain the `data.h5ad` (for PCA, MultiVI) or `data.h5mu` (for Mowgli, MOFA) file. This is a required argument.
-- `--output`: The path to the directory where the results will be saved. A subdirectory will be created for each model. This is a required argument.
+1. Open **Job Builder**.
+2. Select compatible dataset x model pairs.
+3. Click **Generate Run Manifest**.
+4. Open **Parameters**.
+5. Set fixed parameters or sweep ranges.
+6. Click **Generate Run Manifest (with params)**.
+7. Open **Execute**.
+8. Confirm the manifest path and seed.
+9. Click **Launch Run**.
+10. Monitor the status table.
 
-### Example
+[IMAGE: Execute Tab Run Status]
 
-To run the `pca` and `multivi` models on data located in `./sample_data/input` and save the results to `./results`, you would use the following command:
+## Reference: Run States
 
-```bash
-python -m multiverse.runner.cli --models pca multivi --input ./sample_data/input --output ./results
-```
+| State | Meaning |
+|---|---|
+| `QUEUED` | The job is planned but has not started. |
+| `RUNNING` | The model is training or writing outputs. |
+| `SUCCESS` | Required artifacts were written and promoted. |
+| `FAILED` | The job started but did not complete successfully. |
+| `SKIPPED` | mvexp did not run the job because validation found a known issue. |
 
-This will create the following directory structure:
-```
-./results/
-├── pca/
-│   ├── embeddings.h5ad
-│   ├── metrics.json
-│   └── log.txt
-└── multivi/
-    ├── embeddings.h5ad
-    ├── metrics.json
-    └── log.txt
-```
+## Reference: Required Successful Outputs
+
+| Artifact | Description |
+|---|---|
+| `embeddings.h5` | Latent matrix with HDF5 dataset `latent`. |
+| `metrics.json` | Model-level metrics and optional histories. |
+| `job_spec.json` | Exact runtime instruction passed to the model. |
+| `run_manifest.yaml` | Copy of the benchmark recipe. |
+| `container.log` | Execution log. |
+
+## Explanation: Why This Improves Reproducibility
+
+A notebook cell can be changed and re-run without leaving a complete record. mvexp turns the benchmark plan into artifacts that travel with the result. The combination of `run_manifest.yaml`, `job_spec.json`, metrics, logs, and provenance files gives reviewers a concrete recipe rather than only prose.
+
+## Common Errors
+
+| Question | Answer |
+|---|---|
+| Why is my job `FAILED`? | Open the Results tab, select the failed run, and inspect the error or `container.log`. Common causes are unreadable data, missing metadata, or model-specific input requirements. |
+| Why is my job `SKIPPED`? | The validation step found a predictable issue before training, such as incompatible omics or missing `batch_key`. |
+| Why are some metrics missing? | The dataset metadata did not support them, or the model did not produce the required output. |
+| Can I re-run with the same seed? | Yes. Keep the same manifest and seed to reproduce the same planned benchmark. |
+
+## How to Cite a Run
+
+Cite the archived artifact directory and include `run_manifest.yaml` plus provenance files as Supplementary Material. State the mvexp version or commit used for the run.

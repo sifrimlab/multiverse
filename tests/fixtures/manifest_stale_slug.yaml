@@ -1,0 +1,3 @@
+jobs:
+  - dataset_slug: missing_dataset
+    models: [pca]

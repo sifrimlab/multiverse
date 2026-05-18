@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import json
+import shutil
 from typing import List, Optional, Dict, Any
 
 # Calculate base directory relative to this file's location
@@ -57,6 +58,7 @@ def init_db():
 
     _migrate_models_table(conn)
     _migrate_runs_table(conn)
+    _migrate_run_metrics_table(conn)
 
     conn.commit()
     conn.close()
@@ -203,6 +205,32 @@ def _migrate_runs_table(conn: sqlite3.Connection) -> None:
                 (run_id, dataset_id, model_slug, model_version, model_name, status, output_path),
             )
         cursor.execute("DROP TABLE runs_legacy")
+        cursor.execute("PRAGMA table_info(runs)")
+        cols = {r[1] for r in cursor.fetchall()}
+
+    column_defs = {
+        "container_id": "TEXT",
+        "failure_reason": "TEXT",
+    }
+    for col, col_type in column_defs.items():
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
+
+def _migrate_run_metrics_table(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS run_metrics (
+            run_id INTEGER NOT NULL,
+            metric_name TEXT NOT NULL,
+            metric_value REAL,
+            metric_kind TEXT,
+            PRIMARY KEY (run_id, metric_name),
+            FOREIGN KEY (run_id) REFERENCES runs(run_id)
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_run_metrics_name ON run_metrics(metric_name)")
 
 def insert_dataset(name: str, path: str, omics_available: List[str], status: str = "READY"):
     """Inserts a new dataset record into the database."""
@@ -316,54 +344,99 @@ def get_all_models() -> List[Dict]:
     conn.close()
     return models
 
-def recover_orphaned_runs() -> int:
-    """Heal runs left in PROMOTING status by a crashed orchestrator process.
+def recover_orphaned_runs(docker_client: Any = None, reattach_callback: Any = None) -> int:
+    """Heal runs left in non-terminal FSM states by a crashed orchestrator.
 
-    The 3-phase atomic promotion writes status=PROMOTING before the filesystem
-    move and status=SUCCESS after.  A process crash between those two writes
-    leaves a PROMOTING row.  On the next startup this function reconciles the
-    DB against the filesystem:
+    PROMOTING is reconciled via the .promotion_complete marker inside the
+    artifact directory. RUNNING rows with a missing/dead container are marked
+    FAILED/ORPHANED. If a live container is found and a reattach callback is
+    supplied, the caller can resume supervision from the orchestrator process.
 
-    - artifact_dir exists on disk  →  Phase 2 succeeded; update to SUCCESS
-    - artifact_dir absent          →  Phase 2 never completed; update to FAILED
-
-    Returns the number of rows healed.
+    Returns the number of rows reconciled.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
     conn = get_db_connection()
     cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(runs)")
+    cols = {row[1] for row in cursor.fetchall()}
+    for col, col_type in {"container_id": "TEXT", "failure_reason": "TEXT"}.items():
+        if col not in cols:
+            cursor.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
     cursor.execute(
-        "SELECT run_id, output_path FROM runs WHERE status = 'PROMOTING'"
+        """
+        SELECT run_id, status, output_path, container_id
+        FROM runs
+        WHERE status IN ('RUNNING', 'PROMOTING', 'QUEUED')
+        """
     )
     rows = cursor.fetchall()
     healed = 0
-    for run_id, output_path in rows:
-        if output_path and os.path.isdir(output_path):
-            # Filesystem promotion succeeded; DB was never updated to SUCCESS.
+
+    for run_id, status, output_path, container_id in rows:
+        if status == "PROMOTING":
+            marker = os.path.join(output_path or "", ".promotion_complete")
+            if output_path and os.path.isfile(marker):
+                cursor.execute(
+                    "UPDATE runs SET status = 'SUCCESS', failure_reason = NULL WHERE run_id = ?",
+                    (run_id,),
+                )
+                _log.warning("Recovered run %s -> SUCCESS (promotion marker present)", run_id)
+            else:
+                if output_path and os.path.isdir(output_path):
+                    shutil.rmtree(output_path, ignore_errors=True)
+                cursor.execute(
+                    """
+                    UPDATE runs
+                    SET status = 'FAILED', failure_reason = 'INCOMPLETE_PROMOTION'
+                    WHERE run_id = ?
+                    """,
+                    (run_id,),
+                )
+                _log.warning("Recovered run %s -> FAILED (incomplete promotion)", run_id)
+            healed += 1
+            continue
+
+        if status == "RUNNING":
+            if container_id and docker_client is None:
+                _log.warning(
+                    "Leaving run %s in RUNNING during recovery; Docker client unavailable",
+                    run_id,
+                )
+                continue
+            container = None
+            if docker_client is not None and container_id:
+                try:
+                    container = docker_client.containers.get(container_id)
+                    container.reload()
+                except Exception:
+                    container = None
+            container_status = getattr(container, "status", None)
+            if container is not None and container_status in {"created", "running", "restarting"}:
+                if reattach_callback is not None:
+                    reattach_callback(container, run_id, output_path)
+                    healed += 1
+                continue
             cursor.execute(
-                "UPDATE runs SET status = 'SUCCESS' WHERE run_id = ?", (run_id,)
+                """
+                UPDATE runs
+                SET status = 'FAILED', failure_reason = 'ORPHANED'
+                WHERE run_id = ?
+                """,
+                (run_id,),
             )
-            _log.warning(
-                "Healed orphaned run %s → SUCCESS (artifact found at %s)",
-                run_id,
-                output_path,
-            )
-        else:
-            # Either Phase 2 never ran or the workspace was already cleaned up.
-            cursor.execute(
-                "UPDATE runs SET status = 'FAILED' WHERE run_id = ?", (run_id,)
-            )
-            _log.warning(
-                "Healed orphaned run %s → FAILED (no artifact at %s)",
-                run_id,
-                output_path,
-            )
-        healed += 1
+            _log.warning("Recovered run %s -> FAILED (container missing/dead)", run_id)
+            healed += 1
+            continue
+
+        if status == "QUEUED":
+            _log.warning("Found queued run %s during recovery; planner will re-evaluate it", run_id)
+            healed += 1
+
     if healed:
         conn.commit()
-        _log.warning("Recovered %d orphaned run(s) from previous crash.", healed)
+        _log.warning("Recovered %d run(s) from previous crash.", healed)
     conn.close()
     return healed
 

@@ -8,15 +8,82 @@ import uuid
 import psutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 import subprocess
 import time
 from ..logging_utils import get_logger
 from ..registry_db import ARTIFACTS_DIR, WORKSPACES_DIR, get_db_connection
-from ..tracking import log_successful_run_to_mlflow
+from ..tracking import load_run_metrics, log_successful_run_to_mlflow
 from ..multiverse_config import get_docker_data_root
 
 logger = get_logger(__name__)
+
+
+
+def _emit_runner_event(event: str, **payload: Any) -> None:
+    try:
+        print(json.dumps({"event": event, **payload}, sort_keys=True), file=__import__("sys").stderr, flush=True)
+    except Exception:
+        pass
+
+
+def _classify_docker_exception(exc: Exception) -> str:
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if isinstance(exc, PermissionError) or "permission" in text or "denied" in text:
+        return "daemon_permission_denied"
+    if "pull" in text or "not found" in text:
+        return "image_pull_failed"
+    if "connection" in name or "connection" in text or "socket" in text or "daemon" in text:
+        return "daemon_offline"
+    return "docker_error"
+
+
+def get_docker_client():
+    try:
+        return docker.from_env()
+    except Exception as exc:
+        kind = _classify_docker_exception(exc)
+        _emit_runner_event("error", kind=kind, message=str(exc))
+        raise
+
+
+def flatten_metric_rows(metrics: dict[str, Any], prefix: str = "") -> list[tuple[str, float | None, str]]:
+    rows: list[tuple[str, float | None, str]] = []
+    for key, value in metrics.items():
+        metric_name = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            rows.extend(flatten_metric_rows(value, metric_name))
+        elif isinstance(value, list):
+            numeric = []
+            for item in value:
+                if isinstance(item, bool):
+                    numeric.append(float(int(item)))
+                elif isinstance(item, (int, float)):
+                    numeric.append(float(item))
+            if numeric:
+                rows.append((metric_name, numeric[-1], "history_summary"))
+        elif isinstance(value, bool):
+            rows.append((metric_name, float(int(value)), "scalar"))
+        elif isinstance(value, (int, float)):
+            rows.append((metric_name, float(value), "scalar"))
+        elif value is None:
+            rows.append((metric_name, None, "scalar"))
+    return rows
+
+
+def _docker_gpu_available(client) -> bool:
+    """Return True if the Docker daemon has an NVIDIA runtime registered.
+
+    Importing docker.types.DeviceRequest succeeds even without the NVIDIA
+    Container Toolkit, so the import-level try/except used elsewhere is not
+    sufficient — the actual failure surfaces only when the container starts.
+    Checking the daemon's runtime list catches this before any container launch.
+    """
+    try:
+        return "nvidia" in client.info().get("Runtimes", {})
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -100,36 +167,85 @@ _db_writer_task_handle: Optional[asyncio.Task] = None
 
 
 async def db_writer_task(queue: asyncio.Queue) -> None:
-    """Background coroutine: sole owner of the SQLite write connection.
-
-    Reads _DbWriteOp items sequentially and commits each one.  Resolves the
-    per-op Future with lastrowid so callers can await the DB row ID.  Exits
-    cleanly on receiving a ``None`` sentinel.
-    """
+    """Background coroutine: sole owner of the SQLite write connection."""
     conn = get_db_connection()
+    consecutive_failures = 0
     logger.info("db_writer_task started — single-writer SQLite actor is live")
     try:
         while True:
             op = await queue.get()
-            if op is None:          # shutdown sentinel
+            if op is None:
                 queue.task_done()
                 break
             try:
                 cursor = conn.execute(op.sql, op.params)
                 conn.commit()
+                consecutive_failures = 0
                 if op.result_future is not None and not op.result_future.done():
                     op.result_future.set_result(cursor.lastrowid)
             except Exception as exc:
+                consecutive_failures += 1
                 logger.error(
-                    "db_writer_task error: %s | sql=%s | params=%s", exc, op.sql, op.params
+                    "db_writer_task error (%s consecutive): %s | sql=%s | params=%s",
+                    consecutive_failures,
+                    exc,
+                    op.sql,
+                    op.params,
                 )
                 if op.result_future is not None and not op.result_future.done():
                     op.result_future.set_exception(exc)
+                if consecutive_failures >= 3:
+                    _emit_runner_event(
+                        "error",
+                        kind="db_writer_failed",
+                        message="DB writer hit 3 consecutive write failures; restarting",
+                    )
+                    raise RuntimeError("DB writer hit 3 consecutive write failures") from exc
             finally:
                 queue.task_done()
     finally:
         conn.close()
         logger.info("db_writer_task stopped — write connection closed")
+
+
+async def db_writer_supervisor(queue: asyncio.Queue) -> None:
+    """Restart the DB writer after crashes, escalating after repeated restart failures."""
+    restart_failures = 0
+    while True:
+        try:
+            await db_writer_task(queue)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            restart_failures += 1
+            logger.error("db_writer_task crashed; restart attempt %s/3: %s", restart_failures, exc)
+            if restart_failures >= 3:
+                _emit_runner_event(
+                    "error",
+                    kind="db_writer_supervisor_failed",
+                    message=str(exc),
+                )
+                raise
+            await asyncio.sleep(0.2)
+
+
+def mark_active_runs_failed_direct(reason: str = "CANCELLED") -> int:
+    """One-shot fallback write for shutdown when the async writer may be unavailable."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute(
+            """
+            UPDATE runs
+            SET status = 'FAILED', failure_reason = ?
+            WHERE status IN ('RUNNING', 'PROMOTING')
+            """,
+            (reason,),
+        )
+        conn.commit()
+        return int(cursor.rowcount or 0)
+    finally:
+        conn.close()
 
 
 def start_db_writer() -> asyncio.Task:
@@ -139,9 +255,9 @@ def start_db_writer() -> asyncio.Task:
     ``run_workflow_async``).  Returns the Task handle.
     """
     global _db_write_queue, _db_writer_task_handle
-    _db_write_queue = asyncio.Queue()
+    _db_write_queue = asyncio.Queue(maxsize=256)
     _db_writer_task_handle = asyncio.create_task(
-        db_writer_task(_db_write_queue), name="db_writer"
+        db_writer_supervisor(_db_write_queue), name="db_writer"
     )
     return _db_writer_task_handle
 
@@ -275,7 +391,7 @@ DEFAULT_MODEL_IMAGES = {
 
 def ensure_image_prepared(tag: str, status_callback: callable = None) -> bool:
     """Ensure an image is available locally: local -> build from manifest -> pull."""
-    client = docker.from_env()
+    client = get_docker_client()
     try:
         if status_callback:
             status_callback(tag, "Building/Pulling")
@@ -323,7 +439,11 @@ def ensure_image_prepared(tag: str, status_callback: callable = None) -> bool:
         if not built_locally:
             # 3) Fallback pull
             logger.info(f"Pulling remote image: {tag}")
-            client.images.pull(tag)
+            try:
+                client.images.pull(tag)
+            except Exception as exc:
+                _emit_runner_event("error", kind="image_pull_failed", image=tag, message=str(exc))
+                raise
             logger.info(f"Successfully pulled image: {tag}")
 
         if status_callback:
@@ -333,6 +453,8 @@ def ensure_image_prepared(tag: str, status_callback: callable = None) -> bool:
         logger.error(f"Failed to prepare image {tag}: {exc}")
         if status_callback:
             status_callback(tag, "Failed")
+        if _classify_docker_exception(exc) != "image_pull_failed":
+            _emit_runner_event("error", kind=_classify_docker_exception(exc), image=tag, message=str(exc))
         raise
 
 
@@ -349,7 +471,7 @@ def _write_job_spec(output_dir: str, job: dict, seed: int) -> str:
     job_spec = {
         "seed": seed,
         "dataset_id": job.get("dataset_id"),
-        "dataset_name": job.get("dataset_name"),
+        "dataset_name": job.get("dataset_name") or job.get("dataset_slug"),
         "model_name": job.get("model_name_orig") or job.get("model_name") or job.get("name"),
         "hyperparameters": _extract_hyperparameters(job),
         "run_settings": job.get("run_settings", {}),
@@ -378,7 +500,7 @@ def _safe_name(value: str, fallback: str) -> str:
 
 def _build_artifact_destination(job: dict, run_id: str) -> str:
     experiment_name = _safe_name(job.get("experiment_name", "default_experiment"), "default_experiment")
-    dataset_name = _safe_name(job.get("dataset_name", "dataset"), "dataset")
+    dataset_name = _safe_name(job.get("dataset_name") or job.get("dataset_slug") or "dataset", "dataset")
     model_name = _safe_name(job.get("model_name_orig") or job.get("model_name") or job.get("name"), "model")
     return os.path.join(ARTIFACTS_DIR, experiment_name, dataset_name, model_name, run_id)
 
@@ -390,16 +512,17 @@ def _persist_run_status(
     model_name: str,
     status: str,
     output_path: str,
+    failure_reason: str | None = None,
 ) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
         INSERT OR REPLACE INTO runs
-        (dataset_id, model_slug, model_version, model_name, status, output_path)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (dataset_id, model_slug, model_version, model_name, status, output_path, failure_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (dataset_id, model_slug, model_version, model_name, status, output_path),
+        (dataset_id, model_slug, model_version, model_name, status, output_path, failure_reason),
     )
     conn.commit()
     conn.close()
@@ -434,18 +557,14 @@ def _run_and_promote_sync(
     final_output_path = workspace_dir
     if exit_code == 0:
         job_spec_payload: dict = {}
-        metrics_payload: dict = {}
-        for fname, target in [("job_spec.json", "job_spec"), ("metrics.json", "metrics")]:
-            p = os.path.join(workspace_dir, fname)
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as fp:
-                        if target == "job_spec":
-                            job_spec_payload = json.load(fp)
-                        else:
-                            metrics_payload = json.load(fp)
-                except Exception as exc:
-                    logger.warning("Failed reading %s for MLflow: %s", fname, exc)
+        job_spec_path = os.path.join(workspace_dir, "job_spec.json")
+        if os.path.exists(job_spec_path):
+            try:
+                with open(job_spec_path, "r", encoding="utf-8") as fp:
+                    job_spec_payload = json.load(fp)
+            except Exception as exc:
+                logger.warning("Failed reading job_spec.json for MLflow: %s", exc)
+        metrics_payload = load_run_metrics(workspace_dir)
 
         shutil.move(workspace_dir, final_artifact_dir)
         status = "SUCCESS"
@@ -470,6 +589,161 @@ def _run_and_promote_sync(
     return exit_code, status, final_output_path, logs_text
 
 
+
+
+async def _persist_run_metrics(run_id: int, metrics_payload: dict[str, Any]) -> None:
+    rows = flatten_metric_rows(metrics_payload)
+    for metric_name, metric_value, metric_kind in rows:
+        await _db_write(
+            """
+            INSERT OR REPLACE INTO run_metrics
+            (run_id, metric_name, metric_value, metric_kind)
+            VALUES (?, ?, ?, ?)
+            """,
+            (run_id, metric_name, metric_value, metric_kind),
+        )
+
+async def _supervise_container(
+    container,
+    run_id: int,
+    workspace_dir: str,
+    final_artifact_dir: str,
+    job_context: dict | None = None,
+) -> tuple:
+    """Wait for a launched container and finalize the persisted run row."""
+    loop = asyncio.get_running_loop()
+    job_context = job_context or {}
+
+    try:
+        wait_result = await loop.run_in_executor(None, container.wait)
+        exit_code = wait_result.get("StatusCode", 1)
+        logs_raw = await loop.run_in_executor(
+            None, lambda: container.logs(stdout=True, stderr=True)
+        )
+        logs_text = logs_raw.decode("utf-8", errors="replace")
+        await loop.run_in_executor(
+            None,
+            lambda: Path(os.path.join(workspace_dir, "container.log")).write_text(
+                logs_text, encoding="utf-8"
+            ),
+        )
+
+        if exit_code != 0:
+            logger.warning(
+                "Container failed (exit %s). Workspace preserved at %s", exit_code, workspace_dir
+            )
+            await _db_write(
+                """
+                UPDATE runs
+                SET status = ?, output_path = ?, failure_reason = ?
+                WHERE run_id = ?
+                """,
+                ("FAILED", workspace_dir, f"CONTAINER_EXIT:{exit_code}", run_id),
+            )
+            await asyncio.shield(loop.run_in_executor(None, container.remove))
+            return exit_code, "FAILED", workspace_dir, logs_text
+
+        await _db_write(
+            "UPDATE runs SET status = ?, output_path = ?, failure_reason = NULL WHERE run_id = ?",
+            ("PROMOTING", final_artifact_dir, run_id),
+        )
+
+        try:
+            if os.path.exists(final_artifact_dir):
+                await loop.run_in_executor(None, lambda: shutil.rmtree(final_artifact_dir))
+            await loop.run_in_executor(None, lambda: shutil.move(workspace_dir, final_artifact_dir))
+            await loop.run_in_executor(
+                None,
+                lambda: Path(final_artifact_dir, ".promotion_complete").touch(),
+            )
+        except Exception as exc:
+            logger.error("Promotion move failed: %s", exc)
+            await asyncio.shield(loop.run_in_executor(None, container.remove))
+            await _db_write(
+                """
+                UPDATE runs
+                SET status = ?, output_path = ?, failure_reason = ?
+                WHERE run_id = ?
+                """,
+                ("FAILED", workspace_dir, "INCOMPLETE_PROMOTION", run_id),
+            )
+            return exit_code, "FAILED", workspace_dir, logs_text
+
+        await _db_write(
+            "UPDATE runs SET status = ?, output_path = ?, failure_reason = NULL WHERE run_id = ?",
+            ("SUCCESS", final_artifact_dir, run_id),
+        )
+
+        await asyncio.shield(loop.run_in_executor(None, container.remove))
+
+        try:
+            dataset_path = job_context.get("dataset_path")
+            batch_key = job_context.get("batch_key") or "batch"
+            label_key = job_context.get("cell_type_key")
+            if dataset_path and os.path.exists(dataset_path):
+                from ..evaluate import evaluate_single_run
+                await loop.run_in_executor(
+                    None,
+                    lambda: evaluate_single_run(
+                        output_dir=final_artifact_dir,
+                        dataset_path=dataset_path,
+                        batch_key=batch_key,
+                        label_key=label_key,
+                    ),
+                )
+        except Exception as exc:
+            logger.warning("Per-job evaluation failed for run %s: %s", run_id, exc)
+
+        metrics_payload = load_run_metrics(final_artifact_dir)
+        try:
+            await _persist_run_metrics(run_id, metrics_payload)
+        except Exception as exc:
+            logger.warning("run_metrics persistence failed for run %s: %s", run_id, exc)
+
+        try:
+            job_spec_payload: dict = {}
+            job_spec_path = os.path.join(final_artifact_dir, "job_spec.json")
+            if os.path.exists(job_spec_path):
+                with open(job_spec_path, "r", encoding="utf-8") as fp:
+                    job_spec_payload = json.load(fp)
+            await loop.run_in_executor(
+                None,
+                lambda: log_successful_run_to_mlflow(
+                    job_context=job_context,
+                    job_spec=job_spec_payload,
+                    metrics=metrics_payload,
+                    artifacts_dir=final_artifact_dir,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("MLflow tracking failed; continuing pipeline promotion. (%s)", exc)
+
+        return exit_code, "SUCCESS", final_artifact_dir, logs_text
+    except asyncio.CancelledError:
+        await asyncio.shield(loop.run_in_executor(None, container.stop))
+        await asyncio.shield(loop.run_in_executor(None, container.remove))
+        await _db_write(
+            """
+            UPDATE runs
+            SET status = ?, output_path = ?, failure_reason = ?
+            WHERE run_id = ?
+            """,
+            ("FAILED", workspace_dir, "CANCELLED", run_id),
+        )
+        raise
+    except Exception as exc:
+        logger.error("Container supervision failed: %s", exc)
+        await _db_write(
+            """
+            UPDATE runs
+            SET status = ?, output_path = ?, failure_reason = ?
+            WHERE run_id = ?
+            """,
+            ("FAILED", workspace_dir, f"SUPERVISION_ERROR:{type(exc).__name__}", run_id),
+        )
+        raise
+
+
 async def run_and_promote(
     client,
     run_kwargs: dict,
@@ -477,127 +751,76 @@ async def run_and_promote(
     final_artifact_dir: str,
     job_context: dict | None = None,
 ) -> tuple:
-    """Async 3-phase atomic promotion with single-writer DB queue.
+    """Launch a container and drive the persisted run FSM.
 
-    Phase 1 — Write status=PROMOTING to the DB actor queue and capture the
-               generated run_id.  The artifact path is stored so crash recovery
-               can reconcile against the filesystem.
-    Phase 2 — shutil.move(workspace → artifact).  On the same filesystem this
-               reduces to os.rename(), which is atomic.
-    Phase 3 — Update the DB row to SUCCESS via the queue.
-
-    Crash windows:
-      Between P1 and P2: artifact dir absent → recover_orphaned_runs() → FAILED
-      Between P2 and P3: artifact dir present → recover_orphaned_runs() → SUCCESS
-
-    DB writes are NEVER opened directly here; all writes go through _db_write()
-    which enqueues to the single db_writer_task connection.
+    The row is created before Docker launch as RUNNING/container_id=NULL, then
+    updated with the Docker container ID immediately after launch. Successful
+    containers transition through PROMOTING and write .promotion_complete in the
+    final artifact directory before the terminal SUCCESS update.
     """
     loop = asyncio.get_running_loop()
     job_context = job_context or {}
-    dataset_id    = job_context.get("dataset_id")
-    model_slug    = job_context.get("model_slug") or job_context.get("model_name_orig", "")
+    dataset_id = job_context.get("dataset_id")
+    model_slug = job_context.get("model_slug") or job_context.get("model_name_orig", "")
     model_version = job_context.get("model_version", "0.0.0")
-    model_name    = job_context.get("model_name_orig", model_slug)
+    model_name = job_context.get("model_name_orig", model_slug)
 
     os.makedirs(os.path.dirname(final_artifact_dir), exist_ok=True)
 
-    # -- Run container (blocking Docker SDK calls → thread pool) --------------
-    container = await loop.run_in_executor(
-        None, lambda: client.containers.run(**run_kwargs)
-    )
-    wait_result = await loop.run_in_executor(None, container.wait)
-    exit_code = wait_result.get("StatusCode", 1)
-    logs_raw = await loop.run_in_executor(
-        None, lambda: container.logs(stdout=True, stderr=True)
-    )
-    logs_text = logs_raw.decode("utf-8", errors="replace")
-    await loop.run_in_executor(
-        None,
-        lambda: Path(os.path.join(workspace_dir, "container.log")).write_text(
-            logs_text, encoding="utf-8"
-        ),
-    )
-
-    # -- Failure fast-path ----------------------------------------------------
-    if exit_code != 0:
-        logger.warning(
-            "Container failed (exit %s). Workspace preserved at %s", exit_code, workspace_dir
-        )
-        await loop.run_in_executor(None, container.remove)
-        if dataset_id is not None:
-            await _db_write(
-                "INSERT INTO runs "
-                "(dataset_id, model_slug, model_version, model_name, status, output_path) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (dataset_id, model_slug, model_version, model_name, "FAILED", workspace_dir),
-            )
-        return exit_code, "FAILED", workspace_dir, logs_text
-
-    # -- Phase 1: PROMOTING ---------------------------------------------------
-    # Store final_artifact_dir as output_path so recover_orphaned_runs() can
-    # check os.path.isdir(output_path) to distinguish the two crash windows.
     db_run_id: Optional[int] = None
     if dataset_id is not None:
         db_run_id = await _db_write(
-            "INSERT INTO runs "
-            "(dataset_id, model_slug, model_version, model_name, status, output_path) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (dataset_id, model_slug, model_version, model_name, "PROMOTING", final_artifact_dir),
+            """
+            INSERT INTO runs
+            (dataset_id, model_slug, model_version, model_name, status, output_path, container_id, failure_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (dataset_id, model_slug, model_version, model_name, "RUNNING", workspace_dir, None, None),
         )
 
-    # -- Phase 2: filesystem move ---------------------------------------------
+    labels = dict(run_kwargs.get("labels") or {})
+    labels.update({
+        "multiverse.run.workspace_dir": workspace_dir,
+        "multiverse.run.final_artifact_dir": final_artifact_dir,
+    })
+    run_kwargs = {**run_kwargs, "labels": labels}
+
     try:
-        if os.path.exists(final_artifact_dir):
-            # Idempotent: a previous PROMOTING run got here; replace it.
-            await loop.run_in_executor(None, lambda: shutil.rmtree(final_artifact_dir))
-        await loop.run_in_executor(None, lambda: shutil.move(workspace_dir, final_artifact_dir))
+        container = await loop.run_in_executor(
+            None, lambda: client.containers.run(**run_kwargs)
+        )
     except Exception as exc:
-        logger.error("Promotion move failed: %s", exc)
-        await loop.run_in_executor(None, container.remove)
         if db_run_id is not None:
             await _db_write(
-                "UPDATE runs SET status=?, output_path=? WHERE run_id=?",
-                ("FAILED", workspace_dir, db_run_id),
+                "UPDATE runs SET status = ?, failure_reason = ? WHERE run_id = ?",
+                ("FAILED", f"LAUNCH_ERROR:{type(exc).__name__}", db_run_id),
             )
-        return exit_code, "FAILED", workspace_dir, logs_text
+        raise
 
-    # -- Phase 3: SUCCESS -----------------------------------------------------
-    if db_run_id is not None:
+    if db_run_id is None:
+        # Legacy callers without registry context still get the same promotion semantics,
+        # backed by a temporary row so crash recovery can reason about the container.
+        db_run_id = await _db_write(
+            """
+            INSERT INTO runs
+            (dataset_id, model_slug, model_version, model_name, status, output_path, container_id, failure_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (None, model_slug, model_version, model_name, "RUNNING", workspace_dir, container.id, None),
+        )
+    else:
         await _db_write(
-            "UPDATE runs SET status=?, output_path=? WHERE run_id=?",
-            ("SUCCESS", final_artifact_dir, db_run_id),
+            "UPDATE runs SET container_id = ? WHERE run_id = ?",
+            (container.id, db_run_id),
         )
 
-    await loop.run_in_executor(None, container.remove)
-
-    # MLflow is best-effort and runs AFTER the DB commit so a logging failure
-    # never rolls back a successful promotion.
-    try:
-        job_spec_payload: dict = {}
-        metrics_payload: dict = {}
-        for fname, dest in [("job_spec.json", "j"), ("metrics.json", "m")]:
-            p = os.path.join(final_artifact_dir, fname)
-            if os.path.exists(p):
-                with open(p, "r", encoding="utf-8") as fp:
-                    loaded = json.load(fp)
-                    if dest == "j":
-                        job_spec_payload = loaded
-                    else:
-                        metrics_payload = loaded
-        await loop.run_in_executor(
-            None,
-            lambda: log_successful_run_to_mlflow(
-                job_context=job_context,
-                job_spec=job_spec_payload,
-                metrics=metrics_payload,
-                artifacts_dir=final_artifact_dir,
-            ),
-        )
-    except Exception as exc:
-        logger.warning("MLflow tracking failed; continuing pipeline promotion. (%s)", exc)
-
-    return exit_code, "SUCCESS", final_artifact_dir, logs_text
+    return await _supervise_container(
+        container,
+        db_run_id,
+        workspace_dir,
+        final_artifact_dir,
+        job_context,
+    )
 
 
 async def build_images_concurrently(
@@ -658,7 +881,7 @@ async def run_models_concurrently(
     Returns:
         dict: A dictionary mapping model names to their final status ("success" or "failed").
     """
-    client = docker.from_env()
+    client = get_docker_client()
     loop = asyncio.get_running_loop()
 
     async def run_single_model(model_name, image_tag):
@@ -750,8 +973,16 @@ async def run_jobs_concurrently(
     pool = ResourcePool(total_gb=host_ram_gb)
     logger.info("ResourcePool initialised: %.1f GiB total host RAM", host_ram_gb)
 
-    client = docker.from_env()
+    client = get_docker_client()
     loop = asyncio.get_running_loop()
+
+    if use_gpu and not _docker_gpu_available(client):
+        logger.warning(
+            "GPU requested but Docker NVIDIA runtime is not available "
+            "(nvidia-container-toolkit may not be configured). "
+            "All jobs will run on CPU."
+        )
+        use_gpu = False
 
     async def run_single_job(job):
         model_display_name = job["name"]
@@ -766,12 +997,13 @@ async def run_jobs_concurrently(
             if status_callback:
                 status_callback(model_display_name, "Failed (INSUFFICIENT_RESOURCES)")
             _persist_run_status(
-                dataset_id=job["dataset_id"],
-                model_slug=job.get("model_slug", job["model_name_orig"]),
-                model_version=job.get("model_version", "0.0.0"),
-                model_name=job["model_name_orig"],
-                status="FAILED: INSUFFICIENT_RESOURCES",
-                output_path="",
+                job["dataset_id"],
+                job.get("model_slug", job["model_name_orig"]),
+                job.get("model_version", "0.0.0"),
+                job["model_name_orig"],
+                "FAILED",
+                "",
+                "INSUFFICIENT_RESOURCES",
             )
             return model_display_name, False
 
@@ -875,7 +1107,10 @@ def run_model_container(
     Raises:
         ValueError: If the model name is not recognized.
     """
-    client = docker.from_env()
+    client = get_docker_client()
+    if use_gpu and not _docker_gpu_available(client):
+        logger.warning("GPU requested but Docker NVIDIA runtime is not available — running on CPU.")
+        use_gpu = False
 
     image = None
     conn = None
@@ -957,7 +1192,10 @@ def run_job_container_sync(
     mem_limit: str = "16g",
 ):
     """Run one registry/planned job synchronously with workspace promotion."""
-    client = docker.from_env()
+    client = get_docker_client()
+    if use_gpu and not _docker_gpu_available(client):
+        logger.warning("GPU requested but Docker NVIDIA runtime is not available — running on CPU.")
+        use_gpu = False
     run_id = f"run_{uuid.uuid4().hex[:12]}"
     workspace_dir = os.path.join(WORKSPACES_DIR, run_id)
     final_artifact_dir = _build_artifact_destination(job, run_id)
@@ -1004,7 +1242,10 @@ def run_evaluation_container(
         extra_args (list, optional): Additional command-line arguments for the container.
         use_gpu (bool): Whether to enable GPU support. Defaults to True.
     """
-    client = docker.from_env()
+    client = get_docker_client()
+    if use_gpu and not _docker_gpu_available(client):
+        logger.warning("GPU requested but Docker NVIDIA runtime is not available — running on CPU.")
+        use_gpu = False
 
     image = "multiverse-evaluate"
 

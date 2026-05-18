@@ -13,13 +13,12 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
+    resolve_device,
     save_embeddings,
     setup_container_logging,
 )
 
 logger = get_logger(__name__)
-
-_DEVICE_MAP = {"cpu": "cpu", "cuda": "cuda", "cuda:0": "cuda:0"}
 
 
 def main() -> None:
@@ -36,7 +35,7 @@ def main() -> None:
     latent_dim = params.get("latent_dimensions", 20)
     lr = params.get("learning_rate", 0.001)
     num_epochs = params.get("num_epochs", 200)
-    device = _DEVICE_MAP.get(params.get("device", "cpu"), "cpu")
+    device = resolve_device(params.get("device", "cpu"))
 
     mdata = load_input_mudata()
     dataset_name = job_spec.get("dataset_name") or "dataset"

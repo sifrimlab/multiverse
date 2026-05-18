@@ -9,6 +9,7 @@ from ..data_utils import anndata_concatenate
 from ..logging_utils import get_logger
 from ..utils import get_device
 from .base import ModelFactory
+from .metrics_utils import scvi_history_to_dict
 from .runtime_io import (
     build_model_config,
     load_input_mudata,
@@ -96,24 +97,21 @@ class TotalVIModel(ModelFactory):
         """
         requested = self.config_dict.get("metrics", {}).get("model_metrics")
         metrics = {}
+        history = scvi_history_to_dict(
+            self.model.history if hasattr(self.model, "history") else None
+        )
         if hasattr(self.model, "history") and self.model.history:
             if requested is None or "elbo_train" in requested:
-                if "elbo_train" in self.model.history:
-                    metrics["elbo_train"] = float(
-                        self.model.history["elbo_train"].iloc[-1]
-                    )
+                if "elbo_train" in history:
+                    metrics["elbo_train"] = history["elbo_train"][-1]
             if requested is None or "reconstruction_loss_train" in requested:
-                if "reconstruction_loss_train" in self.model.history:
-                    metrics["reconstruction_loss_train"] = float(
-                        self.model.history["reconstruction_loss_train"].iloc[-1]
-                    )
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+                if "reconstruction_loss_train" in history:
+                    metrics["reconstruction_loss_train"] = history["reconstruction_loss_train"][-1]
+        filtered_history = {}
+        for key, series in history.items():
+            if requested is None or key in requested:
+                filtered_history[key] = series
+        self.write_metrics(metrics, history=filtered_history or None)
 
 def main():
     setup_container_logging()

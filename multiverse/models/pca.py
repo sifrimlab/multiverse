@@ -107,14 +107,7 @@ class PCAModel(ModelFactory):
             logger.warning("PCA variance ratio not available in the model.")
 
         logger.info(f"Evaluation metrics: {metrics}")
-
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+        self.write_metrics(metrics)
 
 
 def main():

@@ -189,9 +189,10 @@ async def test_recover_orphaned_runs_heals_promoting_rows(tmp_path):
     db_path = str(tmp_path / "test_registry.db")
     _init_test_db(db_path)
 
-    # Artifact dir that actually exists on disk (Phase 2 succeeded).
+    # Artifact dir with marker present (Phase 2 fully succeeded).
     existing_dir = str(tmp_path / "existing_artifact")
     os.makedirs(existing_dir)
+    open(os.path.join(existing_dir, ".promotion_complete"), "w").close()
 
     # Artifact dir that does NOT exist (Phase 2 never ran).
     missing_dir = str(tmp_path / "missing_artifact")
@@ -221,16 +222,16 @@ async def test_recover_orphaned_runs_heals_promoting_rows(tmp_path):
 
     conn = sqlite3.connect(db_path)
     rows = {
-        r[0]: r[1]
-        for r in conn.execute("SELECT output_path, status FROM runs").fetchall()
+        r[0]: (r[1], r[2])
+        for r in conn.execute("SELECT output_path, status, failure_reason FROM runs").fetchall()
     }
     conn.close()
 
-    assert rows[existing_dir] == "SUCCESS", (
-        f"Row with existing artifact should be SUCCESS, got {rows[existing_dir]}"
+    assert rows[existing_dir] == ("SUCCESS", None), (
+        f"Row with complete artifact should be SUCCESS, got {rows[existing_dir]}"
     )
-    assert rows[missing_dir] == "FAILED", (
-        f"Row with missing artifact should be FAILED, got {rows[missing_dir]}"
+    assert rows[missing_dir] == ("FAILED", "INCOMPLETE_PROMOTION"), (
+        f"Row with missing artifact should be FAILED/INCOMPLETE_PROMOTION, got {rows[missing_dir]}"
     )
 
 
@@ -244,3 +245,50 @@ async def test_stop_db_writer_is_idempotent():
     # Should be a no-op, not an error.
     await dr.stop_db_writer()
     await dr.stop_db_writer()
+
+
+@pytest.mark.asyncio
+async def test_bounded_queue_backpressure(tmp_path):
+    """start_db_writer() must create a bounded queue for backpressure."""
+    db_path = str(tmp_path / "test_registry.db")
+    _init_test_db(db_path)
+
+    original_db_name = registry_db.DB_NAME
+    registry_db.DB_NAME = db_path
+    try:
+        dr.start_db_writer()
+        assert dr._db_write_queue is not None
+        assert dr._db_write_queue.maxsize == 256
+        await dr.stop_db_writer()
+    finally:
+        registry_db.DB_NAME = original_db_name
+
+
+def test_recover_running_dead_container_marks_orphaned(tmp_path):
+    """RUNNING rows without a live Docker container become FAILED/ORPHANED."""
+    db_path = str(tmp_path / "test_registry.db")
+    _init_test_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO runs (model_slug, model_version, model_name, status, output_path) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ("pca", "1.0.0", "pca", "RUNNING", str(tmp_path / "workspace")),
+    )
+    conn.commit()
+    conn.close()
+
+    original_db_name = registry_db.DB_NAME
+    registry_db.DB_NAME = db_path
+    try:
+        healed = registry_db.recover_orphaned_runs()
+    finally:
+        registry_db.DB_NAME = original_db_name
+
+    assert healed == 1
+    conn = sqlite3.connect(db_path)
+    status, reason = conn.execute(
+        "SELECT status, failure_reason FROM runs WHERE model_slug = ?", ("pca",)
+    ).fetchone()
+    conn.close()
+    assert status == "FAILED"
+    assert reason == "ORPHANED"
