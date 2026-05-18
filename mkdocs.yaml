@@ -1,0 +1,58 @@
+site_name: mvexp Documentation
+site_description: Reproducible benchmarking for multimodal single-cell integration
+site_author: mvexp contributors
+repo_name: mvexp
+
+# Keep the existing documentation tree as the MkDocs source directory.
+docs_dir: docs
+site_dir: site
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Getting Started: GETTING_STARTED.md
+  - How-To Guides:
+      - Data Preparation: DATA_PREPARATION.md
+      - Data Registration: DATA_REGISTRATION.md
+      - Benchmarking: BENCHMARKING.md
+      - Migrate from v1 to v2: HOWTO_MIGRATE_V1_to_V2.md
+      - Adding a Model: ADDING_A_MODEL.md
+  - Reference:
+      - Models Glossary: reference/MODELS_GLOSSARY.md
+      - Evaluation Metrics: reference/EVALUATION_METRICS.md
+      - Model Registration: MODEL_REGISTRATION.md
+      - Model Container Contract: MODEL_CONTAINER_CONTRACT.md
+      - Model Contract: MODEL_CONTRACT.md
+      - Runner: RUNNER.md
+  - Explanation:
+      - Architecture: ARCHITECTURE.md
+      - Streamlit GUI: GUI.md
+      - Model Containers: MODEL_CONTAINERS.md
+      - Developer Guide: DEVELOPER_GUIDE.md
+      - Contributing: CONTRIBUTING.md
+
+theme:
+  name: readthedocs
+  highlightjs: true
+  hljs_languages:
+    - python
+    - yaml
+    - json
+    - bash
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - fenced_code
+
+plugins:
+  - search
+
+extra:
+  social: []
