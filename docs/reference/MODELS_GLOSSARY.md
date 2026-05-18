@@ -1,6 +1,6 @@
 # Models Glossary
 
-This reference summarizes the six built-in integration models available in the v2.x platform. The Streamlit GUI reads each model's registered JSON schema and renders the appropriate parameter controls; users should set these values in the GUI rather than editing legacy configuration files.
+This reference summarizes the six built-in integration models available on the  platform. The Streamlit GUI reads each model's registered JSON schema and renders the appropriate parameter controls; users should set these values in the GUI rather than editing legacy configuration files.
 
 All built-in models write a latent representation to `embeddings.h5`, model-specific metrics to `metrics.json`, and a UMAP plot when the requested color key is available in dataset metadata.
 
@@ -127,16 +127,3 @@ Hyperparameters:
 | `device` | `cpu` | CPU or CUDA target. |
 | `umap_random_state` | `42` | UMAP seed. |
 | `umap_color_type` | `cell_type` | Observation column for UMAP coloring. |
-
-## Common Errors
-
-| Symptom | Likely cause | What to do |
-|---|---|---|
-| A model is not selectable for a dataset | Required omics are not present in the registered dataset. | Check `supported_omics` and the dataset's `omics` list. |
-| Parameter controls are missing | The model's hyperparameter schema is missing or invalid. | Ask the maintainer to check `hyperparameters_schema`. |
-| Model-specific loss is hard to compare | Loss scales differ across model families. | Use loss for within-model diagnostics and comparison reports for cross-model ranking. |
-| UMAP is uncolored | `umap_color_type` is absent from `.obs`. | Use a valid metadata column such as `cell_type`. |
-
-## How to Cite Models
-
-When publishing mvexp results, cite both mvexp and the original papers for the selected integration models. Archive the `model.yaml`, hyperparameter schema, `run_manifest.yaml`, and run provenance so reviewers can identify the exact model configuration used.

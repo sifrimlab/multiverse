@@ -9,6 +9,7 @@ import threading
 import sys
 import time
 import urllib.request
+from collections import deque
 from datetime import timedelta
 from pathlib import Path
 
@@ -173,6 +174,86 @@ def _stream_subprocess(cmd: list[str], status_label: str) -> bool:
 # Tab: Registry
 # ---------------------------------------------------------------------------
 
+def _generate_example_dataset() -> Path:
+    """Write a small synthetic AnnData + manifest under store/datasets/example.
+
+    Lazy import of anndata + numpy keeps the GUI startup cheap; the helper is
+    only reached when the user clicks 'Load Example Dataset' in the empty
+    Registry tab.  Returns the manifest path so the caller can invoke the
+    register-dataset CLI on it.
+    """
+    import anndata as ad
+    import numpy as np
+
+    target_dir = Path("store/datasets/example")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed=42)
+
+    n_cells, n_genes = 50, 200
+    counts = rng.poisson(lam=0.5, size=(n_cells, n_genes)).astype("float32")
+    obs_names = [f"cell_{i:03d}" for i in range(n_cells)]
+    var_names = [f"gene_{i:04d}" for i in range(n_genes)]
+    adata = ad.AnnData(X=counts)
+    adata.obs_names = obs_names
+    adata.var_names = var_names
+    adata.obs["batch"] = ["A" if i % 2 == 0 else "B" for i in range(n_cells)]
+    adata.obs["cell_type"] = [f"type_{i % 3}" for i in range(n_cells)]
+    data_path = target_dir / "rna.h5ad"
+    adata.write_h5ad(data_path)
+
+    manifest_path = target_dir / "dataset.yaml"
+    yaml.safe_dump(
+        {
+            "name": "Example Synthetic",
+            "omics": ["rna"],
+            "raw_files": {"rna": str(data_path.resolve())},
+            "metadata_keys": {"batch": "batch", "cell_type": "cell_type"},
+        },
+        manifest_path.open("w"),
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    return manifest_path
+
+
+def _render_registry_welcome() -> None:
+    """Empty-state welcome panel for first-time users (O-01 + N-09)."""
+    st.success("Welcome to Multiverse! Let's get you to your first benchmark run.")
+    c1, c2, c3 = st.columns(3)
+    c1.markdown(
+        "**1. Register** &nbsp;\n\n"
+        "Add a dataset (an `.h5ad` or `.h5mu` file) and the models you want to compare."
+    )
+    c2.markdown(
+        "**2. Plan** &nbsp;\n\n"
+        "Go to **Job Builder** to pick dataset × model pairs from the compatibility matrix."
+    )
+    c3.markdown(
+        "**3. Execute** &nbsp;\n\n"
+        "Hit **Launch Run** on the Execute tab and watch metrics stream into the Results tab."
+    )
+    st.divider()
+    st.markdown("**Try it without a real dataset:**")
+    if st.button("Load Example Dataset", key="btn_load_example_dataset"):
+        try:
+            manifest_path = _generate_example_dataset()
+        except Exception as exc:
+            st.error(f"Could not generate example dataset: {exc}")
+            return
+        ok = _stream_subprocess(
+            [
+                sys.executable, "-m", "multiverse.runner.cli",
+                "register-dataset", "--manifest", str(manifest_path), "--update",
+            ],
+            "Registering example dataset...",
+        )
+        if ok:
+            track("example_dataset_loaded")
+            st.session_state["registry_dirty"] = True
+            fetch_registry_data.clear()
+            st.rerun()
+
+
 def _render_registry_tab() -> None:
     st.header("Asset Registry")
 
@@ -185,7 +266,7 @@ def _render_registry_tab() -> None:
     datasets, models = fetch_registry_data()
 
     if not datasets and not models:
-        st.info("No assets found. Register a dataset or model below.")
+        _render_registry_welcome()
     else:
         col_ds, col_md = st.columns(2)
 
@@ -714,6 +795,190 @@ def _wave_simulate(job_memory: dict[str, float], cap_gb: float) -> list[dict]:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# Execute-tab subprocess streaming (S-04 fragment refactor)
+# ---------------------------------------------------------------------------
+
+_LOG_DEQUE_MAX = 1000
+_LOG_DISPLAY_TAIL = 40
+
+
+def _drain_pipe(pipe, out_q: "queue.Queue[str | None]") -> None:
+    try:
+        for line in iter(pipe.readline, ""):
+            out_q.put(line)
+    finally:
+        out_q.put(None)
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
+def _launch_run_subprocess(
+    *,
+    manifest_file: Path,
+    output_dir: str,
+    seed: int,
+    planned_jobs: list[dict],
+    repo_root: Path,
+) -> None:
+    """Spawn the orchestrator subprocess and stash all live handles in
+    session_state so the fragment monitor can poll them without rebuilding."""
+    cmd = [
+        sys.executable, "-m", "multiverse.runner.cli", "run",
+        "--manifest", str(manifest_file),
+        "--output", output_dir,
+        "--seed", str(seed),
+    ]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        env=env,
+        cwd=str(repo_root),
+    )
+    stdout_q: "queue.Queue[str | None]" = queue.Queue()
+    stderr_q: "queue.Queue[str | None]" = queue.Queue()
+    threading.Thread(target=_drain_pipe, args=(proc.stdout, stdout_q), daemon=True).start()
+    threading.Thread(target=_drain_pipe, args=(proc.stderr, stderr_q), daemon=True).start()
+
+    st.session_state["_run_proc"] = proc
+    st.session_state["_run_stdout_q"] = stdout_q
+    st.session_state["_run_stderr_q"] = stderr_q
+    st.session_state["_run_stdout_done"] = False
+    st.session_state["_run_stderr_done"] = False
+    st.session_state["_run_log_lines"] = deque(maxlen=_LOG_DEQUE_MAX)
+    st.session_state["_run_job_statuses"] = {
+        f"{j['Dataset']}_{j['Model']}": "Pending" for j in planned_jobs
+    }
+    st.session_state["is_running"] = True
+    st.session_state["run_finalized"] = False
+    st.session_state["_run_returncode"] = None
+
+
+def _drain_run_queues() -> None:
+    """Pull whatever lines are buffered from stdout/stderr without blocking."""
+    log_lines: "deque[str]" = st.session_state["_run_log_lines"]
+    job_statuses: dict[str, str] = st.session_state["_run_job_statuses"]
+    stdout_q: "queue.Queue[str | None]" = st.session_state["_run_stdout_q"]
+    stderr_q: "queue.Queue[str | None]" = st.session_state["_run_stderr_q"]
+
+    while True:
+        try:
+            raw = stdout_q.get_nowait()
+        except queue.Empty:
+            break
+        if raw is None:
+            st.session_state["_run_stdout_done"] = True
+            continue
+        clean = _ANSI_RE.sub("", raw).rstrip()
+        if clean:
+            log_lines.append(clean)
+
+    while True:
+        try:
+            raw = stderr_q.get_nowait()
+        except queue.Empty:
+            break
+        if raw is None:
+            st.session_state["_run_stderr_done"] = True
+            continue
+        clean = raw.strip()
+        if not clean:
+            continue
+        try:
+            event = json.loads(clean)
+        except json.JSONDecodeError:
+            log_lines.append(_ANSI_RE.sub("", clean))
+            continue
+        event_name = event.get("event")
+        job_name = event.get("job")
+        if event_name == "job_start" and job_name in job_statuses:
+            job_statuses[job_name] = "Training"
+        elif event_name == "job_end" and job_name in job_statuses:
+            job_statuses[job_name] = "Done" if event.get("status") == "SUCCESS" else "Failed"
+        elif event_name == "error":
+            log_lines.append(f"ERROR {event.get('kind')}: {event.get('message', '')}")
+
+
+def _finalize_run() -> None:
+    """Mark stragglers as Done/Failed and emit the completion telemetry."""
+    proc: subprocess.Popen = st.session_state["_run_proc"]
+    job_statuses: dict[str, str] = st.session_state["_run_job_statuses"]
+    rc = proc.returncode
+    st.session_state["_run_returncode"] = rc
+    if rc == 0:
+        track("run_completed", status="success", returncode=rc)
+        for k, v in job_statuses.items():
+            if v == "Pending":
+                job_statuses[k] = "Done"
+    else:
+        track("run_completed", status="failed", returncode=rc)
+        for k, v in job_statuses.items():
+            if v in ("Pending", "Training"):
+                job_statuses[k] = "Failed"
+    st.session_state["is_running"] = False
+    st.session_state["run_finalized"] = True
+
+
+@st.fragment(run_every=timedelta(seconds=1))
+def _run_monitor_fragment() -> None:
+    """Poll the subprocess + queues once per second.  All UI is owned by this
+    fragment so the rest of the page does not rerun while the run is live."""
+    proc: subprocess.Popen | None = st.session_state.get("_run_proc")
+    if proc is None:
+        return
+
+    still_running = proc.poll() is None
+    if still_running or not (
+        st.session_state.get("_run_stdout_done") and st.session_state.get("_run_stderr_done")
+    ):
+        _drain_run_queues()
+
+    if not still_running and not st.session_state.get("run_finalized"):
+        _finalize_run()
+
+    job_statuses: dict[str, str] = st.session_state["_run_job_statuses"]
+    log_lines: "deque[str]" = st.session_state["_run_log_lines"]
+
+    st.dataframe(
+        pd.DataFrame([{"Job": k, "Status": v} for k, v in job_statuses.items()]),
+        width="stretch",
+        hide_index=True,
+    )
+
+    if still_running:
+        if st.button("Cancel Run", key="btn_cancel_run"):
+            proc.terminate()
+            st.warning("Pipeline cancellation requested.")
+
+    st.code("\n".join(list(log_lines)[-_LOG_DISPLAY_TAIL:]) or "(no output yet)", language=None)
+
+    if st.session_state.get("run_finalized"):
+        rc = st.session_state.get("_run_returncode")
+        if rc == 0:
+            st.success("Pipeline completed successfully.")
+        else:
+            st.error(f"Pipeline exited with code {rc}.")
+        if log_lines:
+            st.download_button(
+                "Download pipeline log",
+                data="\n".join(log_lines).encode(),
+                file_name="pipeline_output.log",
+                mime="text/plain",
+                key="btn_download_pipeline_log",
+            )
+
+
+def _render_run_monitor() -> None:
+    with st.status("Pipeline run", expanded=True):
+        _run_monitor_fragment()
+
+
 def _render_execute_tab() -> None:
     import psutil
 
@@ -819,7 +1084,12 @@ def _render_execute_tab() -> None:
         if st.button("Go to Job Builder ->", key="shortcut_execute_jobs"):
             go_to("jobs")
 
-    if st.button("Launch Run", key="btn_launch_run", disabled=(not planned_jobs or st.session_state.get("is_running", False))):
+    if st.button(
+        "Launch Run",
+        key="btn_launch_run",
+        disabled=(not planned_jobs or st.session_state.get("is_running", False)),
+        help=None if planned_jobs else "Plan jobs in the Job Builder tab first.",
+    ):
         repo_root = Path(__file__).resolve().parents[1]
         manifest_file = Path(manifest_path_input.strip())
         if not manifest_file.is_absolute():
@@ -843,135 +1113,17 @@ def _render_execute_tab() -> None:
                 st.stop()
 
             track("run_launched", n_jobs=len(planned_jobs), manifest_path=str(manifest_file))
-            cmd = [
-                sys.executable, "-m", "multiverse.runner.cli", "run",
-                "--manifest", str(manifest_file),
-                "--output", output_dir_input.strip(),
-                "--seed", str(int(exec_seed)),
-            ]
+            _launch_run_subprocess(
+                manifest_file=manifest_file,
+                output_dir=output_dir_input.strip(),
+                seed=int(exec_seed),
+                planned_jobs=planned_jobs,
+                repo_root=repo_root,
+            )
+            st.rerun()
 
-            # Build initial status table keyed by CLI job name format
-            job_statuses: dict[str, str] = {
-                f"{j['Dataset']}_{j['Model']}": "Pending"
-                for j in planned_jobs
-            }
-            log_lines: list[str] = []
-            stdout_q: queue.Queue[str | None] = queue.Queue()
-            stderr_q: queue.Queue[str | None] = queue.Queue()
-
-            def _drain_pipe(pipe, out_q):
-                try:
-                    for line in iter(pipe.readline, ""):
-                        out_q.put(line)
-                finally:
-                    out_q.put(None)
-                    try:
-                        pipe.close()
-                    except Exception:
-                        pass
-
-            def _refresh_status_table(placeholder):
-                placeholder.dataframe(
-                    pd.DataFrame([{"Job": k, "Status": v} for k, v in job_statuses.items()]),
-                    width="stretch",
-                    hide_index=True,
-                )
-
-            st.session_state["is_running"] = True
-            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-            proc = None
-            try:
-                with st.status("Running pipeline...", expanded=True) as run_status:
-                    tbl_placeholder = st.empty()
-                    log_placeholder = st.empty()
-                    cancel_slot = st.empty()
-                    _refresh_status_table(tbl_placeholder)
-
-                    proc = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        bufsize=1,
-                        env=env,
-                        cwd=str(repo_root),
-                    )
-                    threading.Thread(target=_drain_pipe, args=(proc.stdout, stdout_q), daemon=True).start()
-                    threading.Thread(target=_drain_pipe, args=(proc.stderr, stderr_q), daemon=True).start()
-
-                    stdout_done = stderr_done = False
-                    _cancel_btn_idx = 0
-                    while proc.poll() is None or not (stdout_done and stderr_done):
-                        if cancel_slot.button("Cancel Run", key=f"btn_cancel_run_{_cancel_btn_idx}") and proc.poll() is None:
-                            proc.terminate()
-                            run_status.update(label="Pipeline cancellation requested", state="running")
-
-                        while True:
-                            try:
-                                raw_line = stdout_q.get_nowait()
-                            except queue.Empty:
-                                break
-                            if raw_line is None:
-                                stdout_done = True
-                                continue
-                            clean = _ANSI_RE.sub("", raw_line).rstrip()
-                            if clean:
-                                log_lines.append(clean)
-
-                        while True:
-                            try:
-                                raw_line = stderr_q.get_nowait()
-                            except queue.Empty:
-                                break
-                            if raw_line is None:
-                                stderr_done = True
-                                continue
-                            clean = raw_line.strip()
-                            if not clean:
-                                continue
-                            try:
-                                event = json.loads(clean)
-                            except json.JSONDecodeError:
-                                log_lines.append(_ANSI_RE.sub("", clean))
-                                continue
-                            event_name = event.get("event")
-                            job_name = event.get("job")
-                            if event_name == "job_start" and job_name in job_statuses:
-                                job_statuses[job_name] = "Training"
-                            elif event_name == "job_end" and job_name in job_statuses:
-                                job_statuses[job_name] = "Done" if event.get("status") == "SUCCESS" else "Failed"
-                            elif event_name == "error":
-                                log_lines.append(f"ERROR {event.get('kind')}: {event.get('message', '')}")
-
-                        _refresh_status_table(tbl_placeholder)
-                        log_placeholder.code("\n".join(log_lines[-40:]), language=None)
-                        _cancel_btn_idx += 1
-                        time.sleep(0.5)
-
-                    if proc.returncode == 0:
-                        track("run_completed", status="success", returncode=proc.returncode)
-                        run_status.update(label="Pipeline completed successfully", state="complete")
-                        for k, v in job_statuses.items():
-                            if v == "Pending":
-                                job_statuses[k] = "Done"
-                    else:
-                        track("run_completed", status="failed", returncode=proc.returncode)
-                        run_status.update(label=f"Pipeline exited with code {proc.returncode}", state="error")
-                        for k, v in job_statuses.items():
-                            if v in ("Pending", "Training"):
-                                job_statuses[k] = "Failed"
-                    _refresh_status_table(tbl_placeholder)
-            finally:
-                st.session_state["is_running"] = False
-                st.session_state["pending_launch"] = None
-
-            if log_lines:
-                st.download_button(
-                    "Download pipeline log",
-                    data="\n".join(log_lines).encode(),
-                    file_name="pipeline_output.log",
-                    mime="text/plain",
-                )
+    if st.session_state.get("is_running") or st.session_state.get("run_finalized"):
+        _render_run_monitor()
 
     # ------------------------------------------------------------------
     # T4.3: Live MLflow Metrics
