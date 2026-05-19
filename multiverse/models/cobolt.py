@@ -148,6 +148,7 @@ class CoboltModel(ModelFactory):
             loss_series = series_to_float_list(self.model.history["loss"])
             if loss_series:
                 history["loss"] = loss_series
+
         self.write_metrics(metrics, history=history or None)
 
 

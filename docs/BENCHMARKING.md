@@ -81,7 +81,8 @@ store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
 | `run_manifest.yaml` | The benchmark recipe: datasets, models, parameters, metrics, seed, and experiment name. |
 | `job_spec.json` | The exact per-run instruction passed to the model. |
 | `embeddings.h5` | The latent representation used for evaluation and downstream notebook work. |
-| `metrics.json` | Model-level diagnostics and metric histories where available. |
+| `metrics.json` | Model-level diagnostics and final metric histories where available. |
+| `metrics.jsonl` | One JSON row per epoch (step, timestamp, metrics) when the model uses `EpochLogger`. Survives crashes. |
 | `umap.png` | Quick visual check of the learned representation. |
 | `container.log` | Human-readable execution log for troubleshooting and peer review. |
 | `provenance.json` | Run provenance when present; include it with supplementary materials. |
@@ -95,6 +96,23 @@ Zero-Path execution means model containers do not know or care where files live 
 - results are written to `/output/`.
 
 For researchers, this means fewer path errors, no hand-written container commands, and comparable runs across models.
+
+## Live Training Metrics
+
+Each containerized model run produces **one MLflow run**, opened by the host *before* the container launches and closed by the host *after* it exits. The run captures four kinds of data in one place:
+
+- **Hyperparameters and tags** — logged at run start by the host so they appear in MLflow before training begins.
+- **System metrics (CPU/GPU/RAM)** — sampled by MLflow's built-in monitor while the parent run is open, which is exactly the duration the container is alive.
+- **Per-epoch metrics** — streamed from inside the container by `EpochLogger` (see [Adding a Model](ADDING_A_MODEL.md#live-per-epoch-metrics-optional-but-recommended)) when the model exposes them. The host injects `MLFLOW_RUN_ID` into the container so `EpochLogger` attaches to the same run instead of opening a duplicate. Models without per-epoch hooks (e.g. PCA) simply skip this step.
+- **Final scalars and artifacts** — appended by the host after the container exits, then the run is ended with `FINISHED` or `FAILED` status.
+
+Connectivity: the Docker runner forwards `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME` into each container, rewriting `localhost`/`127.0.0.1` → `host.docker.internal` so containers can reach a host-bound MLflow server. For this to work on Linux, the runner also passes `--add-host=host.docker.internal:host-gateway` (handled automatically). If your MLflow server is bound to `127.0.0.1` only, start it with `mlflow server --host 0.0.0.0 --port 5000` so the gateway can reach it.
+
+Local sidecar: each run also writes **`metrics.jsonl`** — one JSON line per epoch (`step`, `timestamp`, metrics) — alongside `metrics.json`. It survives crashes and is convenient for offline analysis (`pandas.read_json(path, lines=True)`).
+
+Cobolt is the reference example of a wired-up model container — see [store/models/cobolt/container/run.py](../store/models/cobolt/container/run.py).
+
+> **Rebuild after editing a model container or `mvr_worker`.** The SDK is `COPY`'d into each image at build time, so changes only take effect after rebuilding (`docker compose build <model>`).
 
 ## Comparison Reports
 

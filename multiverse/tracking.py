@@ -148,19 +148,16 @@ def load_run_metrics(workspace_dir: str) -> Dict[str, Any]:
         return {}
 
 
-def log_successful_run_to_mlflow(
-    *,
+def _resolve_mlflow_settings(
     job_context: Dict[str, Any],
     job_spec: Dict[str, Any],
-    metrics: Dict[str, Any],
-    artifacts_dir: str,
-) -> None:
-    """Best-effort MLflow proxy logger for successful runs."""
+) -> Tuple[Optional[Any], str, Dict[str, Any]]:
+    """Return (mlflow module, experiment_name, run_settings) or (None, "", {}) on failure."""
     try:
         mlflow = importlib.import_module("mlflow")
-    except Exception as exc:  # pragma: no cover - depends on runtime env
+    except Exception as exc:
         logger.warning(f"MLflow unavailable; skipping tracking. ({exc})")
-        return
+        return None, "", {}
 
     run_settings = job_spec.get("run_settings", {}) if isinstance(job_spec, dict) else {}
     tracking_uri = (
@@ -174,9 +171,120 @@ def log_successful_run_to_mlflow(
         or job_context.get("experiment_name")
         or "default_experiment"
     )
-
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
+    return mlflow, experiment_name, run_settings
+
+
+def start_parent_mlflow_run(
+    *,
+    job_context: Dict[str, Any],
+    job_spec: Dict[str, Any],
+    run_name: str,
+) -> Optional[str]:
+    """Open an MLflow run on the host *before* the container launches.
+
+    Returns the run_id so the caller can forward it via ``MLFLOW_RUN_ID`` to the
+    container's :class:`EpochLogger` (which will attach to the same run and stream
+    per-epoch metrics live). Enables system metrics on the parent so CPU/GPU
+    samples are captured while the container trains.
+
+    The caller is responsible for ending the run via :func:`finalize_parent_mlflow_run`.
+    """
+    mlflow, _experiment, run_settings = _resolve_mlflow_settings(job_context, job_spec)
+    if mlflow is None:
+        return None
+
+    start_kwargs: Dict[str, Any] = {"run_name": run_name}
+    try:
+        import inspect
+        if "log_system_metrics" in inspect.signature(mlflow.start_run).parameters:
+            start_kwargs["log_system_metrics"] = True
+    except Exception:
+        pass
+
+    try:
+        active = mlflow.start_run(**start_kwargs)
+    except Exception as exc:
+        logger.warning("MLflow start_parent failed: %s", exc)
+        return None
+
+    try:
+        params = _to_flat_str_params(job_spec.get("hyperparameters", {}))
+        if params:
+            mlflow.log_params(params)
+        tags: Dict[str, str] = {}
+        if isinstance(run_settings.get("mlflow_tags"), dict):
+            tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
+        if "optuna_trial_id" in run_settings:
+            tags["optuna_trial_id"] = str(run_settings["optuna_trial_id"])
+        if tags:
+            mlflow.set_tags(tags)
+    except Exception as exc:
+        logger.warning("MLflow parent run metadata logging failed: %s", exc)
+
+    return active.info.run_id
+
+
+def finalize_parent_mlflow_run(
+    *,
+    run_id: str,
+    job_context: Dict[str, Any],
+    job_spec: Dict[str, Any],
+    metrics: Dict[str, Any],
+    artifacts_dir: str,
+    status: str = "FINISHED",
+) -> None:
+    """Attach to a parent MLflow run, append final scalars + artifacts, end it.
+
+    Per-epoch history is *not* re-logged here — the container's
+    :class:`EpochLogger` already streamed it into the same run. This finalizer
+    only adds whatever the container could not produce on its own: the final
+    artifact bundle and any scalar metrics missing from the live stream.
+    """
+    mlflow, _experiment, _settings = _resolve_mlflow_settings(job_context, job_spec)
+    if mlflow is None:
+        return
+
+    try:
+        active = mlflow.active_run()
+        if active is None or active.info.run_id != run_id:
+            mlflow.start_run(run_id=run_id)
+    except Exception as exc:
+        logger.warning("MLflow finalize attach failed: %s", exc)
+        return
+
+    try:
+        scalars, histories = split_metrics_payload(metrics)
+        try:
+            _log_final_scalars(mlflow, scalars, histories)
+        except Exception as exc:
+            logger.warning("MLflow final scalar logging failed: %s", exc)
+        _log_artifacts_filtered(mlflow, artifacts_dir)
+    except Exception as exc:
+        logger.warning("MLflow finalize body raised: %s", exc)
+    finally:
+        try:
+            mlflow.end_run(status=status)
+        except Exception as exc:
+            logger.warning("MLflow end_run failed: %s", exc)
+
+
+def log_successful_run_to_mlflow(
+    *,
+    job_context: Dict[str, Any],
+    job_spec: Dict[str, Any],
+    metrics: Dict[str, Any],
+    artifacts_dir: str,
+) -> None:
+    """Legacy single-shot logger used when no parent run is open.
+
+    Kept for non-Docker callers; new container path uses
+    :func:`start_parent_mlflow_run` + :func:`finalize_parent_mlflow_run`.
+    """
+    mlflow, _experiment, run_settings = _resolve_mlflow_settings(job_context, job_spec)
+    if mlflow is None:
+        return
 
     params = _to_flat_str_params(job_spec.get("hyperparameters", {}))
     scalars, histories = split_metrics_payload(metrics)
@@ -191,7 +299,7 @@ def log_successful_run_to_mlflow(
         f"-{Path(artifacts_dir).name}"
     )
 
-    start_kwargs = {"run_name": run_name}
+    start_kwargs: Dict[str, Any] = {"run_name": run_name}
     try:
         import inspect
         if "log_system_metrics" in inspect.signature(mlflow.start_run).parameters:
@@ -201,7 +309,7 @@ def log_successful_run_to_mlflow(
 
     with mlflow.start_run(**start_kwargs):
         try:
-            mlflow_tags = {}
+            mlflow_tags: Dict[str, str] = {}
             if isinstance(run_settings.get("mlflow_tags"), dict):
                 mlflow_tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
             if "optuna_trial_id" in run_settings:

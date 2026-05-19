@@ -93,6 +93,42 @@ Minimal schema:
 | `build.context` | Optional | Build context for maintainers. |
 | `build.dockerfile` | Optional | Dockerfile path for maintainers. |
 
+## Live Per-Epoch Metrics (Optional but Recommended)
+
+If your model trains iteratively, stream per-epoch metrics so they appear live in MLflow and survive crashes via a local `metrics.jsonl` sidecar. Use the thin helper `EpochLogger` exported from the `mvr_worker` SDK — every model container already installs it. It logs to MLflow when `MLFLOW_TRACKING_URI` is set in the container environment (the runner propagates this automatically) and otherwise silently writes JSONL only.
+
+Manual loop (PyTorch-style):
+
+```python
+from mvr_worker import EpochLogger
+
+with EpochLogger(
+    jsonl_path="/output/metrics.jsonl",
+    run_name=f"{dataset_name}-{model_name}",
+) as ep:
+    for epoch in range(num_epochs):
+        train_loss = train_one_epoch(...)
+        val_loss = evaluate(...)
+        ep.log(step=epoch, train_loss=train_loss, val_loss=val_loss)
+```
+
+Framework with built-in history (scvi-tools, Cobolt, etc.) — replay after `.train()`:
+
+```python
+with EpochLogger(jsonl_path="/output/metrics.jsonl", run_name=run_name) as ep:
+    length = max(len(v) for v in history.values())
+    for step in range(length):
+        ep.log(step=step, **{k: v[step] for k, v in history.items() if step < len(v)})
+```
+
+Keras: instantiate `EpochLogger` and pass an `on_epoch_end` callback that calls `ep.log(step=epoch, **logs)`. A copy-pasteable template is included at the bottom of [epoch_logger.py](../sdk/mvr-worker/mvr_worker/epoch_logger.py).
+
+`EpochLogger` does **not** replace writing `metrics.json` — your container should still write final scalars + a `history` block to `/output/metrics.json` as usual. The two are complementary: `metrics.json` is the final summary, `metrics.jsonl` is the live stream. See [store/models/cobolt/container/run.py](../store/models/cobolt/container/run.py) for a reference wiring.
+
+**Single MLflow run per execution.** The host runner opens an MLflow run with hyperparameters + system-metrics monitoring *before* launching your container, and injects `MLFLOW_RUN_ID` into the container environment. `EpochLogger` detects that variable and attaches to the same run instead of starting a fresh one. After the container exits, the host appends final scalars + artifacts to that run and closes it with `FINISHED` or `FAILED`. You don't need to do anything special in your container — just call `EpochLogger(...)` as shown above. If `MLFLOW_RUN_ID` is absent (e.g. running your container manually outside the runner), `EpochLogger` falls back to creating its own run.
+
+> **Rebuild required.** Because `mvr_worker` is `COPY`'d into the image at build time, any change to your model container or to the SDK takes effect only after rebuilding the image (`docker compose build <model>` or your usual image build).
+
 ## Explanation: Designing for Notebook-First Researchers
 
 Researchers should not need to know how your model is launched. Put all user-facing choices in the hyperparameter schema, use clear parameter names, and write interpretable metrics. If a parameter would be hard to explain in a Methods section, document it in the schema description or model glossary.

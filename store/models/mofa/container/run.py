@@ -1,4 +1,7 @@
 """MOFA container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+import json
+import math
+import os
 import random
 
 import muon as mu
@@ -55,6 +58,23 @@ def main() -> None:
 
     latent = mdata.obsm["X_mofa"]
     save_embeddings(latent, OUTPUT_DIR)
+
+    # MOFA does not expose per-iteration ELBO at the Python level; emit a single
+    # scalar (total explained variance) so metrics.json + finalize work uniformly.
+    total_variance = 0.0
+    for modality in mdata.mod.values():
+        modality_data = modality.X.toarray() if hasattr(modality.X, "toarray") else modality.X
+        total_variance += float(np.var(modality_data, axis=0).sum())
+    factor_variances = np.var(latent, axis=0)
+    explained = (factor_variances / total_variance) if total_variance > 0 else np.zeros_like(factor_variances)
+    total_explained = float(np.sum(explained))
+
+    payload: dict = {}
+    if math.isfinite(total_explained):
+        payload["total_variance"] = total_explained
+    with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2)
+
     logger.info("MOFA run complete.")
 
 

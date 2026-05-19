@@ -1,4 +1,6 @@
 """Mowgli container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+import json
+import os
 import random
 
 import mowgli
@@ -12,6 +14,7 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
+    replay_history,
     resolve_device,
     save_embeddings,
     setup_container_logging,
@@ -39,6 +42,7 @@ def main() -> None:
     device = resolve_device(params.get("device", "cpu"))
 
     mdata = load_input_mudata()
+    dataset_name = job_spec.get("dataset_name") or "dataset"
 
     # Mowgli requires highly_variable annotation on every modality var.
     for mod in list(mdata.mod.keys()):
@@ -65,6 +69,24 @@ def main() -> None:
     )
 
     save_embeddings(mdata.obsm["W_OT"], OUTPUT_DIR)
+
+    raw_losses = list(getattr(model, "losses", []) or [])
+    # Mowgli minimizes -OT loss internally; flip sign so the curve trends down to zero.
+    ot_loss_series = [-float(v) for v in raw_losses]
+    history = replay_history(
+        {"ot_loss": ot_loss_series} if ot_loss_series else {},
+        output_dir=OUTPUT_DIR,
+        run_name=f"{dataset_name}-mowgli-{os.path.basename(OUTPUT_DIR)}",
+    )
+
+    payload: dict = {}
+    if "ot_loss" in history:
+        payload["ot_loss"] = history["ot_loss"][-1]
+    if history:
+        payload["history"] = history
+    with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2)
+
     logger.info("Mowgli run complete.")
 
 

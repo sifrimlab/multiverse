@@ -1,4 +1,5 @@
 from .device import resolve_device
+from .epoch_logger import EpochLogger, replay_history
 from .io import (
     INPUT_DATA_PATH,
     JOB_SPEC_PATH,
@@ -16,7 +17,9 @@ __all__ = [
     "INPUT_DATA_PATH",
     "JOB_SPEC_PATH",
     "OUTPUT_DIR",
+    "EpochLogger",
     "anndata_concatenate",
+    "replay_history",
     "build_model_config",
     "get_logger",
     "load_input_mudata",

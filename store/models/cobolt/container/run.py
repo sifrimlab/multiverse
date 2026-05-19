@@ -1,4 +1,6 @@
 """Cobolt container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+import json
+import os
 import random
 
 import numpy as np
@@ -13,6 +15,7 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
+    replay_history,
     resolve_device,
     save_embeddings,
     setup_container_logging,
@@ -66,6 +69,21 @@ def main() -> None:
     latent = all_latent[[comb_idx]].squeeze(0)
 
     save_embeddings(latent, OUTPUT_DIR)
+
+    history = replay_history(
+        getattr(model, "history", None) or {},
+        output_dir=OUTPUT_DIR,
+        run_name=f"{dataset_name}-cobolt-{os.path.basename(OUTPUT_DIR)}",
+    )
+
+    payload: dict = {}
+    if "loss" in history:
+        payload["loss"] = history["loss"][-1]
+    if history:
+        payload["history"] = history
+    with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2)
+
     logger.info("Cobolt run complete.")
 
 

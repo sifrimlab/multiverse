@@ -1,4 +1,6 @@
 """MultiVI container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+import json
+import os
 import random
 
 import numpy as np
@@ -12,6 +14,7 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
+    replay_history,
     save_embeddings,
     setup_container_logging,
 )
@@ -32,6 +35,7 @@ def main() -> None:
     params = config["model"].get("multivi", {})
 
     mdata = load_input_mudata()
+    dataset_name = job_spec.get("dataset_name") or "dataset"
     adata = anndata_concatenate(
         [mdata[m] for m in mdata.mod.keys()],
         list(mdata.mod.keys()),
@@ -62,6 +66,25 @@ def main() -> None:
     model.train()
 
     save_embeddings(model.get_latent_representation(), OUTPUT_DIR)
+
+    raw_history = getattr(model, "history", None) or {}
+    if hasattr(raw_history, "keys"):
+        raw_history = {k: raw_history[k] for k in raw_history.keys()}
+    history = replay_history(
+        raw_history,
+        output_dir=OUTPUT_DIR,
+        run_name=f"{dataset_name}-multivi-{os.path.basename(OUTPUT_DIR)}",
+    )
+
+    payload: dict = {}
+    for key in ("elbo_train", "reconstruction_loss_train"):
+        if key in history:
+            payload[key] = history[key][-1]
+    if history:
+        payload["history"] = history
+    with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as fp:
+        json.dump(payload, fp, indent=2)
+
     logger.info("MultiVI run complete.")
 
 

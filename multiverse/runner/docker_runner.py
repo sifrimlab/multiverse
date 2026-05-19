@@ -13,7 +13,12 @@ import subprocess
 import time
 from ..logging_utils import get_logger
 from ..registry_db import ARTIFACTS_DIR, WORKSPACES_DIR, get_db_connection
-from ..tracking import load_run_metrics, log_successful_run_to_mlflow
+from ..tracking import (
+    finalize_parent_mlflow_run,
+    load_run_metrics,
+    log_successful_run_to_mlflow,
+    start_parent_mlflow_run,
+)
 from ..multiverse_config import get_docker_data_root
 
 logger = get_logger(__name__)
@@ -490,6 +495,72 @@ def _standard_volumes(dataset_path: str, output_dir: str) -> dict:
     }
 
 
+def _open_parent_mlflow_run(
+    workspace_dir: str,
+    job_context: dict,
+    final_artifact_dir: str,
+) -> tuple[Optional[str], dict]:
+    """Read job_spec from the workspace, open a parent MLflow run, return (run_id, job_spec).
+
+    The run_id (if any) is injected into the container env so EpochLogger inside
+    the container attaches to the same run instead of starting a duplicate one.
+    Falls back to (None, {}) if MLflow is unavailable or job_spec is missing —
+    the legacy post-hoc logger still runs in that case.
+    """
+    job_spec: dict = {}
+    job_spec_path = os.path.join(workspace_dir, "job_spec.json")
+    if os.path.exists(job_spec_path):
+        try:
+            with open(job_spec_path, "r", encoding="utf-8") as fp:
+                job_spec = json.load(fp)
+        except Exception as exc:
+            logger.warning("Failed reading job_spec.json for MLflow parent run: %s", exc)
+    dataset_name = (
+        job_context.get("dataset_name") or job_context.get("dataset_slug") or "dataset"
+    )
+    model_name = job_spec.get("model_name") or job_context.get("model_name_orig", "model")
+    run_name = f"{dataset_name}-{model_name}-{os.path.basename(final_artifact_dir)}"
+    try:
+        run_id = start_parent_mlflow_run(
+            job_context=job_context,
+            job_spec=job_spec,
+            run_name=run_name,
+        )
+    except Exception as exc:
+        logger.warning("start_parent_mlflow_run raised: %s", exc)
+        run_id = None
+    return run_id, job_spec
+
+
+def _inject_parent_run_id(run_kwargs: dict, run_id: Optional[str]) -> dict:
+    """Add MLFLOW_RUN_ID to the container environment so EpochLogger attaches."""
+    if not run_id:
+        return run_kwargs
+    env = dict(run_kwargs.get("environment") or {})
+    env["MLFLOW_RUN_ID"] = run_id
+    return {**run_kwargs, "environment": env}
+
+
+def _standard_environment() -> dict:
+    """Forward host MLflow + experiment env into every model container.
+
+    Rewrites localhost/127.0.0.1 in the tracking URI to host.docker.internal so
+    containers can reach a host-bound MLflow server. Returns {} when nothing is
+    set on the host (containers then silently skip MLflow logging).
+    """
+    env: dict = {}
+    uri = os.getenv("MLFLOW_TRACKING_URI")
+    if uri:
+        rewritten = uri.replace("//localhost", "//host.docker.internal").replace(
+            "//127.0.0.1", "//host.docker.internal"
+        )
+        env["MLFLOW_TRACKING_URI"] = rewritten
+    exp = os.getenv("MLFLOW_EXPERIMENT_NAME")
+    if exp:
+        env["MLFLOW_EXPERIMENT_NAME"] = exp
+    return env
+
+
 def _safe_name(value: str, fallback: str) -> str:
     if not value:
         return fallback
@@ -545,6 +616,12 @@ def _run_and_promote_sync(
     """
     job_context = job_context or {}
     os.makedirs(os.path.dirname(final_artifact_dir), exist_ok=True)
+
+    parent_run_id, parent_job_spec = _open_parent_mlflow_run(
+        workspace_dir, job_context, final_artifact_dir
+    )
+    run_kwargs = _inject_parent_run_id(run_kwargs, parent_run_id)
+
     container = client.containers.run(**run_kwargs)
     wait_result = container.wait()
     exit_code = wait_result.get("StatusCode", 1)
@@ -556,26 +633,36 @@ def _run_and_promote_sync(
     status = "FAILED"
     final_output_path = workspace_dir
     if exit_code == 0:
-        job_spec_payload: dict = {}
-        job_spec_path = os.path.join(workspace_dir, "job_spec.json")
-        if os.path.exists(job_spec_path):
-            try:
-                with open(job_spec_path, "r", encoding="utf-8") as fp:
-                    job_spec_payload = json.load(fp)
-            except Exception as exc:
-                logger.warning("Failed reading job_spec.json for MLflow: %s", exc)
+        job_spec_payload: dict = parent_job_spec or {}
+        if not job_spec_payload:
+            job_spec_path = os.path.join(workspace_dir, "job_spec.json")
+            if os.path.exists(job_spec_path):
+                try:
+                    with open(job_spec_path, "r", encoding="utf-8") as fp:
+                        job_spec_payload = json.load(fp)
+                except Exception as exc:
+                    logger.warning("Failed reading job_spec.json for MLflow: %s", exc)
         metrics_payload = load_run_metrics(workspace_dir)
 
         shutil.move(workspace_dir, final_artifact_dir)
         status = "SUCCESS"
         final_output_path = final_artifact_dir
         try:
-            log_successful_run_to_mlflow(
-                job_context=job_context,
-                job_spec=job_spec_payload,
-                metrics=metrics_payload,
-                artifacts_dir=final_artifact_dir,
-            )
+            if parent_run_id:
+                finalize_parent_mlflow_run(
+                    run_id=parent_run_id,
+                    job_context=job_context,
+                    job_spec=job_spec_payload,
+                    metrics=metrics_payload,
+                    artifacts_dir=final_artifact_dir,
+                )
+            else:
+                log_successful_run_to_mlflow(
+                    job_context=job_context,
+                    job_spec=job_spec_payload,
+                    metrics=metrics_payload,
+                    artifacts_dir=final_artifact_dir,
+                )
         except Exception as exc:
             logger.warning("MLflow tracking failed; continuing. (%s)", exc)
     else:
@@ -584,6 +671,18 @@ def _run_and_promote_sync(
             exit_code,
             workspace_dir,
         )
+        if parent_run_id:
+            try:
+                finalize_parent_mlflow_run(
+                    run_id=parent_run_id,
+                    job_context=job_context,
+                    job_spec=parent_job_spec or {},
+                    metrics={},
+                    artifacts_dir=workspace_dir,
+                    status="FAILED",
+                )
+            except Exception as exc:
+                logger.warning("MLflow FAILED finalize raised: %s", exc)
 
     container.remove()
     return exit_code, status, final_output_path, logs_text
@@ -640,6 +739,22 @@ async def _supervise_container(
                 """,
                 ("FAILED", workspace_dir, f"CONTAINER_EXIT:{exit_code}", run_id),
             )
+            parent_run_id = job_context.get("_mlflow_parent_run_id")
+            if parent_run_id:
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: finalize_parent_mlflow_run(
+                            run_id=parent_run_id,
+                            job_context=job_context,
+                            job_spec=job_context.get("_mlflow_parent_job_spec") or {},
+                            metrics={},
+                            artifacts_dir=workspace_dir,
+                            status="FAILED",
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("MLflow FAILED finalize raised: %s", exc)
             await asyncio.shield(loop.run_in_executor(None, container.remove))
             return exit_code, "FAILED", workspace_dir, logs_text
 
@@ -701,20 +816,34 @@ async def _supervise_container(
             logger.warning("run_metrics persistence failed for run %s: %s", run_id, exc)
 
         try:
-            job_spec_payload: dict = {}
-            job_spec_path = os.path.join(final_artifact_dir, "job_spec.json")
-            if os.path.exists(job_spec_path):
-                with open(job_spec_path, "r", encoding="utf-8") as fp:
-                    job_spec_payload = json.load(fp)
-            await loop.run_in_executor(
-                None,
-                lambda: log_successful_run_to_mlflow(
-                    job_context=job_context,
-                    job_spec=job_spec_payload,
-                    metrics=metrics_payload,
-                    artifacts_dir=final_artifact_dir,
-                ),
-            )
+            job_spec_payload: dict = job_context.get("_mlflow_parent_job_spec") or {}
+            if not job_spec_payload:
+                job_spec_path = os.path.join(final_artifact_dir, "job_spec.json")
+                if os.path.exists(job_spec_path):
+                    with open(job_spec_path, "r", encoding="utf-8") as fp:
+                        job_spec_payload = json.load(fp)
+            parent_run_id = job_context.get("_mlflow_parent_run_id")
+            if parent_run_id:
+                await loop.run_in_executor(
+                    None,
+                    lambda: finalize_parent_mlflow_run(
+                        run_id=parent_run_id,
+                        job_context=job_context,
+                        job_spec=job_spec_payload,
+                        metrics=metrics_payload,
+                        artifacts_dir=final_artifact_dir,
+                    ),
+                )
+            else:
+                await loop.run_in_executor(
+                    None,
+                    lambda: log_successful_run_to_mlflow(
+                        job_context=job_context,
+                        job_spec=job_spec_payload,
+                        metrics=metrics_payload,
+                        artifacts_dir=final_artifact_dir,
+                    ),
+                )
         except Exception as exc:
             logger.warning("MLflow tracking failed; continuing pipeline promotion. (%s)", exc)
 
@@ -784,6 +913,17 @@ async def run_and_promote(
         "multiverse.run.final_artifact_dir": final_artifact_dir,
     })
     run_kwargs = {**run_kwargs, "labels": labels}
+
+    parent_run_id, parent_job_spec = await loop.run_in_executor(
+        None,
+        lambda: _open_parent_mlflow_run(workspace_dir, job_context, final_artifact_dir),
+    )
+    run_kwargs = _inject_parent_run_id(run_kwargs, parent_run_id)
+    job_context = {
+        **job_context,
+        "_mlflow_parent_run_id": parent_run_id,
+        "_mlflow_parent_job_spec": parent_job_spec,
+    }
 
     try:
         container = await loop.run_in_executor(
@@ -902,6 +1042,8 @@ async def run_models_concurrently(
         run_kwargs = {
             "image": image_tag,
             "volumes": _standard_volumes(data_path, model_output_dir),
+            "environment": _standard_environment(),
+            "extra_hosts": {"host.docker.internal": "host-gateway"},
             "detach": True,
             "remove": False,
             "mem_limit": mem_limit,
@@ -1017,6 +1159,8 @@ async def run_jobs_concurrently(
         run_kwargs = {
             "image": job["image"],
             "volumes": _standard_volumes(job["dataset_path"], workspace_dir),
+            "environment": _standard_environment(),
+            "extra_hosts": {"host.docker.internal": "host-gateway"},
             "detach": True,
             "remove": False,
             "mem_limit": job_mem_limit,  # kernel hard-enforcer via cgroups
