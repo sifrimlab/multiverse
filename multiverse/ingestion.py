@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 import os
-import shutil
-import time
 import hashlib
-import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import re
 import yaml
@@ -121,38 +118,6 @@ def validate_dataset_structure(
 
     logger.info(f"Dataset validated. Available omics: {omics}")
     return omics
-
-def register_dataset(file_path: str, name: str, batch_key: str):
-    """Validates, copies, and registers a dataset into the SQLite registry."""
-    if not os.path.exists(file_path):
-        raise FileNotFoundError(f"Dataset file not found at {file_path}")
-
-    # Load and validate
-    data = load_dataset(file_path)
-    omics = validate_dataset_structure(data, batch_key=batch_key)
-
-    # Prepare destination path
-    file_name = os.path.basename(file_path)
-    dest_path = os.path.join(registry_db.RAW_DATASETS_DIR, file_name)
-
-    # Handle name collision by adding timestamp if needed
-    if os.path.exists(dest_path):
-        base, ext = os.path.splitext(file_name)
-        counter = 1
-        while os.path.exists(dest_path):
-            new_file_name = f"{base}_{int(time.time())}_{counter}{ext}"
-            dest_path = os.path.join(registry_db.RAW_DATASETS_DIR, new_file_name)
-            counter += 1
-
-    # Copy dataset
-    logger.info(f"Copying dataset from {file_path} to {dest_path}")
-    shutil.copy2(file_path, dest_path)
-
-    # Record in DB
-    dataset_id = registry_db.insert_dataset(name, dest_path, omics, status="READY")
-    logger.info(f"Dataset registered with ID {dataset_id}")
-    return dataset_id
-
 
 def sanitize_slug(slug: str) -> str:
     if not slug or "/" in slug or ".." in slug:
@@ -299,6 +264,27 @@ def preprocess_dataset(manifest_path: str) -> str:
 
     logger.info(f"Building MuData with modalities: {list(modalities)}")
     mdata = md.MuData(modalities)
+
+    # Promote declared metadata keys from modality obs to top-level mdata.obs so
+    # that preflight validation and evaluation can find them without inspecting each
+    # modality separately.
+    declared_keys = list(manifest.metadata_keys.values())
+    for key in declared_keys:
+        if key and key not in mdata.obs.columns:
+            for mod_name, mod_adata in mdata.mod.items():
+                if key in mod_adata.obs.columns:
+                    mdata.obs[key] = mod_adata.obs[key].reindex(mdata.obs.index)
+                    logger.info(
+                        "Promoted metadata key '%s' from modality '%s' to mdata.obs.",
+                        key, mod_name,
+                    )
+                    break
+            else:
+                logger.warning(
+                    "Declared metadata key '%s' not found in any modality obs; skipping promotion.",
+                    key,
+                )
+
     logger.info(f"Writing processed MuData to {processed_path}")
     mdata.write_h5mu(str(processed_path))
     return str(processed_path)

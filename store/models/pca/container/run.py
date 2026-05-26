@@ -12,6 +12,7 @@ from mvr_worker import (
     load_input_mudata,
     load_job_spec,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 
@@ -42,7 +43,9 @@ def main() -> None:
     else:
         sc.pp.pca(adata, n_comps=n_components, use_highly_variable=False)
 
-    save_embeddings(adata.obsm["X_pca"], OUTPUT_DIR)
+    latent = adata.obsm["X_pca"]
+    save_embeddings(latent, OUTPUT_DIR)
+    save_umap(latent, adata.obs, OUTPUT_DIR)
     logger.info("PCA run complete.")
 
 

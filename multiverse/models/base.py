@@ -84,19 +84,6 @@ class ModelFactory:
             model_specific_params = self.model_params.get(self.model_name)
             self.umap_color_type = model_specific_params.get("umap_color_type")
 
-    def update_parameters(self, **kwargs):
-        """Updates the model attributes with new parameter values.
-
-        Args:
-            **kwargs: Dictionary of attribute names and new values.
-        """
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                # Handle invalid parameter names if necessary
-                logger.warning(f"Invalid parameter name '{key}'")
-
     def train(self):
         """Abstract method for training the model. Subclasses must implement this."""
         logger.info("Training the model.")

@@ -896,15 +896,20 @@ async def run_and_promote(
 
     os.makedirs(os.path.dirname(final_artifact_dir), exist_ok=True)
 
+    manifest_run_id = job_context.get("manifest_run_id")
+    params_hash = job_context.get("params_hash")
+
     db_run_id: Optional[int] = None
     if dataset_id is not None:
         db_run_id = await _db_write(
             """
             INSERT INTO runs
-            (dataset_id, model_slug, model_version, model_name, status, output_path, container_id, failure_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (dataset_id, model_slug, model_version, model_name, status, output_path,
+             container_id, failure_reason, manifest_run_id, params_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (dataset_id, model_slug, model_version, model_name, "RUNNING", workspace_dir, None, None),
+            (dataset_id, model_slug, model_version, model_name, "RUNNING", workspace_dir,
+             None, None, manifest_run_id, params_hash),
         )
 
     labels = dict(run_kwargs.get("labels") or {})
@@ -1022,7 +1027,6 @@ async def run_models_concurrently(
         dict: A dictionary mapping model names to their final status ("success" or "failed").
     """
     client = get_docker_client()
-    loop = asyncio.get_running_loop()
 
     async def run_single_model(model_name, image_tag):
         if status_callback:
@@ -1116,7 +1120,6 @@ async def run_jobs_concurrently(
     logger.info("ResourcePool initialised: %.1f GiB total host RAM", host_ram_gb)
 
     client = get_docker_client()
-    loop = asyncio.get_running_loop()
 
     if use_gpu and not _docker_gpu_available(client):
         logger.warning(

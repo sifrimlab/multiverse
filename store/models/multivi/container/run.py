@@ -16,6 +16,7 @@ from mvr_worker import (
     load_job_spec,
     replay_history,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 
@@ -31,8 +32,6 @@ def main() -> None:
     random.seed(seed)
     np.random.seed(seed)
     scvi.settings.seed = seed
-
-    params = config["model"].get("multivi", {})
 
     mdata = load_input_mudata()
     dataset_name = job_spec.get("dataset_name") or "dataset"
@@ -65,7 +64,9 @@ def main() -> None:
     model = scvi.model.MULTIVI(adata, n_genes=n_genes, n_regions=n_regions)
     model.train()
 
-    save_embeddings(model.get_latent_representation(), OUTPUT_DIR)
+    latent = model.get_latent_representation()
+    save_embeddings(latent, OUTPUT_DIR)
+    save_umap(latent, adata.obs, OUTPUT_DIR)
 
     raw_history = getattr(model, "history", None) or {}
     if hasattr(raw_history, "keys"):

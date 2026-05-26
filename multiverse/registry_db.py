@@ -211,6 +211,8 @@ def _migrate_runs_table(conn: sqlite3.Connection) -> None:
     column_defs = {
         "container_id": "TEXT",
         "failure_reason": "TEXT",
+        "manifest_run_id": "TEXT",
+        "params_hash": "TEXT",
     }
     for col, col_type in column_defs.items():
         if col not in cols:

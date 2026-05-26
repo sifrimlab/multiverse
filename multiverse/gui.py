@@ -432,6 +432,13 @@ def _render_job_builder_tab() -> None:
     import psutil
     import yaml as _yaml
 
+    # Promote any experiment name staged by the Load Manifest button before the
+    # text_input widget renders.  Direct session-state assignment for a widget key
+    # after the widget has been rendered raises StreamlitAPIException in Streamlit
+    # ≥1.25, so we use this staging key as an intermediary.
+    if "_pending_experiment_name" in st.session_state:
+        st.session_state["experiment_name"] = st.session_state.pop("_pending_experiment_name")
+
     st.header("Job Builder")
 
     datasets, models = fetch_registry_data()
@@ -574,8 +581,9 @@ def _render_job_builder_tab() -> None:
     if planned_jobs:
         st.divider()
         st.subheader("Generate Run Manifest")
-        st.text_input(
+        experiment_name_input = st.text_input(
             "Experiment Name",
+            value=st.session_state.get("experiment_name", "benchmark_run"),
             key="experiment_name",
             help="Shared with the Execute tab's live metrics panel.",
         )
@@ -599,7 +607,7 @@ def _render_job_builder_tab() -> None:
                     loaded = yaml.safe_load(Path(load_path).read_text(encoding="utf-8")) or {}
                     globals_cfg = loaded.get("globals", {}) if isinstance(loaded, dict) else {}
                     if "experiment_name" in globals_cfg:
-                        st.session_state["experiment_name"] = str(globals_cfg["experiment_name"])
+                        st.session_state["_pending_experiment_name"] = str(globals_cfg["experiment_name"])
                     if globals_cfg.get("run_gridsearch"):
                         st.session_state["run_mode"] = "Run Gridsearch"
                     elif globals_cfg.get("run_user_params"):
@@ -612,7 +620,7 @@ def _render_job_builder_tab() -> None:
         if st.button("Generate Run Manifest", key="btn_gen_manifest"):
             try:
                 manifest = build_run_manifest(
-                    experiment_name=st.session_state.get("experiment_name", "benchmark_run"),
+                    experiment_name=experiment_name_input or "benchmark_run",
                     random_seed=int(random_seed),
                     run_mode=run_mode,
                     planned_jobs=planned_jobs,
@@ -641,6 +649,11 @@ def _render_job_builder_tab() -> None:
 # ---------------------------------------------------------------------------
 
 def _render_parameters_tab() -> None:
+    # Promote any experiment name staged by the Load Manifest button before the
+    # text_input widget renders (same pattern as _render_job_builder_tab).
+    if "_pending_experiment_name" in st.session_state:
+        st.session_state["experiment_name"] = st.session_state.pop("_pending_experiment_name")
+
     st.header("Hyperparameter Overrides")
 
     planned_jobs: list[dict] = st.session_state.get("planned_jobs", [])
@@ -690,6 +703,12 @@ def _render_parameters_tab() -> None:
 
     # Manifest generation with params
     st.divider()
+    experiment_name_input = st.text_input(
+        "Experiment Name",
+        value=st.session_state.get("experiment_name", "benchmark_run"),
+        key="experiment_name",
+        help="Shared with the Job Builder tab.",
+    )
     if st.button("Generate Run Manifest (with params)", key="btn_gen_manifest_params"):
         datasets, _ = fetch_registry_data()
         dataset_name_to_slug = {
@@ -702,7 +721,7 @@ def _render_parameters_tab() -> None:
         run_mode = st.session_state.get("run_mode", "Use User Params")
         try:
             manifest = build_run_manifest(
-                experiment_name=st.session_state.get("experiment_name", "benchmark_run"),
+                experiment_name=experiment_name_input or "benchmark_run",
                 random_seed=int(st.session_state.get("jb_seed", 42)),
                 run_mode=run_mode,
                 planned_jobs=planned_jobs,
@@ -1653,8 +1672,8 @@ def _render_settings_tab() -> None:
                 )
             else:
                 st.warning(
-                    f"Config saved and daemon restarted, but Docker did not become responsive "
-                    f"within 10 s. Check `systemctl --user status docker`."
+                    "Config saved and daemon restarted, but Docker did not become responsive "
+                    "within 10 s. Check `systemctl --user status docker`."
                 )
 
 

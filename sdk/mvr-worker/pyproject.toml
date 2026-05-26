@@ -8,6 +8,7 @@ dependencies = [
     "numpy",
     "mudata",
     "anndata",
+    "pandas",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -18,6 +18,7 @@ from mvr_worker import (
     replay_history,
     resolve_device,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 
@@ -69,6 +70,7 @@ def main() -> None:
     latent = all_latent[[comb_idx]].squeeze(0)
 
     save_embeddings(latent, OUTPUT_DIR)
+    save_umap(latent, mdata.obs, OUTPUT_DIR)
 
     history = replay_history(
         getattr(model, "history", None) or {},

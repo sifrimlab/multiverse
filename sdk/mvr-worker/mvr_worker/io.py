@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from typing import Any, Dict, List
 
 import anndata as ad
 import h5py
 import mudata as md
 import numpy as np
+import pandas as pd
 
 from .logging import get_logger, setup_logging
 
 logger = get_logger(__name__)
 
-INPUT_DATA_PATH = "/input/data.h5mu"
-OUTPUT_DIR = "/output"
-JOB_SPEC_PATH = "/output/job_spec.json"
+OUTPUT_DIR = os.environ.get("MVR_OUTPUT_DIR", "/output")
+INPUT_DATA_PATH = os.environ.get("MVR_INPUT_DATA_PATH", "/input/data.h5mu")
+JOB_SPEC_PATH = os.environ.get("MVR_JOB_SPEC_PATH", os.path.join(OUTPUT_DIR, "job_spec.json"))
 
 
 def setup_container_logging(output_dir: str = OUTPUT_DIR) -> None:
@@ -57,6 +59,54 @@ def save_embeddings(latent: np.ndarray, output_dir: str = OUTPUT_DIR) -> str:
     os.rename(tmp, path)
     logger.info(f"Embeddings saved to {path} — shape {arr.shape}")
     return path
+
+
+def save_umap(
+    latent: np.ndarray,
+    obs: "pd.DataFrame",
+    output_dir: str = OUTPUT_DIR,
+    color_key: str = "cell_type",
+    random_state: int = 42,
+) -> "str | None":
+    """Generate UMAP from latent embeddings and save to <output_dir>/umap.png.
+
+    Non-fatal: returns None and logs a warning on failure so the container
+    run is not aborted due to a visualization error.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import scanpy as sc
+
+        tmp = ad.AnnData(obs=obs.copy())
+        tmp.obsm["X_latent"] = np.asarray(latent, dtype=np.float32)
+
+        sc.pp.neighbors(tmp, use_rep="X_latent", random_state=random_state)
+        sc.tl.umap(tmp, random_state=random_state)
+
+        effective_color = color_key if color_key and color_key in tmp.obs else None
+        sc.pl.umap(tmp, color=effective_color, show=False)
+
+        path = os.path.join(output_dir, "umap.png")
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=".umap-",
+            suffix=".png",
+            dir=output_dir,
+        )
+        os.close(fd)
+        try:
+            plt.savefig(tmp_path, format="png", bbox_inches="tight", dpi=150)
+            os.replace(tmp_path, path)
+        finally:
+            plt.close()
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        logger.info(f"UMAP saved to {path}")
+        return path
+    except Exception as exc:
+        logger.warning(f"UMAP generation failed (non-fatal): {exc}")
+        return None
 
 
 def anndata_concatenate(

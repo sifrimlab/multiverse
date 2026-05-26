@@ -8,7 +8,6 @@ md = None
 mu = None
 import os
 from typing import Union
-import numpy as np
 from .config import load_config
 from .logging_utils import get_logger
 #Output type = anndata, mudata
@@ -134,31 +133,6 @@ class DataLoader:
                 raise ValueError("Could not read the file. Please check the file path and format.")
         else:
             raise ValueError("Modality and file_path must be provided for anndata loading.")
-
-    def read_mudata(self) -> md.MuData:
-        """Reads a file into a MuData object.
-
-        Returns:
-            md.MuData: The loaded MuData object.
-
-        Raises:
-            ValueError: If the file path is empty or format is unsupported.
-        """
-        if self.file_path != "":
-            if ".h5mu" in self.file_path:
-                mudata = mu.read(self.file_path)
-            elif ".h5" in self.file_path:
-                mudata =mu.read_10x_h5(self.file_path)
-            elif ".mtx" in self.file_path:
-                path = os.path.dirname(self.file_path)
-                mudata = mu.read_10x_mtx(path, extended=True) 
-            else:
-                raise ValueError("Could not read the file. Only support file format .h5mu, .h5, .mtx.")
-        else:
-            raise ValueError("file_path must be provided to read mudata files")
-        
-        self.data = mudata
-        return self.data
 
     def preprocessing(self) -> ad.AnnData:
         """Loads and preprocesses the AnnData object.

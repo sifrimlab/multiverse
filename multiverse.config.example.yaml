@@ -1,0 +1,6 @@
+# Copy this file to multiverse.config.yaml and adjust for your machine.
+# multiverse.config.yaml is gitignored so local paths stay out of version control.
+
+# Root directory that is mounted into Docker containers as /data.
+# Defaults to <repo>/.docker-data when this file is absent or the key is omitted.
+docker_data_root: /path/to/your/docker-data

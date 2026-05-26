@@ -29,6 +29,8 @@ setup(
         "console_scripts": [
             # CLI entry point for docker-based workflow
             "multiverse-cli=multiverse.runner.cli:main",
+            # Maintenance utility: rebuilds run_metrics table from artifacts
+            "multiverse-rebuild-metrics=multiverse.tools.rebuild_run_metrics:main",
         ],
     },
 )

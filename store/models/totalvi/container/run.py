@@ -12,6 +12,7 @@ from mvr_worker import (
     load_input_mudata,
     load_job_spec,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 
@@ -44,7 +45,9 @@ def main() -> None:
     model = scvi.model.TOTALVI(adata)
     model.train()
 
-    save_embeddings(model.get_latent_representation(), OUTPUT_DIR)
+    latent = model.get_latent_representation()
+    save_embeddings(latent, OUTPUT_DIR)
+    save_umap(latent, adata.obs, OUTPUT_DIR)
     logger.info("TotalVI run complete.")
 
 

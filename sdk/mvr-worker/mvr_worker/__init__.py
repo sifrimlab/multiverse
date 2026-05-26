@@ -9,6 +9,7 @@ from .io import (
     load_input_mudata,
     load_job_spec,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 from .logging import get_logger, setup_logging
@@ -26,6 +27,7 @@ __all__ = [
     "load_job_spec",
     "resolve_device",
     "save_embeddings",
+    "save_umap",
     "setup_container_logging",
     "setup_logging",
 ]

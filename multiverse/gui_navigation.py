@@ -35,10 +35,6 @@ def current_tab_slug() -> str:
     return _query_tab()
 
 
-def current_tab_index() -> int:
-    return TABS.index(current_tab_slug())
-
-
 def render_top_nav() -> str:
     current = current_tab_slug()
     labels = [TAB_LABELS[slug] for slug in TABS]

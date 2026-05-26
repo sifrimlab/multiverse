@@ -15,6 +15,7 @@ from mvr_worker import (
     load_input_mudata,
     load_job_spec,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 
@@ -53,11 +54,12 @@ def main() -> None:
         mdata.mod[mod] = adata[:, adata.var["highly_variable"]].copy()
     mdata.update()
 
-    logger.info(f"Running MOFA+ with n_factors={n_factors}, gpu_mode={gpu_mode}")
-    mu.tl.mofa(mdata, n_factors=n_factors, gpu_mode=gpu_mode)
+    logger.info(f"Running MOFA+ with n_factors={n_factors}, n_iterations={n_iterations}, gpu_mode={gpu_mode}")
+    mu.tl.mofa(mdata, n_factors=n_factors, n_iterations=n_iterations, gpu_mode=gpu_mode)
 
     latent = mdata.obsm["X_mofa"]
     save_embeddings(latent, OUTPUT_DIR)
+    save_umap(latent, mdata.obs, OUTPUT_DIR)
 
     # MOFA does not expose per-iteration ELBO at the Python level; emit a single
     # scalar (total explained variance) so metrics.json + finalize work uniformly.

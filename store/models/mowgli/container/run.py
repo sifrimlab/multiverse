@@ -17,6 +17,7 @@ from mvr_worker import (
     replay_history,
     resolve_device,
     save_embeddings,
+    save_umap,
     setup_container_logging,
 )
 
@@ -68,7 +69,9 @@ def main() -> None:
         max_iter_inner=max_iter_inner,
     )
 
-    save_embeddings(mdata.obsm["W_OT"], OUTPUT_DIR)
+    latent = mdata.obsm["W_OT"]
+    save_embeddings(latent, OUTPUT_DIR)
+    save_umap(latent, mdata.obs, OUTPUT_DIR)
 
     raw_losses = list(getattr(model, "losses", []) or [])
     # Mowgli minimizes -OT loss internally; flip sign so the curve trends down to zero.

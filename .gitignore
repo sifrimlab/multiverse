@@ -39,6 +39,7 @@ mvexp_state.db
 optuna_demo.db
 run_manifests.yaml
 run_manifest.yaml
+multiverse.config.yaml
 *.db*
 
 # IDEs

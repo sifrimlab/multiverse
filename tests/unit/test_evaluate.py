@@ -1,10 +1,19 @@
-import pytest
 import os
 import json
+import sys
+from pathlib import Path
+
+import pytest
 import numpy as np
 import h5py
 import pandas as pd
-import anndata as ad
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+ad = pytest.importorskip("anndata")
+
 from multiverse.evaluate import determine_valid_metrics, aggregate_results
 
 def test_determine_valid_metrics_no_label():
@@ -68,7 +77,7 @@ def test_aggregate_results(tmp_path):
     assert os.path.exists(output_dir / "results.json")
 
 
-def test_evaluate_single_run(tmp_path):
+def test_evaluate_single_run_merges_evaluation_metrics(tmp_path):
     # Setup dummy dataset
     dataset_path = tmp_path / "test_dataset.h5ad"
     obs = pd.DataFrame({
@@ -78,9 +87,10 @@ def test_evaluate_single_run(tmp_path):
     dataset = ad.AnnData(X=np.random.rand(40, 10), obs=obs)
     dataset.write_h5ad(dataset_path)
 
-    # Setup dummy output dir with embeddings.h5
+    # Setup dummy output dir with embeddings.h5 and model-native metrics.
     output_dir = tmp_path / "model_output"
     output_dir.mkdir()
+    (output_dir / "metrics.json").write_text('{"score": 0.7}', encoding="utf-8")
     embeddings_path = output_dir / "embeddings.h5"
     with h5py.File(embeddings_path, "w") as f:
         f.create_dataset("latent", data=np.random.rand(40, 2))
@@ -97,7 +107,7 @@ def test_evaluate_single_run(tmp_path):
         # Simulate benchmark results
         mock_instance.get_results.return_value = pd.DataFrame({
             "Metric": ["ARI", "NMI"],
-            "X_latent": [0.8, 0.9]
+            "X_model": [0.8, 0.9]
         }).set_index("Metric")
 
         # Run evaluation
@@ -108,14 +118,47 @@ def test_evaluate_single_run(tmp_path):
             label_key="cell_type"
         )
 
-    # Check that metrics were calculated and saved
-    assert metrics
-    assert "ARI" in metrics["X_latent"]
+    # Model-native metrics are preserved and scIB results are namespaced.
+    assert metrics["score"] == 0.7
+    assert "ARI" in metrics["evaluation"]["X_model"]
     assert os.path.exists(output_dir / "metrics.json")
-    with open(output_dir / "metrics.json", "r") as f:
+    with open(output_dir / "metrics.json", "r", encoding="utf-8") as f:
         saved_metrics = json.load(f)
     assert saved_metrics == metrics
 
+
+def test_evaluate_single_run_uses_constant_dummy_batch_when_batch_missing(tmp_path):
+    dataset_path = tmp_path / "test_dataset.h5ad"
+    obs = pd.DataFrame({"cell_type": ["c1", "c2", "c1", "c2"]})
+    dataset = ad.AnnData(X=np.random.rand(4, 10), obs=obs)
+    dataset.write_h5ad(dataset_path)
+
+    output_dir = tmp_path / "model_output"
+    output_dir.mkdir()
+    with h5py.File(output_dir / "embeddings.h5", "w") as f:
+        f.create_dataset("latent", data=np.random.rand(4, 2))
+
+    from multiverse.evaluate import evaluate_single_run
+    from unittest.mock import patch, MagicMock
+
+    with patch("multiverse.evaluate.Benchmarker") as mock_benchmarker:
+        mock_instance = MagicMock()
+        mock_benchmarker.return_value = mock_instance
+        mock_instance.get_results.return_value = pd.DataFrame({
+            "Metric": ["ARI"],
+            "X_model": [0.8],
+        }).set_index("Metric")
+
+        evaluate_single_run(
+            output_dir=str(output_dir),
+            dataset_path=str(dataset_path),
+            batch_key="batch",
+            label_key="cell_type",
+        )
+
+    assert mock_benchmarker.call_args.kwargs["batch_key"] == "_batch_unavailable"
+    adata_arg = mock_benchmarker.call_args.args[0]
+    assert adata_arg.obs["_batch_unavailable"].nunique() == 1
 
 
 def test_aggregate_results_omits_malformed_metrics(tmp_path):

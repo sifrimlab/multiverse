@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 
 from multiverse.registry_db import get_db_connection, init_db
 from multiverse.runner.docker_runner import flatten_metric_rows

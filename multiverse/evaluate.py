@@ -128,23 +128,6 @@ def aggregate_results(model_status: dict, output_dir: str):
     return final_results
 
 
-    results_df = bm.get_results(min_max_scale=False)
-    _warn_unrequested_result_columns(results_df, requested_metrics)
-
-    if results_df.empty:
-        logger.warning("No results found.")
-        return {}
-
-    metrics = sanitize_nan_inf(results_df.to_dict("dict"))
-
-    metrics_path = os.path.join(output_dir, "metrics.json")
-    with open(metrics_path, "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=4)
-
-    logger.info(f"Metrics saved to {metrics_path}")
-    return metrics
-
-
 class Evaluator:
     """A class for evaluating data integration models using scIB metrics.
 
@@ -284,6 +267,146 @@ class Evaluator:
             )
             raise
         return metrics
+
+
+def _mudata_to_evaluation_anndata(
+    mdata,
+    *,
+    batch_key: str | None,
+    label_key: str | None,
+) -> "ad.AnnData":
+    """Build a minimal AnnData from a MuData suitable for scIB evaluation.
+
+    Top-level mdata.obs is used as the base. Any declared batch/label keys that
+    are absent from top-level obs are promoted from the first modality that
+    contains them (aligned by barcode index).
+    """
+    obs = mdata.obs.copy()
+    keys_to_promote = [k for k in (batch_key, label_key) if k and k not in obs.columns]
+    for key in keys_to_promote:
+        for mod_adata in mdata.mod.values():
+            if key in mod_adata.obs.columns:
+                obs[key] = mod_adata.obs[key].reindex(obs.index)
+                logger.info("Promoted obs key '%s' from modality to top-level obs.", key)
+                break
+        else:
+            logger.warning("Key '%s' not found in any modality obs; it will be absent.", key)
+    return ad.AnnData(obs=obs)
+
+
+def evaluate_single_run(
+    output_dir: str,
+    dataset_path: str,
+    batch_key: str | None,
+    label_key: str | None,
+) -> dict:
+    """Run per-job scIB evaluation after a model container completes.
+
+    Loads the dataset, attaches embeddings from output_dir/embeddings.h5, runs
+    scib-metrics, and writes results to output_dir/metrics.json.
+    Returns the metrics dict (empty if embeddings are missing).
+    """
+    embeddings_path = os.path.join(output_dir, "embeddings.h5")
+    if not os.path.exists(embeddings_path):
+        logger.warning("No embeddings.h5 in %s; skipping per-job evaluation.", output_dir)
+        return {}
+
+    embedding_only = False
+    if dataset_path.endswith(".h5mu"):
+        try:
+            import mudata as md
+            mdata = md.read_h5mu(dataset_path)
+            adata = _mudata_to_evaluation_anndata(
+                mdata, batch_key=batch_key, label_key=label_key
+            )
+            embedding_only = True
+        except Exception as exc:
+            logger.warning("Failed to load/convert MuData from %s: %s", dataset_path, exc)
+            return {}
+    elif dataset_path.endswith(".h5ad"):
+        adata = ad.read_h5ad(dataset_path)
+        embedding_only = adata.n_vars == 0
+    else:
+        logger.warning("Unsupported dataset format for evaluation: %s", dataset_path)
+        return {}
+
+    with h5py.File(embeddings_path, "r") as f:
+        latent = f["latent"][:]
+
+    if latent.shape[0] != adata.n_obs:
+        logger.warning(
+            "Embedding row count (%d) != dataset obs count (%d); skipping evaluation.",
+            latent.shape[0],
+            adata.n_obs,
+        )
+        return {}
+
+    latent_key = "X_model"
+    adata.obsm[latent_key] = latent
+
+    effective_batch_key = batch_key if (batch_key and batch_key in adata.obs.columns) else None
+    if not effective_batch_key:
+        logger.warning(
+            "batch_key '%s' not found in obs; batch-correction metrics will be disabled.",
+            batch_key,
+        )
+        # scib-metrics requires a batch_key argument even when all batch metrics
+        # are disabled. A constant internal column satisfies API validation without
+        # creating artificial batch-correction scores.
+        adata.obs["_batch_unavailable"] = "batch_unavailable"
+
+    effective_label_key = label_key if (label_key and label_key in adata.obs.columns) else None
+    if label_key and not effective_label_key:
+        logger.warning(
+            "label_key '%s' not found in obs; supervised metrics will be skipped.", label_key
+        )
+
+    have_labels = bool(effective_label_key)
+    have_batch = bool(effective_batch_key)
+    # pcr_comparison requires a valid expression matrix; skip when only obs metadata is available.
+    have_matrix = not embedding_only
+
+    bm = Benchmarker(
+        adata,
+        batch_key=effective_batch_key or "_batch_unavailable",
+        label_key=effective_label_key,
+        embedding_obsm_keys=[latent_key],
+        bio_conservation_metrics=BioConservation(
+            isolated_labels=have_labels,
+            nmi_ari_cluster_labels_leiden=have_labels,
+            nmi_ari_cluster_labels_kmeans=have_labels,
+            silhouette_label=have_labels,
+            clisi_knn=have_labels,
+        ),
+        batch_correction_metrics=BatchCorrection(
+            bras=have_batch,
+            ilisi_knn=have_batch,
+            kbet_per_label=have_batch and have_labels,
+            graph_connectivity=have_batch,
+            pcr_comparison=have_batch and have_matrix,
+        ),
+    )
+
+    bm.benchmark()
+    results_df = bm.get_results(min_max_scale=False)
+    evaluation_metrics = sanitize_nan_inf(results_df.to_dict("dict")) if not results_df.empty else {}
+
+    out_path = os.path.join(output_dir, "metrics.json")
+    existing_metrics = {}
+    if os.path.exists(out_path):
+        try:
+            with open(out_path, "r", encoding="utf-8") as fp:
+                loaded = json.load(fp)
+            if isinstance(loaded, dict):
+                existing_metrics = loaded
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Could not merge existing metrics from %s: %s", out_path, exc)
+
+    merged_metrics = sanitize_nan_inf({**existing_metrics, "evaluation": evaluation_metrics})
+    with open(out_path, "w", encoding="utf-8") as fp:
+        json.dump(merged_metrics, fp, indent=4)
+    logger.info("Per-job evaluation metrics merged into %s", out_path)
+    return merged_metrics
 
 
 def main():

@@ -1,30 +1,66 @@
 import argparse
+import hashlib
 import json
 import os
 import asyncio
 import signal
 import sys
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 from rich.live import Live
 from rich.table import Table
 from rich.console import Console
 
-from .docker_runner import (
-    run_model_container,
-    run_evaluation_container,
-    build_images_concurrently,
-    run_models_concurrently,
-    run_jobs_concurrently,
-    run_job_container_sync,
-    ensure_image_prepared,
-    ensure_docker_data_root,
-    _supervise_container,
-    mark_active_runs_failed_direct,
-    start_db_writer,
-    stop_db_writer,
-)
+try:
+    from .docker_runner import (
+        run_model_container,
+        run_evaluation_container,
+        build_images_concurrently,
+        run_jobs_concurrently,
+        ensure_docker_data_root,
+        _supervise_container,
+        mark_active_runs_failed_direct,
+        start_db_writer,
+        stop_db_writer,
+    )
+except ImportError as exc:
+    _DOCKER_RUNNER_IMPORT_ERROR = exc
+
+    def _raise_docker_unavailable(*args, **kwargs):
+        raise RuntimeError(
+            "Docker execution requires the docker Python package. "
+            "Install the Docker dependencies or run with --local."
+        ) from _DOCKER_RUNNER_IMPORT_ERROR
+
+    def run_model_container(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    def run_evaluation_container(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    async def build_images_concurrently(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    async def run_jobs_concurrently(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    def ensure_docker_data_root(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    async def _supervise_container(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    def mark_active_runs_failed_direct(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    def start_db_writer(*args, **kwargs):
+        return _raise_docker_unavailable(*args, **kwargs)
+
+    async def stop_db_writer(*args, **kwargs):
+        return None
 from ..logging_utils import get_logger, setup_logging
 from ..ingestion import register_from_manifest, resolve_manifest_path, preprocess_dataset
 from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR, recover_orphaned_runs
@@ -33,7 +69,16 @@ from ..models_ingest import (
     load_model_manifest,
     register_model_from_manifest,
 )
-from ..builder import build_local_model
+try:
+    from ..builder import build_local_model
+except ImportError as exc:
+    _BUILDER_IMPORT_ERROR = exc
+
+    def build_local_model(*args, **kwargs):
+        raise RuntimeError(
+            "Model image builds require the docker Python package. "
+            "Install the Docker dependencies before running build commands."
+        ) from _BUILDER_IMPORT_ERROR
 import yaml
 
 logger = get_logger(__name__)
@@ -98,14 +143,28 @@ def _import_h5py():
 
 
 def _peek_obs_columns(path: str) -> _PeekResult:
-    """Return obs columns plus a structured error if the HDF5 header is unreadable."""
+    """Return obs columns plus a structured error if the HDF5 header is unreadable.
+
+    For .h5mu files, columns from all modality-level obs groups are merged with the
+    top-level obs so that keys stored only under /mod/*/obs are not falsely reported
+    as absent during preflight validation.
+    """
     try:
         h5py = _import_h5py()
         with h5py.File(path, "r") as f:
+            cols: set = set()
             obs = f.get("obs")
-            if obs is None:
+            if obs is not None:
+                cols |= {k for k in obs.keys() if not k.startswith("_")}
+            mod = f.get("mod")
+            if mod is not None:
+                for mod_name in mod.keys():
+                    mod_obs = mod[mod_name].get("obs")
+                    if mod_obs is not None:
+                        cols |= {k for k in mod_obs.keys() if not k.startswith("_")}
+            if not cols:
                 return _PeekResult(set(), "missing_obs")
-            return _PeekResult({k for k in obs.keys() if not k.startswith("_")})
+            return _PeekResult(cols)
     except PermissionError as exc:
         logger.debug(f"Permission denied reading obs columns from {path}: {exc}")
         return _PeekResult(set(), "permission_denied")
@@ -151,18 +210,31 @@ def _read_obs_count(path: str) -> int:
 
 
 def _peek_batch_count(path: str, batch_key: str) -> _PeekResult:
-    """Return number of unique batch values plus structured error if unreadable."""
+    """Return number of unique batch values plus structured error if unreadable.
+
+    For .h5mu files, modality-level obs groups are checked when the key is
+    absent from top-level obs, consistent with _peek_obs_columns behaviour.
+    """
     try:
         h5py = _import_h5py()
         with h5py.File(path, "r") as f:
+            def _count_from_node(batch_node) -> int:
+                if "categories" in batch_node:
+                    return int(batch_node["categories"].shape[0])
+                return int(len(set(batch_node[:])))
+
             obs = f.get("obs")
-            if obs is None or batch_key not in obs:
-                return _PeekResult(0, "missing_batch_key")
-            batch_node = obs[batch_key]
-            if "categories" in batch_node:
-                return _PeekResult(int(batch_node["categories"].shape[0]))
-            import numpy as np
-            return _PeekResult(int(len(set(batch_node[:]))))
+            if obs is not None and batch_key in obs:
+                return _PeekResult(_count_from_node(obs[batch_key]))
+
+            mod = f.get("mod")
+            if mod is not None:
+                for mod_name in mod.keys():
+                    mod_obs = mod[mod_name].get("obs")
+                    if mod_obs is not None and batch_key in mod_obs:
+                        return _PeekResult(_count_from_node(mod_obs[batch_key]))
+
+            return _PeekResult(0, "missing_batch_key")
     except PermissionError as exc:
         logger.debug(f"Permission denied reading batch count from {path}: {exc}")
         return _PeekResult(0, "permission_denied")
@@ -239,7 +311,6 @@ def validate_pending_jobs(
         # 1. Required omics check
         required = MODEL_REQUIRED_OMICS.get(model_slug, set())
         if required and not required.issubset(omics_available):
-            missing = required - omics_available
             skip_job(
                 job,
                 "missing_required_omics",
@@ -313,13 +384,6 @@ def validate_pending_jobs(
         validated.append(job)
 
     return validated, warnings
-
-
-def load_manifest(manifest_path: str) -> Dict:
-    """Loads and parses the run manifest YAML file."""
-    with open(manifest_path, "r", encoding="utf-8") as f:
-        loaded = yaml.safe_load(f)
-    return loaded if isinstance(loaded, dict) else {}
 
 
 def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
@@ -454,42 +518,43 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
 
             m_image, m_slug, m_version = model_row
 
-            cursor.execute(
-                "SELECT status FROM runs WHERE dataset_id = ? AND model_slug = ? AND model_version = ?",
-                (d_id, m_slug, m_version)
-            )
-            run = cursor.fetchone()
+            # Manifest-driven runs always execute — the user explicitly requested
+            # them. Deduplication (skip prior-SUCCESS) applies only to the
+            # headless registry-sweep path (generate_execution_plan).
+            job_metrics = job.get("metrics", {})
+            merged_metrics = {**global_metrics, **job_metrics}
 
-            if run is None or run[0] != 'SUCCESS':
-                # Merge global metrics with per-job override
-                job_metrics = job.get("metrics", {})
-                merged_metrics = {**global_metrics, **job_metrics}
+            model_params = job.get("model_params", {}) or {}
+            params_hash = hashlib.sha256(
+                json.dumps(model_params, sort_keys=True).encode()
+            ).hexdigest()[:12]
 
-                output_path = os.path.join(ARTIFACTS_DIR, f"{d_name}_{m_slug}")
-                job_entry = {
-                    "dataset_id": d_id,
-                    "dataset_name": d_name,
-                    "dataset_path": d_path,
-                    "omics_available": d_omics,
-                    "batch_key": d_batch_key,
-                    "cell_type_key": d_cell_type_key,
-                    "model_name": m_slug,
-                    "model_slug": m_slug,
-                    "model_version": m_version,
-                    "model_image": m_image,
-                    "output_path": output_path,
-                    "mode": mode,
-                    "model_params": job.get("model_params", {}) or {},
-                    "search_space": job.get("search_space", {}),
-                    "optimize_metric": job.get("optimize_metric"),
-                    "n_trials": job.get("n_trials", 10),
-                    "direction": job.get("direction", "maximize"),
-                    "study_storage": job.get("study_storage", "sqlite:///optuna.db"),
-                    "metrics": merged_metrics,
-                }
-                if job.get("mem_limit"):
-                    job_entry["mem_limit"] = job["mem_limit"]
-                pending_jobs.append(job_entry)
+            output_path = os.path.join(ARTIFACTS_DIR, f"{d_name}_{m_slug}")
+            job_entry = {
+                "dataset_id": d_id,
+                "dataset_name": d_name,
+                "dataset_path": d_path,
+                "omics_available": d_omics,
+                "batch_key": d_batch_key,
+                "cell_type_key": d_cell_type_key,
+                "model_name": m_slug,
+                "model_slug": m_slug,
+                "model_version": m_version,
+                "model_image": m_image,
+                "output_path": output_path,
+                "mode": mode,
+                "model_params": model_params,
+                "params_hash": params_hash,
+                "search_space": job.get("search_space", {}),
+                "optimize_metric": job.get("optimize_metric"),
+                "n_trials": job.get("n_trials", 10),
+                "direction": job.get("direction", "maximize"),
+                "study_storage": job.get("study_storage", "sqlite:///optuna.db"),
+                "metrics": merged_metrics,
+            }
+            if job.get("mem_limit"):
+                job_entry["mem_limit"] = job["mem_limit"]
+            pending_jobs.append(job_entry)
 
     return pending_jobs
 
@@ -662,10 +727,21 @@ async def run_workflow_async(args: argparse.Namespace):
 
         conn = get_db_connection()
         manifest_data: Dict[str, Any] = {}
+        manifest_run_id: str | None = None
         if hasattr(args, "manifest") and args.manifest:
             parsed_manifest = require_parsed_manifest(args.manifest, conn)
             manifest_data = parsed_manifest.data
             pending_jobs = parsed_manifest.plan
+            # Stable ID for this entire manifest invocation — used to group all
+            # runs from one execution together and disambiguate re-runs of the
+            # same manifest. Pin via globals.manifest_run_id for reproducible CI.
+            manifest_run_id = (
+                manifest_data.get("globals", {}).get("manifest_run_id")
+                or f"{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
+            )
+            for job in pending_jobs:
+                job["manifest_run_id"] = manifest_run_id
+            logger.info("Manifest run ID: %s", manifest_run_id)
         else:
             pending_jobs = generate_execution_plan(conn)
         conn.close()
@@ -705,7 +781,11 @@ async def run_workflow_async(args: argparse.Namespace):
             _print_run_summary(validated_jobs, {}, pre_flight_warnings)
             return
 
-        experiment_name = os.path.basename(os.path.normpath(args.output)) if args.output else "default_experiment"
+        experiment_name = (
+            manifest_data.get("globals", {}).get("experiment_name")
+            or (os.path.basename(os.path.normpath(args.output)) if args.output else None)
+            or "default_experiment"
+        )
         models_info = []
         for job in runnable_jobs:
             job_entry = {
@@ -726,6 +806,8 @@ async def run_workflow_async(args: argparse.Namespace):
                 "direction": job.get("direction", "maximize"),
                 "study_storage": job.get("study_storage", "sqlite:///optuna.db"),
                 "metrics": job.get("metrics", {}),
+                "manifest_run_id": job.get("manifest_run_id"),
+                "params_hash": job.get("params_hash"),
             }
             if job.get("mem_limit"):
                 job_entry["mem_limit"] = job["mem_limit"]
@@ -842,8 +924,65 @@ async def run_workflow_async(args: argparse.Namespace):
                 pass
 
 
+async def run_workflow_local_async(args: argparse.Namespace) -> None:
+    """Local (no-Docker) workflow: validates manifest then runs container/run.py in-process."""
+    from .local_runner import run_jobs_locally
+
+    os.makedirs(args.output, exist_ok=True)
+    setup_logging(args.output)
+
+    conn = get_db_connection()
+    try:
+        if hasattr(args, "manifest") and args.manifest:
+            parsed_manifest = require_parsed_manifest(args.manifest, conn)
+            pending_jobs = parsed_manifest.plan
+        else:
+            pending_jobs = generate_execution_plan(conn)
+    except ManifestValidationError as exc:
+        conn.close()
+        console.print("[bold red]Manifest validation failed:[/]")
+        for err in exc.parsed.errors:
+            console.print(f"  [red]-[/] {err['field']}: {err['message']} ({err['code']})")
+        raise SystemExit(2) from exc
+
+    validated_jobs, pre_flight_warnings = validate_pending_jobs(pending_jobs, record_failures=True)
+    runnable_jobs = [j for j in validated_jobs if not j.get("_skipped")]
+    conn.close()
+
+    if not runnable_jobs:
+        logger.info("All jobs were skipped after pre-flight validation.")
+        _print_run_summary(validated_jobs, {}, pre_flight_warnings)
+        return
+
+    tasks_status = {
+        f"{j.get('dataset_name')}_{j.get('model_slug')}": "Pending"
+        for j in runnable_jobs
+    }
+
+    def update_status(name: str, status: str) -> None:
+        tasks_status[name] = status
+
+    console.print(f"[bold]Local run:[/bold] {len(runnable_jobs)} job(s), no Docker")
+    with Live(generate_status_table(tasks_status), refresh_per_second=4) as live:
+        def _cb(name: str, status: str) -> None:
+            update_status(name, status)
+            live.update(generate_status_table(tasks_status))
+
+        result_summary = await run_jobs_locally(runnable_jobs, args.seed, status_callback=_cb)
+
+    _print_run_summary(validated_jobs, result_summary, pre_flight_warnings)
+
+
 def execute_run(args: argparse.Namespace):
     """Executes the model running logic — always uses async/parallel for registry jobs."""
+    if getattr(args, "local", False):
+        try:
+            asyncio.run(run_workflow_local_async(args))
+        except KeyboardInterrupt:
+            logger.warning("Local workflow interrupted by user")
+            raise SystemExit(130)
+        return
+
     conn = get_db_connection()
     try:
         if hasattr(args, "manifest") and args.manifest:
@@ -934,6 +1073,16 @@ def main():
             "--manifest",
             required=False,
             help="Path to a run_manifest.yaml file defining jobs to execute",
+        )
+        p.add_argument(
+            "--local",
+            action="store_true",
+            default=False,
+            help=(
+                "Run models locally without Docker by calling container/run.py directly. "
+                "Requires model Python deps installed on the host. "
+                "Use with --manifest for manifest-driven local dev runs."
+            ),
         )
 
     import sys
