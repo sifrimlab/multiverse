@@ -128,6 +128,10 @@ def test_start_parent_mlflow_run_uses_client_without_active_run():
         tags={"mlflow.runName": "pbmc-pca-run", "team": "bench", "optuna_trial_id": "3"},
     )
     fake_client.log_param.assert_called_once_with("run-1", "lr", "0.01")
+    assert any(
+        call.args[:2] == ("run-1", "system/cpu_utilization_percentage")
+        for call in fake_client.log_metric.call_args_list
+    )
 
 
 def test_finalize_parent_mlflow_run_uses_client_and_ignores_fluent_active_run(tmp_path):
@@ -153,6 +157,63 @@ def test_finalize_parent_mlflow_run_uses_client_and_ignores_fluent_active_run(tm
     fake_mlflow.active_run.assert_not_called()
     fake_mlflow.start_run.assert_not_called()
     fake_mlflow.end_run.assert_not_called()
-    fake_client.log_metric.assert_called_once_with("run-1", "score", 0.7, step=1)
+    fake_client.log_metric.assert_any_call("run-1", "loss", 1.0, step=0)
+    fake_client.log_metric.assert_any_call("run-1", "loss", 0.5, step=1)
+    fake_client.log_metric.assert_any_call("run-1", "score", 0.7, step=1)
+    assert any(
+        call.args[:2] == ("run-1", "system/cpu_utilization_percentage")
+        for call in fake_client.log_metric.call_args_list
+    )
     fake_client.log_artifact.assert_called_once_with("run-1", str(artifact), artifact_path=None)
     fake_client.set_terminated.assert_called_once_with("run-1", status="FINISHED")
+
+
+def test_finalize_parent_mlflow_run_replays_history_when_live_stream_missing(tmp_path):
+    fake_client = MagicMock()
+    fake_mlflow = MagicMock()
+    fake_mlflow.tracking.MlflowClient.return_value = fake_client
+
+    with patch.dict("sys.modules", {"mlflow": fake_mlflow}):
+        finalize_parent_mlflow_run(
+            run_id="run-2",
+            job_context={"experiment_name": "exp"},
+            job_spec={},
+            metrics={"history": {"loss": [0.9, 0.4], "ari": [0.1, 0.2]}},
+            artifacts_dir=str(tmp_path),
+        )
+
+    fake_client.log_metric.assert_any_call("run-2", "loss", 0.9, step=0)
+    fake_client.log_metric.assert_any_call("run-2", "loss", 0.4, step=1)
+    fake_client.log_metric.assert_any_call("run-2", "ari", 0.1, step=0)
+    fake_client.log_metric.assert_any_call("run-2", "ari", 0.2, step=1)
+
+
+def test_finalize_parent_mlflow_run_logs_all_artifacts_recursively(tmp_path):
+    (tmp_path / "root.txt").write_text("root", encoding="utf-8")
+    nested = tmp_path / "plots" / "umap"
+    nested.mkdir(parents=True)
+    (nested / "plot.png").write_text("png", encoding="utf-8")
+    metrics_dir = tmp_path / "metrics"
+    metrics_dir.mkdir()
+    (metrics_dir / "metrics.json").write_text("{}", encoding="utf-8")
+    (tmp_path / ".promotion_complete").write_text("", encoding="utf-8")
+
+    fake_client = MagicMock()
+    fake_mlflow = MagicMock()
+    fake_mlflow.tracking.MlflowClient.return_value = fake_client
+
+    with patch.dict("sys.modules", {"mlflow": fake_mlflow}):
+        finalize_parent_mlflow_run(
+            run_id="run-artifacts",
+            job_context={"experiment_name": "exp"},
+            job_spec={},
+            metrics={},
+            artifacts_dir=str(tmp_path),
+        )
+
+    artifact_calls = [call.args for call in fake_client.log_artifact.call_args_list]
+    assert ("run-artifacts", str(tmp_path / "root.txt")) in [args[:2] for args in artifact_calls]
+    assert fake_client.log_artifact.call_count == 3
+    fake_client.log_artifact.assert_any_call("run-artifacts", str(tmp_path / "root.txt"), artifact_path=None)
+    fake_client.log_artifact.assert_any_call("run-artifacts", str(metrics_dir / "metrics.json"), artifact_path="metrics")
+    fake_client.log_artifact.assert_any_call("run-artifacts", str(nested / "plot.png"), artifact_path="plots/umap")

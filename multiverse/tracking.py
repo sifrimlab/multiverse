@@ -121,6 +121,12 @@ def _log_final_scalars(
         mlflow.log_metrics(standalone)
 
 
+def _log_metric_histories_client(client: Any, run_id: str, histories: Dict[str, List[float]]) -> None:
+    for name, series in histories.items():
+        for step, value in enumerate(series):
+            client.log_metric(run_id, name, value, step=step)
+
+
 def _log_final_scalars_client(
     client: Any,
     run_id: str,
@@ -136,6 +142,26 @@ def _log_final_scalars_client(
             client.log_metric(run_id, key, value)
         else:
             client.log_metric(run_id, key, value, step=step)
+
+
+def _log_system_metrics_snapshot_client(client: Any, run_id: str, *, step: int) -> None:
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        metrics = {
+            "system/cpu_utilization_percentage": float(psutil.cpu_percent(interval=None)),
+            "system/system_memory_usage_megabytes": float(memory.used) / 1e6,
+            "system/system_memory_usage_percentage": float(memory.percent),
+        }
+    except Exception as exc:
+        logger.warning("MLflow system metrics snapshot failed: %s", exc)
+        return
+    for key, value in metrics.items():
+        try:
+            client.log_metric(run_id, key, value, step=step)
+        except Exception as exc:
+            logger.warning("MLflow system metric logging failed for %s: %s", key, exc)
 
 
 def find_metrics_json(workspace_dir: str) -> Optional[str]:
@@ -227,6 +253,7 @@ def start_parent_mlflow_run(
         run_id = run.info.run_id
         for key, value in _to_flat_str_params(job_spec.get("hyperparameters", {})).items():
             client.log_param(run_id, key, value)
+        _log_system_metrics_snapshot_client(client, run_id, step=0)
         return run_id
     except Exception as exc:
         logger.warning("MLflow start_parent failed: %s", exc)
@@ -262,9 +289,14 @@ def finalize_parent_mlflow_run(
     try:
         scalars, histories = split_metrics_payload(metrics)
         try:
+            _log_metric_histories_client(client, run_id, histories)
+        except Exception as exc:
+            logger.warning("MLflow metric history logging failed: %s", exc)
+        try:
             _log_final_scalars_client(client, run_id, scalars, histories)
         except Exception as exc:
             logger.warning("MLflow final scalar logging failed: %s", exc)
+        _log_system_metrics_snapshot_client(client, run_id, step=max((len(series) for series in histories.values()), default=1))
         _log_artifacts_filtered_client(client, run_id, artifacts_dir)
     except Exception as exc:
         logger.warning("MLflow finalize body raised: %s", exc)
@@ -364,17 +396,29 @@ def _log_artifacts_filtered(mlflow: Any, artifacts_dir: str) -> None:
 
 
 def _log_artifacts_filtered_client(client: Any, run_id: str, artifacts_dir: str) -> None:
-    """Log artifacts with explicit run_id, skipping markers and tolerating per-file errors."""
+    """Log every run artifact file with explicit run_id, preserving relative paths."""
     if not os.path.isdir(artifacts_dir):
+        logger.warning("MLflow artifact directory missing: %s", artifacts_dir)
         return
-    for dirpath, _, filenames in os.walk(artifacts_dir):
+    logged = 0
+    failed = 0
+    for dirpath, dirnames, filenames in os.walk(artifacts_dir):
+        dirnames.sort()
         rel_dir = os.path.relpath(dirpath, artifacts_dir)
         artifact_path = None if rel_dir in (".", "") else rel_dir
-        for filename in filenames:
+        for filename in sorted(filenames):
             if filename in _ARTIFACT_SKIP_NAMES:
                 continue
             full = os.path.join(dirpath, filename)
             try:
                 client.log_artifact(run_id, full, artifact_path=artifact_path)
+                logged += 1
             except Exception as exc:
+                failed += 1
                 logger.warning("MLflow log_artifact failed for %s: %s", full, exc)
+    logger.info(
+        "MLflow artifact logging complete for run %s: %d logged, %d failed",
+        run_id,
+        logged,
+        failed,
+    )

@@ -7,6 +7,7 @@ from multiverse.runner.docker_runner import (
     ResourcePool,
     InsufficientResourcesError,
     _parse_mem_gb,
+    _standard_environment,
     run_jobs_concurrently,
 )
 
@@ -164,3 +165,22 @@ async def test_run_jobs_concurrently_marks_oversized_job_failed():
     assert "INSUFFICIENT_RESOURCES" in mock_persist.call_args[1].get(
         "status", mock_persist.call_args[0][4] if mock_persist.call_args[0] else ""
     ) or any("INSUFFICIENT_RESOURCES" in str(a) for a in mock_persist.call_args[0])
+
+
+def test_standard_environment_defaults_mlflow_tracking_uri_for_containers(monkeypatch):
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    monkeypatch.delenv("MLFLOW_EXPERIMENT_NAME", raising=False)
+
+    env = _standard_environment()
+
+    assert env["MLFLOW_TRACKING_URI"] == "http://host.docker.internal:5000"
+
+
+def test_standard_environment_rewrites_explicit_localhost_uri(monkeypatch):
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5050")
+    monkeypatch.setenv("MLFLOW_EXPERIMENT_NAME", "exp")
+
+    env = _standard_environment()
+
+    assert env["MLFLOW_TRACKING_URI"] == "http://host.docker.internal:5050"
+    assert env["MLFLOW_EXPERIMENT_NAME"] == "exp"

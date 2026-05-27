@@ -545,16 +545,15 @@ def _standard_environment() -> dict:
     """Forward host MLflow + experiment env into every model container.
 
     Rewrites localhost/127.0.0.1 in the tracking URI to host.docker.internal so
-    containers can reach a host-bound MLflow server. Returns {} when nothing is
-    set on the host (containers then silently skip MLflow logging).
+    containers can reach a host-bound MLflow server. Defaults to the same
+    localhost MLflow URI used by host-side tracking.
     """
     env: dict = {}
-    uri = os.getenv("MLFLOW_TRACKING_URI")
-    if uri:
-        rewritten = uri.replace("//localhost", "//host.docker.internal").replace(
-            "//127.0.0.1", "//host.docker.internal"
-        )
-        env["MLFLOW_TRACKING_URI"] = rewritten
+    uri = os.getenv("MLFLOW_TRACKING_URI") or "http://localhost:5000"
+    rewritten = uri.replace("//localhost", "//host.docker.internal").replace(
+        "//127.0.0.1", "//host.docker.internal"
+    )
+    env["MLFLOW_TRACKING_URI"] = rewritten
     exp = os.getenv("MLFLOW_EXPERIMENT_NAME")
     if exp:
         env["MLFLOW_EXPERIMENT_NAME"] = exp
