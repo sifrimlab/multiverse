@@ -1,6 +1,6 @@
 # Data Registration
 
-This tutorial explains how to make a dataset visible to mvexp through the GUI-first Ingestion Wizard.
+This how-to explains how to make a prepared dataset visible to mvexp through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` (or `python -m multiverse.runner.cli register-dataset --slug <slug>`).
 
 Use [Data Preparation](DATA_PREPARATION.md) for notebook-side formatting details. This page focuses on onboarding the prepared files into the platform.
 
@@ -100,7 +100,7 @@ flowchart TD
 | Registration fails with missing file | `raw_files` path is wrong. | Make paths relative to `store/datasets/<slug>/`. |
 | Batch metrics are skipped | Batch column missing or has one value. | Check `adata.obs[batch_key].value_counts()` in Jupyter. |
 | Label metrics are skipped | `cell_type_key` missing or misspelled. | Confirm the column name exactly matches `.obs`. |
-| A model is incompatible | Dataset modalities do not match model requirements. | Choose a compatible model in Job Builder. |
+| A model is incompatible | Dataset modalities do not match model requirements. | Choose a compatible model in Configure. |
 
 ## How to Cite Registered Data
 

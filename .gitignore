@@ -52,3 +52,6 @@ multiverse.config.yaml
 site/
 
 .understand-anything/
+*.dvc
+.dvc/
+.pytest_cache/

@@ -3,42 +3,74 @@ site_description: Reproducible benchmarking for multimodal single-cell integrati
 site_author: mvexp contributors
 repo_name: mvexp
 
-# Keep the existing documentation tree as the MkDocs source directory.
 docs_dir: docs
 site_dir: site
 
+# Navigation is split into two top-level audiences:
+#   * "For Bioinformaticians" — researcher-facing tutorials and references.
+#   * "For Operations & Engineering" — platform, runner, and container documentation.
+# Pages with mixed audiences (GUI, Run Manifest) are surfaced under both sections
+# where useful; the underlying file lives in only one place.
 nav:
   - Home: index.md
-  - Tutorials:
+
+  - For Bioinformaticians:
       - Getting Started: GETTING_STARTED.md
-  - How-To Guides:
       - Data Preparation: DATA_PREPARATION.md
       - Data Registration: DATA_REGISTRATION.md
       - Benchmarking: BENCHMARKING.md
-      - Migrate from v1 to v2: HOWTO_MIGRATE_V1_to_V2.md
-      - Adding a Model: ADDING_A_MODEL.md
-  - Reference:
+      - GUI Reference: GUI.md
       - Models Glossary: reference/MODELS_GLOSSARY.md
       - Evaluation Metrics: reference/EVALUATION_METRICS.md
-      - Model Registration: MODEL_REGISTRATION.md
-      - Model Container Contract: MODEL_CONTAINER_CONTRACT.md
-      - Model Contract: MODEL_CONTRACT.md
-      - Runner: RUNNER.md
-  - Explanation:
+
+  - For Operations & Engineering:
       - Architecture: ARCHITECTURE.md
-      - Streamlit GUI: GUI.md
+      - Runner & Orchestration: RUNNER.md
+      - Model Container Contract: MODEL_CONTAINER_CONTRACT.md
       - Model Containers: MODEL_CONTAINERS.md
+      - Model Registration: MODEL_REGISTRATION.md
+      - Adding a Model: ADDING_A_MODEL.md
+      - Run Manifest: RUN_MANIFEST.md
+      - Observability: OBSERVABILITY.md
       - Developer Guide: DEVELOPER_GUIDE.md
+
+  - Reference:
+      - Model Contract (alias): MODEL_CONTRACT.md
+      - Models Glossary: reference/MODELS_GLOSSARY.md
+      - Evaluation Metrics: reference/EVALUATION_METRICS.md
+
+  - Project:
       - Contributing: CONTRIBUTING.md
 
 theme:
-  name: readthedocs
-  highlightjs: true
-  hljs_languages:
-    - python
-    - yaml
-    - json
-    - bash
+  name: material
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/git-alt
 
 markdown_extensions:
   - admonition
@@ -49,7 +81,20 @@ markdown_extensions:
   - tables
   - toc:
       permalink: true
-  - fenced_code
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
 
 plugins:
   - search

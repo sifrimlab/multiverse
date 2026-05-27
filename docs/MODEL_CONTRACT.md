@@ -38,4 +38,4 @@ with open("/output/metrics.json", "w") as f:
 
 ## Common Errors
 
-See [Model Container Contract](MODEL_CONTAINER_CONTRACT.md#common-errors).
+See [Model Container Contract](MODEL_CONTAINER_CONTRACT.md#failure-modes).

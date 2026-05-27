@@ -1,100 +1,135 @@
 # Model Registration
 
-This reference is for model authors and platform maintainers. Researchers using built-in models usually do not need this page; they select models visually in the GUI.
+This reference describes the registration step that makes a containerized model visible to the runner and to the GUI. It is intended for model authors and platform maintainers; researchers using built-in models do not normally need this page.
 
-## What Model Registration Does
+## What Registration Does
 
-Model registration tells mvexp which models exist, which omics they support, which container image to run, and which hyperparameters should appear in the GUI.
-
-[IMAGE: Registry Tab Model Table]
+Registration writes a row into the `models` table of `mvexp_state.db` based on a manifest under `store/models/<slug>/model.yaml`. The row records the model's display name, version, contract version, required omics, runtime image, and the path to a JSON schema describing its hyperparameters. The Configure tab in the GUI uses this row to compute the compatibility matrix and to render typed parameter controls.
 
 ```mermaid
 flowchart LR
-    A[model.yaml] --> B[Model registry]
+    A[model.yaml] --> B[multiverse.runner.cli register-model]
     C[hyperparameters schema] --> B
-    B --> D[Job Builder compatibility matrix]
-    B --> E[Parameters tab controls]
-    B --> F[Zero-Path execution]
+    B --> D[models table in mvexp_state.db]
+    D --> E[Configure compatibility matrix]
+    D --> F[Parameter form rendering]
+    D --> G[Runner image selection]
 ```
 
-## Hello World Model Package
+## Package Layout
 
 ```text
-store/models/hello_pca/
+store/models/<slug>/
   model.yaml
   container/
     Dockerfile
     environment.yml
-schemas/models/hello_pca.hyperparameters.schema.json
+    run.py
+schemas/models/<slug>.hyperparameters.schema.json
 ```
 
-Minimal `model.yaml`:
+## Registering a Model
+
+From the host:
+
+```bash
+make register-model slug=<slug>
+# or, against a manifest at an explicit path
+make register-model manifest=/path/to/model.yaml
+```
+
+The Makefile delegates to the CLI:
+
+```bash
+uv run python -m multiverse.runner.cli register-model --slug <slug>
+```
+
+The six built-in models (`pca`, `mofa`, `multivi`, `mowgli`, `cobolt`, `totalvi`) are registered automatically by `make bootstrap`.
+
+## `model.yaml` Schema
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | Display name in the GUI (e.g. `PCA`). |
+| `version` | yes | Semantic version of the model package. |
+| `contract_version` | yes | Container I/O contract version; currently `1.0.0`. |
+| `supported_omics` | yes | List of modality slugs the model requires: `rna`, `atac`, `adt`. |
+| `runtime.image` | yes | Image tag invoked by `docker_runner` (e.g. `multiverse-pca:1.0.0`). |
+| `hyperparameters_schema` | recommended | Path (repo-relative) to the JSON schema used to render controls and validate sweep ranges. |
+| `build.context` | optional | Build context for local image builds; typically `../../..` (repo root). |
+| `build.dockerfile` | optional | Dockerfile path relative to the build context. |
+
+Example (`store/models/pca/model.yaml`):
 
 ```yaml
-name: HelloPCA
+name: PCA
 version: 1.0.0
 contract_version: 1.0.0
-supported_omics: ["rna"]
+supported_omics:
+  - rna
 runtime:
-  image: mvexp-hello-pca:1.0.0
-hyperparameters_schema: schemas/models/hello_pca.hyperparameters.schema.json
+  image: multiverse-pca:1.0.0
+hyperparameters_schema: schemas/models/pca.hyperparameters.schema.json
 build:
   context: ../../..
-  dockerfile: store/models/hello_pca/container/Dockerfile
+  dockerfile: store/models/pca/container/Dockerfile
 ```
 
-Minimal hyperparameter schema:
+## Hyperparameter Schema
+
+The schema is a JSON Schema (draft 2020-12) document. Each property in the schema becomes a control in the Configure tab.
 
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "HelloPCA Hyperparameters",
+  "title": "PCA Hyperparameters",
   "type": "object",
   "properties": {
-    "n_components": {"type": "integer", "minimum": 2, "default": 20},
-    "device": {"type": "string", "enum": ["cpu", "cuda", "cuda:0"], "default": "cpu"}
+    "n_components": {
+      "type": "integer", "minimum": 2, "maximum": 200, "default": 50,
+      "x-sweepable": true
+    },
+    "device": {
+      "type": "string", "enum": ["cpu", "cuda", "cuda:0"], "default": "cpu"
+    }
   },
   "additionalProperties": false
 }
 ```
 
-## Reference: `model.yaml` Fields
+Supported types: `integer`, `number`, `string`, `boolean`. Use `enum` for closed sets. The non-standard `x-sweepable: true` annotation enables the sweep toggle next to the field when `globals.run_gridsearch: true` is set in the manifest.
 
-| Field | Required | Meaning | Example |
-|---|---|---|---|
-| `name` | Yes | Human-readable model name shown in the GUI. | `PCA` |
-| `version` | Yes | Model package version. | `1.0.0` |
-| `contract_version` | Yes | Zero-Path contract version. | `1.0.0` |
-| `supported_omics` | Yes | Modalities required by the model. | `["rna", "atac"]` |
-| `runtime.image` | Yes | Container image used by the runner. | `multiverse-pca:1.0.0` |
-| `hyperparameters_schema` | Recommended | JSON schema used to render GUI controls and Optuna sweep ranges. | `schemas/models/pca.hyperparameters.schema.json` |
-| `build.context` | Optional | Build context for maintainers who build images locally. | `../../..` |
-| `build.dockerfile` | Optional | Dockerfile path relative to the build context. | `store/models/pca/container/Dockerfile` |
+## Verifying a Registration
 
-## How-To: Add a Model Without Breaking the GUI
+After registering, in the GUI:
 
-1. Create `store/models/<slug>/model.yaml`.
-2. Add a hyperparameter schema under `schemas/models/<slug>.hyperparameters.schema.json`.
-3. Ensure the container follows the [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
-4. Register the model through the **Registry** tab.
-5. Click **Refresh Registry**.
-6. Confirm it appears in the Models table.
-7. Open **Job Builder** and check that compatibility is correct.
-8. Open **Parameters** and confirm the expected controls appear.
+1. Open the **Registry** tab.
+2. Click **Refresh Registry**.
+3. Confirm the model appears in the Models table with the expected version and image.
+4. Open **Configure**, pick a compatible dataset, and confirm parameter controls render.
 
-## Explanation: Why Schemas Matter
+From the CLI:
 
-The schema is not just validation. It is the bridge between model code and a notebook-first user experience. A clear schema lets mvexp show sliders, numeric inputs, and sweep controls instead of asking researchers to hand-edit model configuration.
+```bash
+uv run python -c "from multiverse.registry_db import list_models; print(list_models())"
+```
 
-## Common Errors
+## Image Build
+
+The orchestrator pulls images from your local Docker daemon. For development you typically build locally:
+
+```bash
+make build-<slug>      # e.g. make build-pca
+make build-all         # build every built-in image plus the evaluation image
+```
+
+Built images follow the micromamba pattern documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md). The `mvr-worker` SDK is copied from `sdk/mvr-worker/` into every image at build time, so any change to the SDK requires rebuilding the model images.
+
+## Common Issues
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Model appears but has no parameter controls | `hyperparameters_schema` path is missing or invalid. | Check the schema path and JSON syntax. |
-| Model is never compatible | `supported_omics` does not match dataset modalities. | Use modality names such as `rna`, `atac`, and `adt`. |
-| Run fails immediately | Container does not follow Zero-Path. | Read `/input/data.h5mu`, read `/output/job_spec.json`, write `/output/`. |
-| GUI field has wrong type | JSON schema type is wrong. | Use `integer`, `number`, `string`, `boolean`, or `enum`. |
-
-## Citation Note
-
-For papers using custom models, cite the model method separately and archive the `model.yaml`, hyperparameter schema, container version, and mvexp run artifacts.
+| Model has no parameter controls | `hyperparameters_schema` path missing or schema invalid. | Validate the JSON; ensure the path is repo-relative. |
+| Model is never `Compatible` | `supported_omics` does not match any registered dataset. | Use canonical slugs: `rna`, `atac`, `adt`. |
+| Runner fails with `image not found` | Image tag in `runtime.image` does not exist on the daemon. | `docker images | grep <slug>`; run `make build-<slug>`. |
+| Model row marked `STALE` | `model.yaml` edited after registration. | Re-register: `make register-model slug=<slug>`. |

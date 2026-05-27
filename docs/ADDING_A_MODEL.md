@@ -7,13 +7,11 @@ This how-to is for developers adding a new integration model to mvexp. It keeps 
 A good mvexp model behaves like this:
 
 1. It appears in the Registry model table.
-2. It appears as compatible only for supported omics.
-3. Its hyperparameters appear in the Parameters tab.
-4. It runs through Zero-Path execution.
-5. It writes `embeddings.h5` and `metrics.json`.
-6. Its outputs appear in comparison reports.
-
-[IMAGE: Custom Model in Job Builder]
+2. It is reported `Compatible` only against datasets that supply its required omics.
+3. Its hyperparameters appear as typed controls on the **Configure** tab, derived from its JSON schema.
+4. It runs under the container contract documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
+5. It writes the required artifacts (`embeddings.h5`, `metrics.json`, `umap.png`, `model.log`).
+6. Its results are comparable to other models in the Results tab and in MLflow.
 
 ## Tutorial: Hello World Model
 
@@ -121,9 +119,9 @@ with EpochLogger(jsonl_path="/output/metrics.jsonl", run_name=run_name) as ep:
         ep.log(step=step, **{k: v[step] for k, v in history.items() if step < len(v)})
 ```
 
-Keras: instantiate `EpochLogger` and pass an `on_epoch_end` callback that calls `ep.log(step=epoch, **logs)`. A copy-pasteable template is included at the bottom of [epoch_logger.py](../sdk/mvr-worker/mvr_worker/epoch_logger.py).
+Keras: instantiate `EpochLogger` and pass an `on_epoch_end` callback that calls `ep.log(step=epoch, **logs)`. A copy-pasteable template is included at the bottom of `sdk/mvr-worker/mvr_worker/epoch_logger.py`.
 
-`EpochLogger` does **not** replace writing `metrics.json` — your container should still write final scalars + a `history` block to `/output/metrics.json` as usual. The two are complementary: `metrics.json` is the final summary, `metrics.jsonl` is the live stream. See [store/models/cobolt/container/run.py](../store/models/cobolt/container/run.py) for a reference wiring.
+`EpochLogger` does **not** replace writing `metrics.json` — your container should still write final scalars + a `history` block to `/output/metrics.json` as usual. The two are complementary: `metrics.json` is the final summary, `metrics.jsonl` is the live stream. See `store/models/cobolt/container/run.py` for a reference wiring.
 
 **Single MLflow run per execution.** The host runner opens an MLflow run with hyperparameters + system-metrics monitoring *before* launching your container, and injects `MLFLOW_RUN_ID` into the container environment. `EpochLogger` detects that variable and attaches to the same run instead of starting a fresh one. After the container exits, the host appends final scalars + artifacts to that run and closes it with `FINISHED` or `FAILED`. You don't need to do anything special in your container — just call `EpochLogger(...)` as shown above. If `MLFLOW_RUN_ID` is absent (e.g. running your container manually outside the runner), `EpochLogger` falls back to creating its own run.
 

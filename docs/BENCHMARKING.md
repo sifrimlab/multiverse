@@ -6,39 +6,28 @@ This how-to explains how to run and interpret model benchmarks in mvexp. It is w
 
 A benchmark is a comparison of dataset x model runs under a recorded recipe. You choose the biology: dataset, models, metadata keys, parameters, metrics, and seed. mvexp handles execution, artifact capture, and comparison reports.
 
-[IMAGE: The Job Builder Matrix]
-
 ```mermaid
 flowchart LR
-    A[Jupyter object] --> B[Ingestion Wizard]
+    A[Jupyter object] --> B[Registry tab]
     B --> C[Registered dataset]
-    C --> D[Job Builder matrix]
-    D --> E[Parameters and sweeps]
-    E --> F[Zero-Path execution]
-    F --> G[Results and comparison report]
+    C --> D[Configure compatibility matrix]
+    D --> E[Parameters + optional sweeps]
+    E --> F[Run tab: container execution]
+    F --> G[Results tab and MLflow]
     G --> H[Back to Jupyter]
 ```
 
 ## Tutorial: Run a First Benchmark
 
 1. Open the Streamlit GUI.
-2. Open the **Registry** tab.
-3. Expand **Register New Dataset**.
-4. Use the **Ingestion Wizard** fields or provide a `dataset.yaml` path.
-5. Click **Register Dataset**.
-6. Click **Refresh Registry**.
-7. Open the **Job Builder** tab.
-8. Review the compatibility matrix.
-9. Select the dataset x model pairs you want to compare.
-10. Click **Generate Run Manifest**.
-11. Open the **Parameters** tab.
-12. Adjust model hyperparameters or enable Optuna sweep controls.
-13. Click **Generate Run Manifest (with params)**.
-14. Open the **Execute** tab.
-15. Confirm the manifest path and random seed.
-16. Click **Launch Run**.
-17. Open the **Results** tab after completion.
-18. Review metrics, logs, artifacts, and comparison outputs.
+2. **Registry** → **Register New Dataset** → either enter the path to your `dataset.yaml` or fill the form. Click **Register Dataset**, then **Refresh Registry**.
+3. **Configure** → review the compatibility matrix; only `Compatible` cells are selectable.
+4. Select the dataset × model pairs you want to compare.
+5. Adjust hyperparameters in the per-row forms. Toggle Optuna sweep controls if `globals.run_gridsearch: true`.
+6. Enter an experiment name and a random seed; click **Generate Run Manifest**.
+7. **Run** → confirm the manifest path and click **Launch Run**. Watch the status table.
+8. **Results** → review metrics, logs, artifacts, and the comparison view.
+9. **Analysis** → open the embedded MLflow and Optuna dashboards for cross-run analysis.
 
 ## How-To: Choose a Benchmark Design
 
@@ -58,9 +47,7 @@ Use this when asking whether a model is robust across cohorts, tissues, donors, 
 
 ### Parameter Sweeps
 
-Use the **Parameters** tab when you want Optuna to search over ranges. The GUI reads each model's hyperparameter schema and turns it into typed controls, so you do not need to hand-write search-space YAML.
-
-[IMAGE: Parameter Sweep Controls]
+Set `globals.run_gridsearch: true` in the manifest (or toggle the sweep controls in **Configure**) and the runner delegates each job to Optuna. The GUI reads each model's hyperparameter schema and renders typed sweep controls — you do not need to hand-write a search-space YAML. Trials appear as child runs of the parent MLflow run, and the Optuna Dashboard at `http://localhost:8080` visualizes parameter importance and pruning.
 
 ## Reference: Benchmark Artifacts
 
@@ -87,15 +74,15 @@ store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
 | `container.log` | Human-readable execution log for troubleshooting and peer review. |
 | `provenance.json` | Run provenance when present; include it with supplementary materials. |
 
-## Explanation: Zero-Path Execution
+## Explanation: The Container Boundary
 
-Zero-Path execution means model containers do not know or care where files live on your computer. mvexp gives every model the same simple view:
+Every integration model in mvexp runs in its own Docker container. The container sees only `/input/data.h5mu`, `/output/job_spec.json`, and `/output/` for its results — no host paths appear in model code. For a researcher, this means three practical things:
 
-- input data appears at `/input/data.h5mu`;
-- runtime instructions appear at `/output/job_spec.json`;
-- results are written to `/output/`.
+- fewer path errors when moving between laptops, lab servers, or HPC;
+- the exact image tag is part of every run's record, so a published result can be reproduced by pulling the recorded image rather than rebuilding an environment;
+- new methods plug into the same comparison surface without changes to your workflow.
 
-For researchers, this means fewer path errors, no hand-written container commands, and comparable runs across models.
+The full specification is documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md) for engineers maintaining or extending the platform.
 
 ## Live Training Metrics
 
@@ -110,7 +97,7 @@ Connectivity: the Docker runner forwards `MLFLOW_TRACKING_URI` and `MLFLOW_EXPER
 
 Local sidecar: each run also writes **`metrics.jsonl`** — one JSON line per epoch (`step`, `timestamp`, metrics) — alongside `metrics.json`. It survives crashes and is convenient for offline analysis (`pandas.read_json(path, lines=True)`).
 
-Cobolt is the reference example of a wired-up model container — see [store/models/cobolt/container/run.py](../store/models/cobolt/container/run.py).
+Cobolt is the reference example of a wired-up model container — see `store/models/cobolt/container/run.py`.
 
 > **Rebuild after editing a model container or `mvr_worker`.** The SDK is `COPY`'d into each image at build time, so changes only take effect after rebuilding (`docker compose build <model>`).
 
@@ -132,7 +119,7 @@ Good interpretation practice:
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | Job status is `SKIPPED` | Dataset lacks required omics for that model. | Choose a compatible model or register a dataset with the needed modality. |
-| Job status is `FAILED` before training | `batch_key` is missing from `.obs` or the data file cannot be read. | Check the Ingestion Wizard metadata keys and reopen the data in Jupyter. |
+| Job status is `FAILED` before training | `batch_key` is missing from `.obs` or the data file cannot be read. | Open the run in **Results**, read `container.log`, and confirm `dataset.yaml` metadata keys exist in `.obs`. |
 | Supervised metrics are absent | `cell_type_key` was not registered or is absent from `.obs`. | Add a stable biological label column and re-register the dataset. |
 | Batch metrics are absent | Only one batch is present, or `batch_key` is absent. | Confirm that the batch column contains at least two meaningful groups. |
 | UMAP has no colors | `umap_color_type` does not match a column in `.obs`. | Set it to a valid metadata column such as `cell_type`. |

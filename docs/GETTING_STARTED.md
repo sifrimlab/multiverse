@@ -1,91 +1,67 @@
 # Getting Started
 
-This tutorial walks through a first mvexp benchmark from a Jupyter-prepared object to a model embedding you can inspect again in Scanpy.
-
-The guiding idea is: keep the biology in your notebook, and let mvexp handle the repeatable execution.
+This tutorial walks through a first mvexp benchmark, from a Jupyter-prepared object to a model embedding you can inspect again in Scanpy. The guiding idea is to keep the biology in your notebook and let mvexp handle the repeatable execution between curation and interpretation.
 
 ## What You Will Do
 
-You will:
-
 1. Save a small `AnnData` or `MuData` object from Jupyter.
 2. Register it in the Streamlit GUI.
-3. Build a benchmark plan.
+3. Configure a benchmark plan.
 4. Launch the run.
 5. Read `embeddings.h5` back into Jupyter.
 
 ## Before You Start
 
-Install and start mvexp:
+Install dependencies, initialize the registry, start observability services, then launch the GUI:
 
 ```bash
-make bootstrap
-make services-up
-make setup
+make bootstrap      # uv sync + create SQLite registry + register built-in models
+make services-up    # MLflow on :5000, Optuna Dashboard on :8080
+make setup          # install ML dependencies and start Streamlit on :8501
 ```
 
-Open `http://localhost:8501`.
-
-You do not need to run Docker commands by hand during normal use. The GUI and orchestrator take care of that boundary for you.
+Open `http://localhost:8501`. You do not need to run `docker` commands by hand during normal use; the orchestrator manages model containers on your behalf.
 
 ## Step 1: Prepare Data in Jupyter
 
-For a single-modality RNA baseline such as PCA, save an `AnnData` object.
+For a single-modality RNA baseline:
 
 ```python
 from pathlib import Path
-
 import scanpy as sc
 
-# Start from an AnnData object you already curated.
 # adata = sc.read_h5ad("my_project/processed_pbmc.h5ad")
 
 adata.obs["batch"] = adata.obs["donor_id"].astype(str)
 adata.obs["cell_type"] = adata.obs["manual_annotation"].astype(str)
 
-# PCA-style baselines are commonly run on normalized/log-transformed data.
-# Keep your raw counts in adata.raw or a layer if your study needs them.
 sc.pp.normalize_total(adata, target_sum=1e4)
 sc.pp.log1p(adata)
 sc.pp.highly_variable_genes(adata, n_top_genes=3000)
 
 dataset_dir = Path("store/datasets/pbmc_rna")
-data_dir = dataset_dir / "data"
-data_dir.mkdir(parents=True, exist_ok=True)
-
-adata.write_h5ad(data_dir / "rna.h5ad")
+(dataset_dir / "data").mkdir(parents=True, exist_ok=True)
+adata.write_h5ad(dataset_dir / "data" / "rna.h5ad")
 ```
 
-For multimodal RNA+ATAC data, save a `MuData` object.
+For multimodal RNA+ATAC data, save a `MuData` object:
 
 ```python
 from pathlib import Path
-
 import mudata as md
 
-# adata_rna and adata_atac should contain the same cell barcodes
-# or be aligned according to your study design.
-
 dataset_dir = Path("store/datasets/pbmc_multiome")
-data_dir = dataset_dir / "data"
-data_dir.mkdir(parents=True, exist_ok=True)
+(dataset_dir / "data").mkdir(parents=True, exist_ok=True)
 
-mdata = md.MuData({
-    "rna": adata_rna,
-    "atac": adata_atac,
-})
-
+mdata = md.MuData({"rna": adata_rna, "atac": adata_atac})
 mdata.obs["batch"] = adata_rna.obs["donor_id"].astype(str)
 mdata.obs["cell_type"] = adata_rna.obs["cell_type"].astype(str)
-
-mdata.write_h5mu(data_dir / "processed.h5mu")
+mdata.write_h5mu(dataset_dir / "data" / "processed.h5mu")
 ```
 
 ## Step 2: Create a Dataset Manifest
 
-The manifest is a short description of what you saved. It lets mvexp register the dataset consistently.
-
-For RNA-only data:
+The manifest describes what you saved and lets mvexp register the dataset consistently.
 
 ```python
 import yaml
@@ -93,104 +69,62 @@ import yaml
 manifest = {
     "name": "PBMC RNA",
     "omics": ["rna"],
-    "raw_files": {
-        "rna": "data/rna.h5ad",
-    },
-    "metadata_keys": {
-        "batch": "batch",
-        "cell_type": "cell_type",
-    },
+    "raw_files": {"rna": "data/rna.h5ad"},
+    "metadata_keys": {"batch": "batch", "cell_type": "cell_type"},
 }
-
 with open("store/datasets/pbmc_rna/dataset.yaml", "w") as f:
     yaml.safe_dump(manifest, f, sort_keys=False)
 ```
 
-For RNA+ATAC data saved as a single `processed.h5mu`:
+The `batch` key identifies the technical or donor grouping that batch-correction metrics will evaluate. The `cell_type` key identifies biological labels used by supervised metrics. If either column is absent, mvexp logs the value `"unknown"` for affected cells and disables the metrics that depend on the missing column. It does not silently invent biological labels.
 
-```python
-import yaml
+See [Data Preparation](DATA_PREPARATION.md) for additional recipes (RNA+ATAC, RNA+ADT).
 
-manifest = {
-    "name": "PBMC Multiome",
-    "omics": ["rna", "atac"],
-    "raw_files": {
-        "rna": "data/processed.h5mu",
-        "atac": "data/processed.h5mu",
-    },
-    "metadata_keys": {
-        "batch": "batch",
-        "cell_type": "cell_type",
-    },
-}
+## Step 3: Register the Dataset
 
-with open("store/datasets/pbmc_multiome/dataset.yaml", "w") as f:
-    yaml.safe_dump(manifest, f, sort_keys=False)
+In the GUI:
+
+1. Open the **Registry** tab.
+2. Expand **Register New Dataset**.
+3. Enter `store/datasets/pbmc_rna/dataset.yaml` in **Path to dataset.yaml**, or switch on **Build manifest from fields** and fill the form.
+4. Click **Register Dataset**, then **Refresh Registry**.
+5. Confirm your dataset appears with status `READY`.
+
+The CLI equivalent, useful for scripted workflows:
+
+```bash
+make register slug=pbmc_rna
 ```
 
-The `batch` key should identify the technical or donor grouping you want batch-correction metrics to evaluate. The `cell_type` key should identify biological labels for supervised metrics.
+## Step 4: Configure the Benchmark
 
-## Step 3: Register the Dataset in the GUI
+1. Open the **Configure** tab.
+2. Review the compatibility matrix. Only `Compatible` cells are selectable.
+3. Select the dataset × model pairs you want to run.
+4. Adjust hyperparameters in the per-row forms — typed controls are rendered from each model's JSON schema.
+5. Optionally toggle a parameter into a sweep distribution (requires `run_gridsearch: true` in globals).
+6. Enter an experiment name and a random seed.
+7. Click **Generate Run Manifest**.
 
-1. Open the **Registry** tab.
-2. Expand **Register New Dataset**.
-3. Leave **Build manifest from fields** switched off if you already wrote `dataset.yaml`.
-4. In **Path to dataset.yaml**, enter `store/datasets/pbmc_rna/dataset.yaml` or your own manifest path.
-5. Click **Register Dataset**.
-6. Click **Refresh Registry**.
-7. Confirm your dataset appears in the Datasets table with status `READY`.
+The resulting `run_manifest.yaml` is part of your scientific record. See [Run Manifest](RUN_MANIFEST.md) for the schema.
 
-If you prefer not to write the manifest in Jupyter:
+## Step 5: Launch and Monitor
 
-1. Open the **Registry** tab.
-2. Expand **Register New Dataset**.
-3. Switch on **Build manifest from fields**.
-4. Enter dataset name, available omics, file paths, `batch_key`, and `cell_type_key`.
-5. Click **Register Dataset**.
-6. Click **Refresh Registry**.
+1. Open the **Run** tab.
+2. Confirm the manifest path.
+3. Click **Launch Run**.
+4. Watch the status table. Jobs cycle through `PENDING → RUNNING → SUCCESS / FAILED / SKIPPED`.
 
-## Step 4: Build a Benchmark Plan
+A `SKIPPED` job is usually informative, not broken: the most common reasons are incompatible omics, a missing `batch` column, or metadata that cannot support a requested metric. Pre-flight validation catches these conditions before any container is started.
 
-1. Open the **Job Builder** tab.
-2. Review the compatibility matrix.
-3. Select the dataset x model pairs you want to run.
-4. Enter an experiment name.
-5. Click **Generate Run Manifest**.
-6. Review the generated `run_manifest.yaml` shown in the page.
-
-This manifest is part of your scientific record. It captures the models, datasets, parameters, metrics, and seed for the run.
-
-## Step 5: Set Parameters
-
-1. Open the **Parameters** tab.
-2. Expand each selected dataset x model pair.
-3. Adjust model parameters such as `n_components`, `n_factors`, `latent_dimensions`, `learning_rate`, or training epochs.
-4. If you want a sweep, enable the sweep controls for the relevant parameter.
-5. Click **Generate Run Manifest (with params)**.
-
-The GUI uses the registered model schema to show typed controls. You do not need to memorize YAML syntax for model parameters.
-
-## Step 6: Launch and Monitor
-
-1. Open the **Execute** tab.
-2. Confirm the manifest path points to `run_manifest.yaml`.
-3. Choose an output directory if needed.
-4. Set a random seed.
-5. Click **Launch Run**.
-6. Watch the status table for running, successful, failed, or skipped jobs.
-7. Use the live metrics panel if MLflow services are running.
-
-Skipped jobs are usually informative rather than mysterious: the most common reasons are incompatible omics, a missing `batch` column, or metadata that cannot support a requested metric.
-
-## Step 7: Inspect Results
+## Step 6: Inspect Results
 
 1. Open the **Results** tab.
-2. Filter to `SUCCESS` runs.
-3. Select a run.
-4. Review the metrics table, model log, `job_spec.json`, and artifact directory.
-5. Copy the artifact directory path for notebook analysis.
+2. Filter by experiment, dataset, model, or status.
+3. Select a run to view metrics, the model log, `job_spec.json`, and the artifact tree.
+4. Copy the artifact directory for notebook analysis.
 
-The usual artifact layout is:
+The artifact layout is:
 
 ```text
 store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
@@ -202,11 +136,12 @@ store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
   container.log
 ```
 
-## Step 8: Bring Embeddings Back to Jupyter
+For cross-run comparison and metric histories, open the **Analysis** tab or visit MLflow at `http://localhost:5000` directly.
+
+## Step 7: Bring Embeddings Back to Jupyter
 
 ```python
 from pathlib import Path
-
 import h5py
 import scanpy as sc
 
@@ -223,40 +158,33 @@ sc.tl.umap(adata)
 sc.pl.umap(adata, color=["batch", "cell_type"])
 ```
 
-You can now continue with the plotting and biological interpretation tools you already use.
-
-## Common Errors
+## Common Issues
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Dataset does not appear in Job Builder | Registry has not refreshed. | Return to Registry and click **Refresh Registry**. |
+| Dataset does not appear in Configure | Registry has not refreshed. | Registry → **Refresh Registry**. |
 | Job is `SKIPPED` | Incompatible omics or missing metadata. | Check the compatibility matrix and metadata keys. |
-| Job is `FAILED` | Data cannot be read or model input requirements are not met. | Open Results and inspect the log for that run. |
-| Metrics are missing | `batch_key` or `cell_type_key` does not support that metric. | Confirm metadata columns in Jupyter and re-register if needed. |
+| Job is `FAILED` | Data cannot be read or model input requirements unmet. | Open Results and inspect `container.log`. |
+| Metric is missing | `batch_key` or `cell_type_key` does not support that metric. | Confirm columns exist in your `obs`; re-register if you fix them. |
+| `database is locked` | Concurrent writes on SQLite. | Transient; the registry uses WAL mode and retries. |
 
 ## Writing Your Methods Section
 
 For a publication, keep these artifacts with the analysis:
 
-- `run_manifest.yaml`: datasets, models, parameter values, metrics, seed, and experiment name.
-- `job_spec.json`: exact per-job runtime instruction passed to a model.
-- `metrics.json`: model metrics and histories where available.
-- `container.log`: execution log for auditability.
-- provenance artifacts in the run directory, when present.
+- `run_manifest.yaml`: datasets, models, parameters, seed, metric selection.
+- `job_spec.json`: exact per-job runtime instruction passed to the model container.
+- `metrics.json`: model metrics and training histories where available.
+- `container.log`: execution log.
+- `provenance.json`: additional provenance when present.
 
 A Methods paragraph can state:
 
-```text
-Integration benchmarks were run with mvexp. Datasets were registered with batch key
-`batch` and cell-type key `cell_type`. The benchmark plan, model parameters, random seed,
-and metric configuration are provided in Supplementary File X (`run_manifest.yaml`).
-Per-model runtime specifications and output provenance are provided with each run artifact.
-```
+> Integration benchmarks were run with mvexp (commit `<sha>`). Datasets were registered with batch key `batch` and cell-type key `cell_type`. The benchmark plan, model parameters, random seed, and metric configuration are provided in Supplementary File X (`run_manifest.yaml`). Per-model runtime specifications and output provenance are archived with each run artifact.
 
-This is usually more precise than prose alone, because the manifest and provenance record the exact benchmark plan used to generate the figures.
+## Where to Go Next
 
-## Cookbook Recipes to Add Next
-
-- **RNA+ATAC PBMC Multiome Benchmark**: compare PCA, MOFA, MultiVI, Mowgli, and Cobolt on paired RNA+ATAC cells and interpret bio-conservation versus batch-correction tradeoffs.
-- **CITE-seq RNA+ADT with TotalVI**: prepare protein expression metadata, run TotalVI, and visualize whether protein-informed embeddings improve annotated immune populations.
-- **Atlas Subset Across Donors**: register donor as `batch`, compare integration models across multiple tissues or cohorts, and export a publication-ready provenance bundle.
+- [Data Preparation](DATA_PREPARATION.md) — recipes for RNA, RNA+ATAC, RNA+ADT.
+- [Models Glossary](reference/MODELS_GLOSSARY.md) — assumptions and hyperparameters per model.
+- [Evaluation Metrics](reference/EVALUATION_METRICS.md) — what each metric measures.
+- [Benchmarking](BENCHMARKING.md) — designing a defensible comparison.
