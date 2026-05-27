@@ -138,10 +138,38 @@ def load_model_manifest(manifest_path: str) -> ModelManifest:
 
 
 def register_model_from_manifest(
-    manifest_path: str, *, build: bool = False
+    manifest_path: str,
+    *,
+    build: bool = False,
+    allow_elevated: bool = False,
 ) -> Dict[str, Any]:
-    manifest = load_model_manifest(manifest_path)
+    """Register a model manifest into SQLite.
+
+    STRATEGY v2 §8: every model registration now goes through the
+    hardening pipeline. Path-escaping ``raw_files`` entries are refused
+    at parse time. Elevated Docker flags (``privileged``,
+    ``--network host``, unauthorised volume mounts, …) require an
+    explicit ``allow_elevated=True`` opt-in; otherwise registration
+    raises :class:`multiverse.registration.PrivilegedRegistrationError`.
+    """
     manifest_file = Path(manifest_path).resolve()
+    # Activate hardening before any SQLite work.
+    from .registration import audit_docker_flags, validate_paths_in_mapping
+    from .registration.errors import PrivilegedRegistrationError
+
+    if manifest_file.is_file():
+        raw = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        if isinstance(raw, dict):
+            validate_paths_in_mapping(raw, root=manifest_file.parent)
+            audit = audit_docker_flags(raw)
+            if audit.elevated and not allow_elevated:
+                raise PrivilegedRegistrationError(
+                    "model manifest requests elevated Docker flags: "
+                    + ", ".join(audit.reasons)
+                    + "; re-register with allow_elevated=True after auditing"
+                )
+
+    manifest = load_model_manifest(manifest_path)
     manifest_hash = _compute_file_sha256(manifest_file)
     model_slug = _sanitize_slug(manifest_file.parent.name)
 

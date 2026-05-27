@@ -1,7 +1,6 @@
 import os
 import sqlite3
 import json
-import shutil
 from typing import List, Optional, Dict, Any
 
 # Calculate base directory relative to this file's location
@@ -380,15 +379,36 @@ def mark_model_inactive(slug: str, version: Optional[str] = None) -> bool:
 def recover_orphaned_runs(docker_client: Any = None, reattach_callback: Any = None) -> int:
     """Heal runs left in non-terminal FSM states by a crashed orchestrator.
 
-    PROMOTING is reconciled via the .promotion_complete marker inside the
-    artifact directory. RUNNING rows with a missing/dead container are marked
-    FAILED/ORPHANED. If a live container is found and a reattach callback is
-    supplied, the caller can resume supervision from the orchestrator process.
+    Per STRATEGY v2 §3 "Replace destructive recovery": this function never
+    deletes result-like data. A ``PROMOTING`` row whose artifact
+    directory does not carry a ``.promotion_complete`` marker is
+    classified as ``FAILED`` / ``INCOMPLETE_PROMOTION`` and the half-built
+    artifact directory is *moved* into ``store/quarantine/<date>/<id>/``
+    via the quarantine subsystem. A ``.quarantined`` tombstone is left at
+    the original path so users following the path see what happened.
+
+    ``RUNNING`` rows are still inspected against Docker. Missing/dead
+    containers are marked ``FAILED / ORPHANED``; live containers can be
+    re-attached via the supplied callback. No deletion occurs in either
+    branch.
 
     Returns the number of rows reconciled.
     """
     import logging as _logging
     _log = _logging.getLogger(__name__)
+
+    # Lazy-import the quarantine subsystem so test environments that
+    # don't have it available (or that monkey-patch DB_NAME pre-init) can
+    # still call this function.
+    from pathlib import Path as _Path
+    try:
+        from .promotion.layout import StoreLayout as _StoreLayout
+        from .promotion.quarantine import quarantine_directory as _quarantine_directory
+        from .promotion.errors import OwnershipMismatchError as _OwnershipMismatchError
+    except ImportError:  # pragma: no cover — defensive
+        _StoreLayout = None  # type: ignore[assignment]
+        _quarantine_directory = None  # type: ignore[assignment]
+        _OwnershipMismatchError = Exception  # type: ignore[assignment]
 
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -417,8 +437,47 @@ def recover_orphaned_runs(docker_client: Any = None, reattach_callback: Any = No
                 )
                 _log.warning("Recovered run %s -> SUCCESS (promotion marker present)", run_id)
             else:
-                if output_path and os.path.isdir(output_path):
-                    shutil.rmtree(output_path, ignore_errors=True)
+                # Quarantine the half-built artifact dir (STRATEGY v2 §3).
+                # No more rmtree in the recovery hot path; the user owns
+                # the decision about whether to adopt or gc.
+                if (
+                    output_path
+                    and os.path.isdir(output_path)
+                    and _quarantine_directory is not None
+                ):
+                    try:
+                        layout = _StoreLayout(root=_Path(STORE_DIR)).ensure()
+                        report = _quarantine_directory(
+                            source=_Path(output_path),
+                            layout=layout,
+                            reason="recovery: PROMOTING without .promotion_complete",
+                            physical_attempt_id=f"legacy_run_{run_id}",
+                            extra_report=(
+                                "Recovered by registry_db.recover_orphaned_runs(). "
+                                "The promotion saga did not commit before the "
+                                "previous orchestrator died. Adopt via the GUI's "
+                                "Recovered Runs tab, or export and gc."
+                            ),
+                        )
+                        _log.warning(
+                            "Quarantined run %s artifact dir to %s",
+                            run_id,
+                            report.quarantine_path,
+                        )
+                    except _OwnershipMismatchError as exc:
+                        _log.warning(
+                            "Run %s: refused to quarantine %s (%s); leaving in place",
+                            run_id,
+                            output_path,
+                            exc,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        _log.warning(
+                            "Run %s: quarantine failed (%s); leaving %s in place",
+                            run_id,
+                            exc,
+                            output_path,
+                        )
                 cursor.execute(
                     """
                     UPDATE runs

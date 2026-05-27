@@ -151,7 +151,13 @@ def _processed_placeholder_path(manifest_path: Path) -> str:
 
 
 def register_from_manifest(manifest_path: str, update: Optional[bool] = None) -> Dict[str, Any]:
-    """Register a dataset manifest into SQLite, metadata only and idempotent."""
+    """Register a dataset manifest into SQLite, metadata only and idempotent.
+
+    STRATEGY v2 §8: every declared path goes through the registration
+    hardening pipeline before any side-effect. ``raw_files`` entries that
+    escape the dataset directory after symlink canonicalisation are
+    rejected by :class:`multiverse.registration.PathEscapeError`.
+    """
     path = Path(manifest_path).resolve()
     if not path.exists():
         raise FileNotFoundError(f"Manifest not found: {path}")
@@ -161,10 +167,17 @@ def register_from_manifest(manifest_path: str, update: Optional[bool] = None) ->
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("Manifest must parse to a YAML mapping.")
+
+    dataset_dir = path.parent
+
+    # Activate registration hardening (STRATEGY v2 §8). Path escapes are
+    # refused at parse time — before SQLite is even opened.
+    from .registration import validate_paths_in_mapping
+    validate_paths_in_mapping(raw, root=dataset_dir)
+
     manifest = DatasetManifest(**raw)
     manifest_hash = _compute_file_sha256(path)
 
-    dataset_dir = path.parent
     slug = sanitize_slug(dataset_dir.name)
 
     # Validate referenced raw files exist.

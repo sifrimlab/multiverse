@@ -42,7 +42,9 @@ Notable unit tests:
 |---|---|
 | `test_planner.py` | Run plan generation from a manifest. |
 | `test_manifest_gate.py` | Pre-flight validation. |
-| `test_docker_runner.py` | Async supervision and promotion. |
+| `test_mvd_docker_executor.py` | mvd-backed Docker execution state flow. |
+| `test_docker_supervisor.py` | Container labels, leases, RealDockerEngine adapter, and cancellation. |
+| `test_promotion_saga.py` | Promotion, validation, and quarantine behavior. |
 | `test_local_runner.py` | The Python fallback path. |
 | `test_tuner.py` | Optuna sampling and objective wiring. |
 | `test_models_base.py` | `ModelFactory` lifecycle. |
@@ -62,7 +64,7 @@ These contracts are the ones to respect when refactoring:
 | Model registration | `model.yaml` plus a JSON Schema for hyperparameters; see [Model Registration](MODEL_REGISTRATION.md). |
 | Container runtime | `/input/data.h5mu`, `/output/job_spec.json`, `/output/`; see [Model Container Contract](MODEL_CONTAINER_CONTRACT.md). |
 | Evaluation | Embedding row order matches `obs`; metrics are gated by `determine_valid_metrics()`. |
-| Reporting | Each run's metrics row in MLflow ties back to the artifact bundle on disk. |
+| Reporting | Artifact bundles are authoritative; MLflow is a projection. |
 
 ## Code Layout
 
@@ -72,17 +74,17 @@ See [Architecture — Repository Layout](ARCHITECTURE.md#repository-layout) for 
 
 ## Things to Get Right
 
-1. **Atomicity around promotion.** The runner writes `runs.status = SUCCESS` only after `rename(2)`-ing the workspace into the artifact tree. Reorder these and you create the possibility of an orphaned successful row pointing at a missing directory.
+1. **Promotion saga integrity.** A run is successful only after validation and atomic promotion produce a verified artifact manifest. Do not reintroduce direct workspace moves into final artifact paths.
 2. **Determinism.** Every model container must apply the seed from `job_spec.json` before any stochastic call. Tests exercise this; do not regress.
-3. **Concurrency.** SQLite is opened with WAL mode and a 30s busy timeout. Long write transactions in tooling will be felt by the GUI. Keep writes small.
+3. **Control-plane ownership.** GUI and CLI execution should go through the mvd kernel/client path, not direct Docker or ad-hoc subprocess ownership.
 4. **Metric gating.** `evaluate.determine_valid_metrics()` is what prevents misleading numbers when metadata is missing. New metric families should plug into the same gating function.
-5. **No hidden state.** The registry is the source of truth. Functions that quietly inspect the filesystem to "figure out" what is registered are bugs in waiting.
+5. **Rebuildable state.** SQLite is an index. Artifact manifests and journals are the durable recovery inputs.
 
 ## Style Notes
 
 - Code targets Python 3.12. Use the standard typing features.
 - Prefer Pydantic models at parsing boundaries (`DatasetManifest`, `ParsedManifest`) over dictionary access.
-- The runner emits machine-readable events on stderr (one JSON object per line). Don't print free-form text alongside them; tests consume the stream.
+- Kernel/client paths return structured state. Keep command output predictable; tests consume CLI and client surfaces.
 - Container code should import only from `mvr_worker` and the model's own dependency stack. Importing from the host `multiverse` package inside a container will fail at runtime.
 
 ## Release Practice

@@ -113,9 +113,8 @@ The resulting `run_manifest.yaml` is part of your scientific record. See [Run Ma
 1. Open the **Run** tab.
 2. Confirm the manifest path.
 3. Click **Launch Run**.
-4. Watch the status table. Jobs cycle through `PENDING → RUNNING → SUCCESS / FAILED / SKIPPED`.
+4. Watch the status table. Jobs cycle through kernel states such as `PENDING -> RUNNING -> PROMOTING -> ARTIFACT_SUCCESS`, or `FAILED` / `CANCELLED`.
 
-A `SKIPPED` job is usually informative, not broken: the most common reasons are incompatible omics, a missing `batch` column, or metadata that cannot support a requested metric. Pre-flight validation catches these conditions before any container is started.
 
 ## Step 6: Inspect Results
 
@@ -163,8 +162,7 @@ sc.pl.umap(adata, color=["batch", "cell_type"])
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | Dataset does not appear in Configure | Registry has not refreshed. | Registry → **Refresh Registry**. |
-| Job is `SKIPPED` | Incompatible omics or missing metadata. | Check the compatibility matrix and metadata keys. |
-| Job is `FAILED` | Data cannot be read or model input requirements unmet. | Open Results and inspect `container.log`. |
+| Job is `FAILED` | Docker launch, container execution, or output validation failed. | Inspect the run failure reason and preserved logs. |
 | Metric is missing | `batch_key` or `cell_type_key` does not support that metric. | Confirm columns exist in your `obs`; re-register if you fix them. |
 | `database is locked` | Concurrent writes on SQLite. | Transient; the registry uses WAL mode and retries. |
 

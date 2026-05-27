@@ -14,53 +14,8 @@ from rich.live import Live
 from rich.table import Table
 from rich.console import Console
 
-try:
-    from .docker_runner import (
-        run_model_container,
-        run_evaluation_container,
-        build_images_concurrently,
-        run_jobs_concurrently,
-        ensure_docker_data_root,
-        _supervise_container,
-        mark_active_runs_failed_direct,
-        start_db_writer,
-        stop_db_writer,
-    )
-except ImportError as exc:
-    _DOCKER_RUNNER_IMPORT_ERROR = exc
-
-    def _raise_docker_unavailable(*args, **kwargs):
-        raise RuntimeError(
-            "Docker execution requires the docker Python package. "
-            "Install the Docker dependencies or run with --local."
-        ) from _DOCKER_RUNNER_IMPORT_ERROR
-
-    def run_model_container(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    def run_evaluation_container(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    async def build_images_concurrently(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    async def run_jobs_concurrently(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    def ensure_docker_data_root(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    async def _supervise_container(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    def mark_active_runs_failed_direct(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    def start_db_writer(*args, **kwargs):
-        return _raise_docker_unavailable(*args, **kwargs)
-
-    async def stop_db_writer(*args, **kwargs):
-        return None
+# Legacy Docker runner imports are intentionally not loaded at module import.
+# The production path goes through mvd; docker_runner.py is unsupported legacy code.
 from ..logging_utils import get_logger, setup_logging
 from ..ingestion import register_from_manifest, resolve_manifest_path, preprocess_dataset
 from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR, recover_orphaned_runs
@@ -1002,64 +957,10 @@ def execute_run(args: argparse.Namespace):
             raise SystemExit(130)
         return
 
-    conn = get_db_connection()
-    try:
-        if hasattr(args, "manifest") and args.manifest:
-            parsed_manifest = require_parsed_manifest(args.manifest, conn)
-            pending_jobs = parsed_manifest.plan
-        else:
-            pending_jobs = generate_execution_plan(conn)
-    except ManifestValidationError as exc:
-        conn.close()
-        console.print("[bold red]Manifest validation failed:[/]")
-        for err in exc.parsed.errors:
-            console.print(f"  [red]-[/] {err['field']}: {err['message']} ({err['code']})")
-        raise SystemExit(2) from exc
-    else:
-        conn.close()
+    # Production/default path: every Docker-backed run goes through mvd.
+    from .mvd_entrypoint import run_via_mvd
 
-    if pending_jobs:
-        try:
-            asyncio.run(run_workflow_async(args))
-        except KeyboardInterrupt:
-            logger.warning("Workflow interrupted by user")
-            raise SystemExit(130)
-
-        if args.evaluate:
-            logger.info("Starting evaluation of results.")
-            try:
-                run_evaluation_container(args.input, args.output)
-                logger.info("Evaluation finished successfully.")
-            except Exception as e:
-                logger.error(f"Error during evaluation: {e}")
-        return
-
-    # Legacy mode: no pending jobs in DB, fall back to explicit --models + --input
-    if not args.models or not args.input:
-        logger.info("No pending jobs in registry and no models/input provided for legacy mode.")
-        return
-
-    os.makedirs(args.output, exist_ok=True)
-    setup_logging(args.output)
-    logger.info(f"Running models: {args.models}")
-    logger.info(f"Input directory: {args.input}")
-    logger.info(f"Output directory: {args.output}")
-
-    for model in args.models:
-        logger.info(f"Running model: {model}")
-        try:
-            run_model_container(model, args.input, args.output, seed=args.seed)
-            logger.info(f"Model {model} finished successfully.")
-        except Exception as e:
-            logger.error(f"Error running model {model}: {e}")
-
-    if args.evaluate:
-        logger.info("Starting evaluation of results.")
-        try:
-            run_evaluation_container(args.input, args.output)
-            logger.info("Evaluation finished successfully.")
-        except Exception as e:
-            logger.error(f"Error during evaluation: {e}")
+    raise SystemExit(run_via_mvd(args))
 
 
 def main():
@@ -1071,7 +972,7 @@ def main():
             "--models",
             nargs="+",
             required=False,
-            help="List of models to run (legacy mode; e.g., pca mofa multivi totalvi)",
+            help="List of models for local mode (e.g., pca mofa multivi totalvi)",
             default=[],
         )
         p.add_argument("--input", required=False, help="Path to the input data directory")

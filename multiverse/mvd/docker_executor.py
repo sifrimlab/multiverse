@@ -1,0 +1,549 @@
+"""Production ``MvdDockerExecutor`` (STRATEGY v2 §4).
+
+Composes the safer architecture into a single ``RunExecutor`` that the
+kernel can drive:
+
+* admission through :class:`multiverse.broker.ResourceBroker`;
+* container launch through :class:`multiverse.docker_supervisor.DockerSupervisor`
+  with labels and a lease;
+* state transitions through the kernel only — every step goes via
+  :meth:`Kernel.transition`;
+* evaluation represented with ``EVALUATING`` and explicit
+  ``EVALUATION_FAILED``;
+* promotion through :class:`multiverse.promotion.PromotionSaga`;
+* success as ``ARTIFACT_SUCCESS``;
+* projection sync emitted *after* the artifact-success commit so an
+  MLflow outage cannot block the scientific outcome (R6).
+
+The executor is hot-path-clean: it imports the docker_supervisor protocol
+types but never the Docker SDK. Production wires a real
+``RealDockerEngine``; tests wire ``InMemoryContainerEngine`` plus a
+``producer`` callable that drops outputs into the workspace before the
+container "exits".
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, Mapping, Optional
+
+from ..artifact import (
+    ArtifactManifest,
+    BootContext,
+    ImageIdentity,
+    ModelOutputContract,
+    ProducedAt,
+    ProducedBy,
+    ValidationLevel,
+    compute_logical_run_id,
+    compute_manifest_hash,
+    compute_params_hash,
+    produced_at_now,
+)
+from ..broker import (
+    ResourceBroker,
+    ResourceRequest,
+)
+from ..docker_supervisor import (
+    CancelSaga,
+    ContainerState,
+    DockerSupervisor,
+)
+from ..journal import JournalWriter
+from ..promotion import (
+    PromotionOutcome,
+    PromotionSaga,
+    StoreLayout,
+)
+from .runs import RunRecord
+from .state import PrimaryState
+
+
+ProducerHook = Callable[[Path, Mapping[str, Any]], None]
+"""Optional pre-exit hook called after ``supervisor.launch`` returns. In
+production this is unused (the real container drops files into the
+mounted workspace by itself); tests use it to synthesize outputs."""
+
+
+@dataclass
+class MvdDockerExecutor:
+    """``RunExecutor`` that drives one run end-to-end through the safer
+    architecture.
+
+    The executor expects each ``RunRecord``'s ``options`` to carry the
+    job-specific data the kernel itself does not model — image, dataset
+    path, resource request, etc. See :func:`build_executor_options` for
+    the canonical shape.
+    """
+
+    journal: JournalWriter
+    boot: BootContext
+    store: StoreLayout
+    supervisor: DockerSupervisor
+    broker: ResourceBroker
+    state_root: Path
+    mvd_version: str = "0.1.0-mvd"
+    git_commit: Optional[str] = None
+    poll_interval_seconds: float = 0.05
+    max_poll_iterations: int = 1200
+    producer_hook: Optional[ProducerHook] = None
+    """Tests pass a callable that synthesizes container outputs into the
+    workspace right after launch. Production leaves this None."""
+
+    name: str = "mvd-docker"
+
+    # ------------------------------------------------------------------
+    # RunExecutor surface
+    # ------------------------------------------------------------------
+
+    async def execute(self, *, record: RunRecord, kernel) -> None:
+        options = dict(record.options or {})
+        try:
+            spec = _ExecutorJobSpec.from_options(options, record.physical_attempt_id)
+        except _BadOptions as exc:
+            await kernel.transition(
+                record.physical_attempt_id,
+                to_state=PrimaryState.FAILED,
+                reason=f"MvdDockerExecutor options error: {exc}",
+            )
+            return
+
+        # Compute the logical run id and stamp it on the record so later
+        # queries can group attempts of the same recipe.
+        identity = _resolve_identity_from_options(spec)
+        logical_run_id = compute_logical_run_id(
+            manifest_hash=spec.manifest_hash,
+            dataset_fingerprint=spec.dataset_fingerprint,
+            image_identity=identity,
+            params_hash=compute_params_hash(spec.params),
+            mv_contract_version=spec.contract_version,
+        )
+        record.logical_run_id = logical_run_id
+
+        # ---- 1. ADMISSION ----
+        admission = self.broker.admit(
+            physical_attempt_id=record.physical_attempt_id,
+            request=spec.resource_request,
+        )
+        if not admission.admitted:
+            await kernel.transition(
+                record.physical_attempt_id,
+                to_state=PrimaryState.FAILED,
+                reason=f"broker refused admission: {admission.detail}",
+            )
+            return
+        try:
+            await kernel.transition(
+                record.physical_attempt_id, to_state=PrimaryState.ADMITTED
+            )
+            if record.cancel_requested:
+                await self._cancel_terminate(record, kernel, reason="pre-launch cancel")
+                return
+
+            # ---- 2. WORKSPACE ----
+            workspace = self.store.workspaces / record.physical_attempt_id
+            workspace.mkdir(parents=True, exist_ok=True)
+            record.workspace_dir = str(workspace)
+            self._write_job_spec(spec, workspace)
+
+            # ---- 3. CONTAINER LAUNCH ----
+            launch = self.supervisor.launch(
+                physical_attempt_id=record.physical_attempt_id,
+                logical_run_id=logical_run_id,
+                manifest_hash=spec.manifest_hash,
+                workspace=workspace,
+                owner_token=record.physical_attempt_id,  # provisional; saga issues final token
+                image=spec.model_image,
+                command=spec.container_command,
+                env=spec.container_env,
+                volumes=spec.container_volumes(workspace),
+                mem_limit=spec.mem_limit,
+                name=f"mvd-{record.physical_attempt_id[:8]}",
+                entrypoint=spec.container_entrypoint,
+            )
+            await kernel.transition(
+                record.physical_attempt_id, to_state=PrimaryState.RUNNING
+            )
+
+            # ---- 3a. (test only) producer hook synthesizes outputs ----
+            if self.producer_hook is not None:
+                self.producer_hook(workspace, spec.params)
+
+            # ---- 4. WAIT FOR EXIT ----
+            exit_info = await self._wait_for_exit(launch.lease, record, kernel)
+            if exit_info is _CANCELLED:
+                return
+            oom = bool(exit_info.get("oom_killed", False))
+            exit_code = int(exit_info.get("exit_code", 0))
+            self.broker.classify_exit(
+                physical_attempt_id=record.physical_attempt_id,
+                exit_code=exit_code,
+                oom_killed=oom,
+            )
+            if exit_code != 0:
+                reason = (
+                    "container OOM_KILLED"
+                    if oom
+                    else f"container exited {exit_code}"
+                )
+                await kernel.transition(
+                    record.physical_attempt_id,
+                    to_state=PrimaryState.FAILED,
+                    reason=reason,
+                )
+                return
+
+            await kernel.transition(
+                record.physical_attempt_id, to_state=PrimaryState.TRAINING_SUCCEEDED
+            )
+
+            # ---- 5. EVALUATION (explicit state per R6) ----
+            await kernel.transition(
+                record.physical_attempt_id, to_state=PrimaryState.EVALUATING
+            )
+
+            # ---- 6. PROMOTION SAGA ----
+            await kernel.transition(
+                record.physical_attempt_id, to_state=PrimaryState.PROMOTING
+            )
+            manifest = self._compose_manifest(spec, identity, logical_run_id, record)
+            target_artifact_dir = self.store.artifacts / spec.artifact_dir_name
+            saga = PromotionSaga(
+                journal=self.journal,
+                layout=self.store,
+                physical_attempt_id=record.physical_attempt_id,
+                logical_run_id=logical_run_id,
+                workspace_dir=workspace,
+                target_artifact_dir=target_artifact_dir,
+                manifest=manifest,
+                contract=ModelOutputContract.default(
+                    expected_n_obs=spec.dataset_n_obs,
+                    mv_contract_version=spec.contract_version,
+                ),
+                validators=spec.validators,
+            )
+            result = saga.run()
+            if result.outcome is PromotionOutcome.PROMOTED:
+                record.artifact_dir = str(result.artifact_dir)
+                await kernel.transition(
+                    record.physical_attempt_id, to_state=PrimaryState.ARTIFACT_SUCCESS
+                )
+                # ---- 7. PROJECTION STATUS (after artifact-success) ----
+                await kernel.report_projection_status(
+                    plugin="mlflow",
+                    physical_attempt_id=record.physical_attempt_id,
+                    status="TRACKING_PENDING",
+                    details={"sync_required": True},
+                )
+                return
+            if result.outcome is PromotionOutcome.QUARANTINED:
+                await kernel.transition(
+                    record.physical_attempt_id,
+                    to_state=PrimaryState.PROMOTION_FAILED,
+                    reason=result.failure_reason or "promotion quarantined",
+                )
+                await kernel.transition(
+                    record.physical_attempt_id,
+                    to_state=PrimaryState.RECOVERY_PENDING,
+                    reason="quarantined; user adoption required",
+                )
+                return
+            await kernel.transition(
+                record.physical_attempt_id,
+                to_state=PrimaryState.FAILED,
+                reason=result.failure_reason or "promotion pre-prepare failure",
+            )
+        finally:
+            self.broker.release(record.physical_attempt_id)
+
+    # ------------------------------------------------------------------
+    # internals
+    # ------------------------------------------------------------------
+
+    async def _wait_for_exit(self, lease, record: RunRecord, kernel) -> Any:
+        """Poll the supervisor until the container exits or cancellation
+        is requested. Returns a dict with ``exit_code`` + ``oom_killed``
+        on natural exit, or the sentinel :data:`_CANCELLED` on cancel."""
+        for _ in range(self.max_poll_iterations):
+            if record.cancel_requested:
+                await self._cancel_terminate(
+                    record, kernel, lease=lease, reason="user cancel"
+                )
+                return _CANCELLED
+            entry = self.supervisor.reconcile_one(lease)
+            if entry.state is ContainerState.RUNNING:
+                await asyncio.sleep(self.poll_interval_seconds)
+                continue
+            return {
+                "exit_code": entry.exit_code if entry.exit_code is not None else 1,
+                "oom_killed": bool(entry.oom_killed),
+            }
+        await kernel.transition(
+            record.physical_attempt_id,
+            to_state=PrimaryState.FAILED,
+            reason=f"container did not exit within "
+            f"{self.max_poll_iterations * self.poll_interval_seconds}s",
+        )
+        return _CANCELLED
+
+    async def _cancel_terminate(
+        self,
+        record: RunRecord,
+        kernel,
+        *,
+        lease: Optional[Any] = None,
+        reason: str = "cancel",
+    ) -> None:
+        """Drive the cancellation saga and the kernel state transitions."""
+        await kernel.transition(
+            record.physical_attempt_id, to_state=PrimaryState.CANCEL_REQUESTED
+        )
+        if lease is not None:
+            saga = CancelSaga(
+                engine=self.supervisor.engine,
+                journal=self.journal,
+                layout=self.store,
+                boot=self.boot,
+                physical_attempt_id=record.physical_attempt_id,
+                logical_run_id=record.logical_run_id or "",
+                lease=lease,
+            )
+            saga.run()
+        await kernel.transition(
+            record.physical_attempt_id,
+            to_state=PrimaryState.CANCELLED,
+            reason=reason,
+        )
+
+    def _write_job_spec(self, spec: "_ExecutorJobSpec", workspace: Path) -> None:
+        payload = {
+            "model_name": spec.model_slug,
+            "model_version": spec.model_version,
+            "dataset_slug": spec.dataset_slug,
+            "dataset_path_in_container": "/input/data.h5mu",
+            "hyperparameters": {spec.model_slug: dict(spec.params)},
+            "seed": spec.seed,
+        }
+        (workspace / "job_spec.json").write_text(
+            json.dumps(payload, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+
+    def _compose_manifest(
+        self,
+        spec: "_ExecutorJobSpec",
+        identity: ImageIdentity,
+        logical_run_id: str,
+        record: RunRecord,
+    ) -> ArtifactManifest:
+        return ArtifactManifest(
+            logical_run_id=logical_run_id,
+            physical_attempt_id=record.physical_attempt_id,
+            manifest_hash=spec.manifest_hash,
+            dataset_fingerprint=spec.dataset_fingerprint,
+            image_identity=identity,
+            params_hash=compute_params_hash(spec.params),
+            mv_contract_version=spec.contract_version,
+            produced_at=ProducedAt.from_dict(produced_at_now(self.boot)),
+            produced_by=ProducedBy(
+                mvd_version=self.mvd_version, git_commit=self.git_commit
+            ),
+            artifacts=[],
+            owner_token=record.physical_attempt_id,
+        )
+
+
+# Sentinel returned by ``_wait_for_exit`` when execution was diverted to
+# the cancel branch — distinct from any natural-exit dict.
+_CANCELLED = object()
+
+
+# ---------------------------------------------------------------------------
+# options shape
+# ---------------------------------------------------------------------------
+
+
+class _BadOptions(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class _ExecutorJobSpec:
+    physical_attempt_id: str
+    model_slug: str
+    model_version: str
+    model_image: str
+    image_digest: Optional[str]
+    contract_version: str
+    dataset_slug: str
+    dataset_path: str
+    dataset_n_obs: int
+    dataset_n_vars: Optional[int]
+    dataset_fingerprint: Dict[str, Any]
+    params: Dict[str, Any]
+    manifest_hash: str
+    resource_request: ResourceRequest
+    artifact_dir_name: str
+    mem_limit: Optional[str]
+    container_command: Optional[List[str]]
+    container_entrypoint: Optional[str]
+    validators: ValidationLevel
+    seed: Optional[int]
+
+    @classmethod
+    def from_options(
+        cls, options: Mapping[str, Any], attempt_id: str
+    ) -> "_ExecutorJobSpec":
+        def _req(key: str) -> Any:
+            if key not in options:
+                raise _BadOptions(f"missing option {key!r}")
+            return options[key]
+
+        params = dict(options.get("params") or {})
+        fingerprint = {
+            "slug": str(_req("dataset_slug")),
+            "n_obs": int(_req("dataset_n_obs")),
+        }
+        if options.get("dataset_n_vars") is not None:
+            fingerprint["n_vars"] = int(options["dataset_n_vars"])
+        if options.get("dataset_fingerprint_extra"):
+            fingerprint.update(dict(options["dataset_fingerprint_extra"]))
+
+        manifest_hash = str(
+            options.get("manifest_hash")
+            or compute_manifest_hash(str(options.get("manifest_text") or ""))
+        )
+        ram_bytes = int(options.get("ram_request_bytes") or 256 * 1024 * 1024)
+        request = ResourceRequest(ram_bytes=ram_bytes)
+
+        validators_raw = str(options.get("validators", "basic")).lower()
+        try:
+            validators = ValidationLevel(validators_raw)
+        except ValueError as exc:
+            raise _BadOptions(
+                f"validators must be one of basic/strict/developer, got {validators_raw!r}"
+            ) from exc
+
+        artifact_dir_name = str(
+            options.get("artifact_dir_name")
+            or f"{fingerprint['slug']}_{str(_req('model_slug'))}_{attempt_id[:8]}"
+        )
+
+        return cls(
+            physical_attempt_id=attempt_id,
+            model_slug=str(_req("model_slug")),
+            model_version=str(options.get("model_version", "0.0.0")),
+            model_image=str(_req("model_image")),
+            image_digest=options.get("image_digest"),
+            contract_version=str(options.get("contract_version", "1")),
+            dataset_slug=str(options["dataset_slug"]),
+            dataset_path=str(_req("dataset_path")),
+            dataset_n_obs=int(_req("dataset_n_obs")),
+            dataset_n_vars=(
+                int(options["dataset_n_vars"])
+                if options.get("dataset_n_vars") is not None
+                else None
+            ),
+            dataset_fingerprint=fingerprint,
+            params=params,
+            manifest_hash=manifest_hash,
+            resource_request=request,
+            artifact_dir_name=artifact_dir_name,
+            mem_limit=options.get("mem_limit"),
+            container_command=(
+                [str(part) for part in options["container_command"]]
+                if options.get("container_command") is not None
+                else None
+            ),
+            container_entrypoint=(
+                str(options["container_entrypoint"])
+                if options.get("container_entrypoint") is not None
+                else None
+            ),
+            validators=validators,
+            seed=(int(options["seed"]) if options.get("seed") is not None else None),
+        )
+
+    @property
+    def container_env(self) -> Dict[str, str]:
+        return {
+            "MVR_INPUT_DATA_PATH": "/input/data.h5mu",
+            "MVR_OUTPUT_DIR": "/output",
+            "MVR_JOB_SPEC_PATH": "/output/job_spec.json",
+        }
+
+    def container_volumes(self, workspace: Path) -> Dict[str, str]:
+        return {
+            str(Path(self.dataset_path).expanduser().resolve()): "/input/data.h5mu",
+            str(workspace.resolve()): "/output",
+        }
+
+
+def _resolve_identity_from_options(spec: _ExecutorJobSpec) -> ImageIdentity:
+    if spec.image_digest:
+        return ImageIdentity.registry_digest(spec.image_digest)
+    return ImageIdentity.unverified_local(spec.model_image)
+
+
+# ---------------------------------------------------------------------------
+# Convenience for callers building ``submit_run`` options
+# ---------------------------------------------------------------------------
+
+
+def build_executor_options(
+    *,
+    model_slug: str,
+    model_image: str,
+    dataset_slug: str,
+    dataset_path: str,
+    dataset_n_obs: int,
+    params: Optional[Mapping[str, Any]] = None,
+    image_digest: Optional[str] = None,
+    model_version: str = "0.0.0",
+    contract_version: str = "1",
+    dataset_n_vars: Optional[int] = None,
+    manifest_text: str = "",
+    ram_request_bytes: int = 256 * 1024 * 1024,
+    mem_limit: Optional[str] = None,
+    container_command: Optional[List[str]] = None,
+    container_entrypoint: Optional[str] = None,
+    validators: str = "basic",
+    artifact_dir_name: Optional[str] = None,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Build a canonical ``options`` dict for ``Kernel.submit_run``.
+
+    Production callers (the CLI cutover in Move 6) build this from a YAML
+    manifest; tests build it inline.
+    """
+    out: Dict[str, Any] = {
+        "model_slug": model_slug,
+        "model_image": model_image,
+        "model_version": model_version,
+        "contract_version": contract_version,
+        "dataset_slug": dataset_slug,
+        "dataset_path": dataset_path,
+        "dataset_n_obs": int(dataset_n_obs),
+        "params": dict(params or {}),
+        "manifest_text": manifest_text,
+        "ram_request_bytes": int(ram_request_bytes),
+        "validators": validators,
+    }
+    if seed is not None:
+        out["seed"] = int(seed)
+    if image_digest:
+        out["image_digest"] = image_digest
+    if dataset_n_vars is not None:
+        out["dataset_n_vars"] = int(dataset_n_vars)
+    if mem_limit:
+        out["mem_limit"] = mem_limit
+    if container_command is not None:
+        out["container_command"] = [str(part) for part in container_command]
+    if container_entrypoint is not None:
+        out["container_entrypoint"] = str(container_entrypoint)
+    if artifact_dir_name:
+        out["artifact_dir_name"] = artifact_dir_name
+    return out

@@ -1,0 +1,50 @@
+"""Resource broker (STRATEGY S9 / R11 / Milestone 13).
+
+The broker observes host state at three rates:
+
+* **At admission** — re-poll RAM/VRAM/disk/inodes/FDs; refuse the job if
+  the live total minus the reservation ledger is below the job's request.
+* **Continuous** — 5 s tick during RUNNING; update a rolling pressure
+  score per resource.
+* **On Docker events** — OOM kill, paused, exited.
+
+The broker NEVER preempts running containers in local mode (R11). It only
+*stops admitting* new jobs under pressure. The user retains authority over
+running work.
+"""
+
+from .observer import (
+    HostMetrics,
+    HostObserver,
+    InMemoryHostObserver,
+    ResourceRequest,
+)
+from .broker import (
+    AdmissionDecision,
+    AdmissionOutcome,
+    ContinuousObservation,
+    OomEvent,
+    PressureEvent,
+    ReservationLedger,
+    ResourceBroker,
+)
+from .pressure import (
+    PressureMode,
+    PressureThresholds,
+)
+
+__all__ = [
+    "AdmissionDecision",
+    "AdmissionOutcome",
+    "ContinuousObservation",
+    "HostMetrics",
+    "HostObserver",
+    "InMemoryHostObserver",
+    "OomEvent",
+    "PressureEvent",
+    "PressureMode",
+    "PressureThresholds",
+    "ReservationLedger",
+    "ResourceBroker",
+    "ResourceRequest",
+]

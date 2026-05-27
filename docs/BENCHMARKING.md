@@ -86,14 +86,14 @@ The full specification is documented in [Model Container Contract](MODEL_CONTAIN
 
 ## Live Training Metrics
 
-Each containerized model run produces **one MLflow run**, opened by the host *before* the container launches and closed by the host *after* it exits. The run captures four kinds of data in one place:
+Each containerized model run first produces a verified local artifact bundle. MLflow is then used as a projection for comparison and dashboarding. A run can be scientifically successful (`ARTIFACT_SUCCESS`) even if MLflow sync is pending or failed. When sync is available, it captures four kinds of data:
 
 - **Hyperparameters and tags** — logged at run start by the host so they appear in MLflow before training begins.
 - **System metrics (CPU/GPU/RAM)** — sampled by MLflow's built-in monitor while the parent run is open, which is exactly the duration the container is alive.
 - **Per-epoch metrics** — streamed from inside the container by `EpochLogger` (see [Adding a Model](ADDING_A_MODEL.md#live-per-epoch-metrics-optional-but-recommended)) when the model exposes them. The host injects `MLFLOW_RUN_ID` into the container so `EpochLogger` attaches to the same run instead of opening a duplicate. Models without per-epoch hooks (e.g. PCA) simply skip this step.
 - **Final scalars and artifacts** — appended by the host after the container exits, then the run is ended with `FINISHED` or `FAILED` status.
 
-Connectivity: the Docker runner forwards `MLFLOW_TRACKING_URI` and `MLFLOW_EXPERIMENT_NAME` into each container, rewriting `localhost`/`127.0.0.1` → `host.docker.internal` so containers can reach a host-bound MLflow server. For this to work on Linux, the runner also passes `--add-host=host.docker.internal:host-gateway` (handled automatically). If your MLflow server is bound to `127.0.0.1` only, start it with `mlflow server --host 0.0.0.0 --port 5000` so the gateway can reach it.
+Connectivity: projection sync uses the configured MLflow tracking URI. If the service is offline, keep the artifact bundle and retry with `multiverse mlflow-sync` later.
 
 Local sidecar: each run also writes **`metrics.jsonl`** — one JSON line per epoch (`step`, `timestamp`, metrics) — alongside `metrics.json`. It survives crashes and is convenient for offline analysis (`pandas.read_json(path, lines=True)`).
 

@@ -1,85 +1,82 @@
 # Runner & Orchestration
 
-This page documents the orchestration layer that turns a `run_manifest.yaml` into a set of executed model runs with archived artifacts. It is written for operators and developers; bioinformatics users typically interact with the runner through the **Run** tab in the [GUI](GUI.md).
+This page documents the current execution path for turning `run_manifest.yaml` into validated artifact bundles.
 
 ## Entry Points
 
 | Surface | Command | Notes |
 |---|---|---|
-| CLI | `python -m multiverse.runner.cli run --manifest <path> --output <dir>` | Canonical headless entry point. |
-| Makefile | `make benchmark MANIFEST=run_manifest.yaml OUTPUT_DIR=./results` | Convenience wrapper around the CLI. |
-| GUI | Streamlit **Run** tab | Spawns the CLI as a subprocess and consumes its JSON event stream. |
-
-The CLI lives in `multiverse/runner/cli.py`. It additionally exposes `init-db`, `register-dataset`, and `register-model` subcommands; see [Model Registration](MODEL_REGISTRATION.md) and [Data Registration](DATA_REGISTRATION.md) for those.
+| Canonical CLI | `multiverse run --manifest <path> --output <dir>` | Installed command; delegates to the mvd-backed runner. |
+| Module CLI | `python -m multiverse.runner.cli run --manifest <path> --output <dir>` | Same run path, useful from a source checkout. |
+| GUI | Streamlit **Run** tab | Submits to the in-process mvd controller; it does not spawn the runner as a subprocess. |
+| Maintenance | `multiverse doctor`, `multiverse rebuild-index`, `multiverse gc --dry-run`, `multiverse mlflow-sync` | Recovery and projection commands. |
 
 ## Execution Pipeline
 
 ```mermaid
 flowchart LR
     A[run_manifest.yaml] --> B[Parse and validate]
-    B --> C[Pre-flight per job]
-    C --> D[Concurrent image build/pull]
-    D --> E[Launch model containers]
-    E --> F[Per-job evaluation]
-    F --> G[Atomic workspace promotion]
-    G --> H[MLflow logging]
+    B --> C[mvd kernel]
+    C --> D[Resource broker]
+    D --> E[Docker supervisor]
+    E --> F[Model container]
+    F --> G[Semantic validation]
+    G --> H[Promotion saga]
+    H --> I[Artifact bundle]
+    I --> J[SQLite rebuildable index]
+    I --> K[MLflow projection]
 ```
 
-1. **Parse and validate.** The manifest is parsed into a `ParsedManifest` dataclass with an explicit error list. Unknown model names, missing dataset slugs, or malformed parameter blocks are surfaced before any container starts.
-2. **Pre-flight per job.** For each job, `validate_pending_jobs()` confirms that the registered dataset exposes the omics required by the model, that the requested batch and cell-type keys exist, and that requested metrics are computable. Jobs failing pre-flight transition to `SKIPPED` with a reason recorded.
-3. **Concurrent image build/pull.** `build_images_concurrently()` pulls or builds every required image in parallel, so the first job is not blocked on a sequential cold start.
-4. **Launch model containers.** `runner.docker_runner.run_model_container()` mounts the dataset at `/input/data.h5mu` and an ephemeral workspace at `/output`, injects `MLFLOW_TRACKING_URI` and a deterministic seed, then supervises the container with `_supervise_container()`. Concurrency is bounded by an asyncio semaphore informed by available host RAM.
-5. **Per-job evaluation.** Successful model containers are followed by an evaluation container (`docker-env/evaluation.Dockerfile`) that reads the embedding, applies `multiverse.evaluate.determine_valid_metrics()`, and writes `metrics.json` augmented with scib-metrics outputs.
-6. **Atomic workspace promotion.** `run_and_promote()` moves the workspace directory to `store/artifacts/<experiment>/<dataset>/<model>/<run_id>/` and then writes `status=SUCCESS` to the `runs` table. The DB write occurs after the move so that a crash mid-promotion cannot orphan a successful run.
-7. **MLflow logging.** Successful runs are logged to MLflow through `multiverse.tracking.log_successful_run_to_mlflow()`. Parent and child runs are nested so that sweeps produced by Optuna remain comparable in the MLflow UI.
+1. **Parse and validate.** The manifest is checked against the local registry before any run is submitted.
+2. **Submit to mvd.** The CLI and GUI submit jobs through the kernel/client boundary. The kernel owns state transitions, cancellation, and execution tasks.
+3. **Launch Docker through the supervisor.** The supervisor labels containers, records launch intent in the journal, and polls through the `RealDockerEngine` adapter.
+4. **Write the model contract.** Each workspace receives `job_spec.json`; the container sees `/input/data.h5mu`, `/output/job_spec.json`, and `/output/`.
+5. **Validate outputs.** Successful container exit is not enough. Required artifacts are opened and checked before promotion.
+6. **Promote through a saga.** The workspace is staged under an owned staging directory and atomically renamed into the artifact store only after validation.
+7. **Project to MLflow.** MLflow is a projection. A valid artifact bundle can be scientifically successful even if tracking sync is pending or failed.
 
 ## Run States
 
 | State | Meaning |
 |---|---|
-| `PENDING` | The job is in the plan but has not started. |
-| `RUNNING` | The model container is training or writing outputs. |
-| `SUCCESS` | Required artifacts were written, validated, and promoted. |
-| `FAILED` | The container exited non-zero or output validation failed. |
-| `SKIPPED` | Pre-flight rejected the job before any container was launched. |
+| `PENDING` / `ADMITTED` | The kernel accepted the run and is preparing execution. |
+| `RUNNING` | The model container is active. |
+| `TRAINING_SUCCEEDED` / `EVALUATING` | The container exited zero and post-run checks are in progress. |
+| `PROMOTING` | Validated outputs are being promoted into the artifact store. |
+| `ARTIFACT_SUCCESS` | The promoted bundle is the durable scientific result. |
+| `FAILED` | Execution failed before a valid artifact was promoted. |
+| `CANCELLED` | The user cancelled the run; workspace evidence is preserved. |
+| `RECOVERY_PENDING` | The run needs explicit user/operator recovery or adoption. |
 
-States are persisted in the `runs` table of `mvexp_state.db` and streamed live to the GUI as JSON events on stderr.
+## Artifact Contract
 
-## Concurrency Model
+Every successful run must contain a verified `artifact_manifest.json` and `artifact_manifest.sha256`. The manifest records logical and physical run IDs, dataset fingerprint, image identity, parameter hash, timestamps, owner token, and validated artifact entries with checksums.
 
-The SQLite registry is opened with `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = NORMAL`, and a 30-second busy timeout. Writes from the Streamlit process, the runner, and tooling can therefore proceed concurrently without lock-thrashing.
-
-Container parallelism is bounded by an asyncio semaphore in `docker_runner`. The default limit is derived from available host RAM; override with `MVEXP_MAX_PARALLEL_JOBS` if you need to pin a value (for example on a shared GPU node).
+SQLite is an index over this state, not the scientific source of truth. If the SQLite file is lost, `multiverse rebuild-index` reconstructs run visibility from the journal and artifact store.
 
 ## Required Outputs
 
-A successful run produces:
-
 | Artifact | Description |
 |---|---|
-| `embeddings.h5` | Latent matrix exposed as HDF5 dataset `latent`. |
-| `metrics.json` | Model-level metrics and (optional) training history. |
+| `artifact_manifest.json` + `.sha256` | Verified bundle metadata and checksum sidecar. |
 | `job_spec.json` | Exact runtime instruction passed to the model container. |
-| `run_manifest.yaml` | Copy of the benchmark recipe. |
-| `umap.png` | UMAP visualization rendered by the model container. |
-| `container.log` | Stdout/stderr captured from the container. |
+| `embeddings.h5` | Required latent matrix at HDF5 dataset `latent`. |
+| `metrics.json` | Optional model diagnostics and metric summaries. |
+| `umap.png` | Optional visualization. |
+| `container.log` | Captured model output when available. |
 
 The full I/O contract is documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
 
-## Local (Non-Docker) Execution
+## Local Execution
 
-`multiverse/runner/local_runner.py` provides a pure-Python fallback that loads the dataset in-process, instantiates the model class directly, and writes the same artifact set. It is used by the unit tests and is convenient for debugging model code without a Docker round-trip, but it bypasses the container isolation that makes the platform reproducible across hosts. Production runs should use the Docker path.
-
-## Sweeps
-
-When `globals.run_gridsearch: true` is set in the manifest, the runner delegates to `multiverse/runner/tuner.py`. Each job becomes an Optuna study; the `objective()` callable samples hyperparameters from the manifest's distribution spec, executes the job, and returns the target metric. Trials are logged as child runs under the parent MLflow run, and the Optuna Dashboard at `http://localhost:8080` visualizes parameter importance and pruning.
+`--local` remains a developer/debug path for running Python model wrappers on the host. Production benchmark execution should use the default mvd-backed Docker path.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Job `SKIPPED` immediately | Pre-flight validation failed. | Inspect the runner log for the reason; usually a missing column or omics mismatch. |
-| Container exits with `ImportError` for `mvr_worker` | Model image was rebuilt without the SDK. | Rebuild with the standard Dockerfile pattern; see [Adding a Model](ADDING_A_MODEL.md). |
-| Orphaned workspace under `store/workspaces/` | The runner crashed between container completion and promotion. | Workspaces are safe to delete; the artifact tree is the source of truth. |
-| `database is locked` persisting | A second process holds a long write transaction. | `lsof mvexp_state.db` to identify; WAL mode handles transient contention automatically. |
-| MLflow has no entry for a successful run | `MLFLOW_TRACKING_URI` unreachable from the runner. | Verify `make services-up` succeeded and the URI matches. |
+| Launch fails before container start | Manifest references stale dataset/model rows. | Regenerate the manifest from Configure or re-register the stale object. |
+| Run reaches `FAILED` | Container non-zero exit, Docker launch failure, or validator refusal. | Open the artifact/workspace logs and inspect `failure_reason`. |
+| Run reaches `RECOVERY_PENDING` | Promotion or recovery found data that requires user decision. | Use recovery/quarantine reports before deleting anything. |
+| MLflow has no successful entry | Projection sync is pending or failed. | The artifact bundle is still authoritative; run `multiverse mlflow-sync` later. |
+| SQLite state looks wrong | Index drift or DB loss. | Run `multiverse rebuild-index` against the state and store roots. |

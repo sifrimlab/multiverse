@@ -2,15 +2,12 @@ import html
 import json
 import os
 import re
-import queue
 import shutil
 import sqlite3
 import subprocess
-import threading
 import sys
 import time
 import urllib.request
-from collections import deque
 from datetime import timedelta
 from pathlib import Path
 
@@ -19,6 +16,7 @@ import streamlit as st
 import streamlit.components.v1 as components  # type: ignore[import-untyped]
 import yaml
 from multiverse.gui_artifacts import render_artifact_tree, render_download_button, render_log_viewer
+from multiverse.index.sqlite_index import INDEX_FILENAME, open_index
 from multiverse.gui_navigation import go_to, render_top_nav
 from multiverse.gui_telemetry import track
 from multiverse.gui_state import bump_editor_version, get_state, init_state
@@ -1033,163 +1031,146 @@ def _wave_simulate(job_memory: dict[str, float], cap_gb: float) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Execute-tab subprocess streaming (S-04 fragment refactor)
+# Execute-tab mvd monitoring
 # ---------------------------------------------------------------------------
 
 _LOG_DEQUE_MAX = 1000
 _LOG_DISPLAY_TAIL = 40
+_MVD_TERMINAL_STATES = {"ARTIFACT_SUCCESS", "CANCELLED", "FAILED", "RECOVERY_PENDING"}
+_MVD_RUNNING_STATES = {
+    "PENDING",
+    "ADMITTED",
+    "RUNNING",
+    "TRAINING_SUCCEEDED",
+    "EVALUATING",
+    "PROMOTING",
+    "CANCEL_REQUESTED",
+}
 
 
-def _drain_pipe(pipe, out_q: "queue.Queue[str | None]") -> None:
-    try:
-        for line in iter(pipe.readline, ""):
-            out_q.put(line)
-    finally:
-        out_q.put(None)
-        try:
-            pipe.close()
-        except Exception:
-            pass
+def _gui_status_for_mvd_state(state: str) -> str:
+    if state == "ARTIFACT_SUCCESS":
+        return "Done"
+    if state == "CANCELLED":
+        return "Cancelled"
+    if state in {"FAILED", "EVALUATION_FAILED", "PROMOTION_FAILED", "RECOVERY_PENDING"}:
+        return "Failed"
+    if state in _MVD_RUNNING_STATES:
+        return "Running"
+    return state.title().replace("_", " ")
 
 
-def _launch_run_subprocess(
+def _mvd_controller_for_session():
+    output_dir = Path(st.session_state.get("_mvd_output_dir", "store/artifacts/run_output"))
+    from multiverse.runner.mvd_inprocess import get_controller
+
+    return get_controller(state_root=output_dir)
+
+
+def _append_run_log(line: str) -> None:
+    lines = st.session_state.setdefault("_run_log_lines", [])
+    lines.append(line)
+    if len(lines) > _LOG_DEQUE_MAX:
+        del lines[: len(lines) - _LOG_DEQUE_MAX]
+
+
+def _launch_mvd_runs(
     *,
     manifest_file: Path,
     output_dir: str,
     seed: int,
-    planned_jobs: list[dict],
+    pending_jobs: list[dict],
+    manifest_text: str,
     repo_root: Path,
 ) -> None:
-    """Spawn the orchestrator subprocess and stash all live handles in
-    session_state so the fragment monitor can poll them without rebuilding."""
-    cmd = [
-        sys.executable, "-m", "multiverse.runner.cli", "run",
-        "--manifest", str(manifest_file),
-        "--output", output_dir,
-        "--seed", str(seed),
-    ]
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-        env=env,
-        cwd=str(repo_root),
-    )
-    stdout_q: "queue.Queue[str | None]" = queue.Queue()
-    stderr_q: "queue.Queue[str | None]" = queue.Queue()
-    threading.Thread(target=_drain_pipe, args=(proc.stdout, stdout_q), daemon=True).start()
-    threading.Thread(target=_drain_pipe, args=(proc.stderr, stderr_q), daemon=True).start()
+    output_path = Path(output_dir)
+    if not output_path.is_absolute():
+        output_path = (repo_root / output_path).resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    st.session_state["_run_proc"] = proc
-    st.session_state["_run_stdout_q"] = stdout_q
-    st.session_state["_run_stderr_q"] = stderr_q
-    st.session_state["_run_stdout_done"] = False
-    st.session_state["_run_stderr_done"] = False
-    st.session_state["_run_log_lines"] = deque(maxlen=_LOG_DEQUE_MAX)
-    st.session_state["_run_job_statuses"] = {
-        f"{j['Dataset']}_{j['Model']}": "Pending" for j in planned_jobs
-    }
+    from multiverse.runner.mvd_inprocess import get_controller
+
+    controller = get_controller(state_root=output_path)
+    submitted = controller.submit_manifest(
+        manifest_path=manifest_file,
+        pending_jobs=pending_jobs,
+        manifest_text=manifest_text,
+        seed=seed,
+    )
+    if not submitted:
+        raise RuntimeError("manifest produced no runnable mvd submissions")
+
+    st.session_state["_mvd_output_dir"] = str(output_path)
+    st.session_state["_mvd_submissions"] = [s.to_dict() for s in submitted]
+    st.session_state["_mvd_last_states"] = {s.attempt_id: "SUBMITTED" for s in submitted}
+    st.session_state["_mvd_snapshots"] = []
+    st.session_state["_run_log_lines"] = []
+    for s in submitted:
+        _append_run_log(f"{s.job_name}: SUBMITTED ({s.attempt_id})")
+
     st.session_state["is_running"] = True
     st.session_state["run_finalized"] = False
     st.session_state["_run_returncode"] = None
 
 
-def _drain_run_queues() -> None:
-    """Pull whatever lines are buffered from stdout/stderr without blocking."""
-    log_lines: "deque[str]" = st.session_state["_run_log_lines"]
-    job_statuses: dict[str, str] = st.session_state["_run_job_statuses"]
-    stdout_q: "queue.Queue[str | None]" = st.session_state["_run_stdout_q"]
-    stderr_q: "queue.Queue[str | None]" = st.session_state["_run_stderr_q"]
+def _refresh_mvd_snapshots() -> list[dict]:
+    submissions: list[dict] = st.session_state.get("_mvd_submissions", [])
+    if not submissions:
+        return []
+    attempt_ids = [s["attempt_id"] for s in submissions]
+    controller = _mvd_controller_for_session()
+    snapshots = controller.query_many(attempt_ids)
+    st.session_state["_mvd_snapshots"] = snapshots
 
-    while True:
-        try:
-            raw = stdout_q.get_nowait()
-        except queue.Empty:
-            break
-        if raw is None:
-            st.session_state["_run_stdout_done"] = True
-            continue
-        clean = _ANSI_RE.sub("", raw).rstrip()
-        if clean:
-            log_lines.append(clean)
-
-    while True:
-        try:
-            raw = stderr_q.get_nowait()
-        except queue.Empty:
-            break
-        if raw is None:
-            st.session_state["_run_stderr_done"] = True
-            continue
-        clean = raw.strip()
-        if not clean:
-            continue
-        try:
-            event = json.loads(clean)
-        except json.JSONDecodeError:
-            log_lines.append(_ANSI_RE.sub("", clean))
-            continue
-        event_name = event.get("event")
-        job_name = event.get("job")
-        if event_name == "job_start" and job_name in job_statuses:
-            job_statuses[job_name] = "Training"
-        elif event_name == "job_end" and job_name in job_statuses:
-            job_statuses[job_name] = "Done" if event.get("status") == "SUCCESS" else "Failed"
-        elif event_name == "error":
-            log_lines.append(f"ERROR {event.get('kind')}: {event.get('message', '')}")
-
-
-def _finalize_run() -> None:
-    """Mark stragglers as Done/Failed and emit the completion telemetry."""
-    proc: subprocess.Popen = st.session_state["_run_proc"]
-    job_statuses: dict[str, str] = st.session_state["_run_job_statuses"]
-    rc = proc.returncode
-    st.session_state["_run_returncode"] = rc
-    if rc == 0:
-        track("run_completed", status="success", returncode=rc)
-        for k, v in job_statuses.items():
-            if v == "Pending":
-                job_statuses[k] = "Done"
-    else:
-        track("run_completed", status="failed", returncode=rc)
-        for k, v in job_statuses.items():
-            if v in ("Pending", "Training"):
-                job_statuses[k] = "Failed"
-    st.session_state["is_running"] = False
-    st.session_state["run_finalized"] = True
-    st.session_state["_run_just_finalized"] = True
+    names_by_id = {s["attempt_id"]: s["job_name"] for s in submissions}
+    last_states: dict[str, str] = st.session_state.setdefault("_mvd_last_states", {})
+    for snap in snapshots:
+        attempt = snap["physical_attempt_id"]
+        state = snap["primary_state"]
+        if last_states.get(attempt) != state:
+            last_states[attempt] = state
+            reason = snap.get("failure_reason") or ""
+            suffix = f" - {reason}" if reason else ""
+            _append_run_log(f"{names_by_id.get(attempt, attempt)}: {state}{suffix}")
+    return snapshots
 
 
 @st.fragment(run_every=timedelta(seconds=1))
 def _run_monitor_fragment() -> None:
-    """Poll the subprocess + queues once per second.  All UI is owned by this
-    fragment so the rest of the page does not rerun while the run is live."""
-    proc: subprocess.Popen | None = st.session_state.get("_run_proc")
-    if proc is None:
+    submissions: list[dict] = st.session_state.get("_mvd_submissions", [])
+    if not submissions:
         return
 
-    still_running = proc.poll() is None
-    if still_running or not (
-        st.session_state.get("_run_stdout_done") and st.session_state.get("_run_stderr_done")
-    ):
-        _drain_run_queues()
+    try:
+        snapshots = _refresh_mvd_snapshots()
+    except Exception as exc:
+        track("error_shown", component="execute_mvd_monitor", error_kind=type(exc).__name__)
+        st.error(f"Could not query mvd run state: {exc}")
+        return
 
-    if not still_running and not st.session_state.get("run_finalized"):
-        _finalize_run()
+    snap_by_id = {s["physical_attempt_id"]: s for s in snapshots}
+    rows = []
+    all_terminal = bool(snapshots)
+    all_success = bool(snapshots)
+    for sub in submissions:
+        snap = snap_by_id.get(sub["attempt_id"])
+        state = snap["primary_state"] if snap else "PENDING"
+        all_terminal = all_terminal and state in _MVD_TERMINAL_STATES
+        all_success = all_success and state == "ARTIFACT_SUCCESS"
+        rows.append(
+            {
+                "Job": sub["job_name"],
+                "Dataset": sub.get("dataset", "-"),
+                "Model": sub.get("model", "-"),
+                "Status": _gui_status_for_mvd_state(state),
+                "State": state,
+            }
+        )
 
-    job_statuses: dict[str, str] = st.session_state["_run_job_statuses"]
-    log_lines: "deque[str]" = st.session_state["_run_log_lines"]
+    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
-    st.dataframe(
-        pd.DataFrame([{"Job": k, "Status": v} for k, v in job_statuses.items()]),
-        width="stretch",
-        hide_index=True,
-    )
-
-    log_text = "\n".join(list(log_lines)[-_LOG_DISPLAY_TAIL:]) or "(no output yet)"
+    log_lines: list[str] = st.session_state.get("_run_log_lines", [])
+    log_text = "\n".join(log_lines[-_LOG_DISPLAY_TAIL:]) or "(no events yet)"
     components.html(
         "<pre id='run-log' "
         "style='height:400px;overflow-y:auto;white-space:pre-wrap;margin:0;"
@@ -1201,15 +1182,29 @@ def _run_monitor_fragment() -> None:
         scrolling=False,
     )
 
+    if all_terminal and not st.session_state.get("run_finalized"):
+        st.session_state["is_running"] = False
+        st.session_state["run_finalized"] = True
+        st.session_state["_run_returncode"] = 0 if all_success else 1
+        st.session_state["_run_just_finalized"] = True
+
     if st.session_state.get("run_finalized") and st.session_state.get("_run_just_finalized"):
         st.session_state["_run_just_finalized"] = False
         st.rerun()
 
 
 def _render_run_monitor() -> None:
-    proc: subprocess.Popen | None = st.session_state.get("_run_proc")
-    still_running = bool(proc and proc.poll() is None)
-    if still_running:
+    submissions: list[dict] = st.session_state.get("_mvd_submissions", [])
+    snapshots: list[dict] = st.session_state.get("_mvd_snapshots", [])
+    active_attempts = [
+        snap["physical_attempt_id"]
+        for snap in snapshots
+        if snap.get("primary_state") not in _MVD_TERMINAL_STATES
+    ]
+    if submissions and not snapshots and st.session_state.get("is_running"):
+        active_attempts = [s["attempt_id"] for s in submissions]
+
+    if active_attempts:
         if not st.session_state.get("cancel_requested"):
             if st.button("Cancel Run", key="btn_cancel_run"):
                 st.session_state["cancel_requested"] = True
@@ -1217,11 +1212,11 @@ def _render_run_monitor() -> None:
         else:
             st.warning("Click again to confirm cancellation.")
             if st.button("Confirm Cancel Run", key="btn_confirm_cancel_run"):
-                proc.terminate()
+                _mvd_controller_for_session().cancel_many(active_attempts)
                 st.session_state["cancel_requested"] = False
                 st.warning("Pipeline cancellation requested.")
 
-    with st.status("Pipeline log", expanded=True):
+    with st.status("Pipeline events", expanded=True):
         _run_monitor_fragment()
 
     if st.session_state.get("run_finalized"):
@@ -1229,17 +1224,16 @@ def _render_run_monitor() -> None:
         if rc == 0:
             st.success("Pipeline completed successfully.")
         else:
-            st.error(f"Pipeline exited with code {rc}.")
-        log_lines: "deque[str]" = st.session_state.get("_run_log_lines", deque())
+            st.error("Pipeline did not complete successfully.")
+        log_lines: list[str] = st.session_state.get("_run_log_lines", [])
         if log_lines:
             st.download_button(
-                "Download pipeline log",
+                "Download pipeline events",
                 data="\n".join(log_lines).encode(),
-                file_name="pipeline_output.log",
+                file_name="pipeline_events.log",
                 mime="text/plain",
                 key="btn_download_pipeline_log",
             )
-
 
 def _render_execute_tab() -> None:
     import psutil
@@ -1374,14 +1368,20 @@ def _render_execute_tab() -> None:
                 render_manifest_errors(parsed_manifest.errors)
                 return
 
-            track("run_launched", n_jobs=len(planned_jobs), manifest_path=str(manifest_file))
-            _launch_run_subprocess(
-                manifest_file=manifest_file,
-                output_dir=output_dir_input.strip(),
-                seed=int(exec_seed),
-                planned_jobs=planned_jobs,
-                repo_root=repo_root,
-            )
+            track("run_launched", n_jobs=len(parsed_manifest.plan), manifest_path=str(manifest_file))
+            try:
+                _launch_mvd_runs(
+                    manifest_file=manifest_file,
+                    output_dir=output_dir_input.strip(),
+                    seed=int(exec_seed),
+                    pending_jobs=parsed_manifest.plan,
+                    manifest_text=manifest_file.read_text(encoding="utf-8"),
+                    repo_root=repo_root,
+                )
+            except Exception as exc:
+                track("error_shown", component="execute_mvd_launch", error_kind=type(exc).__name__)
+                st.error(f"Could not launch mvd run: {exc}")
+                return
             st.rerun()
 
     if st.session_state.get("is_running") or st.session_state.get("run_finalized"):
@@ -1458,6 +1458,90 @@ def _fetch_runs(
         conn.close()
 
 
+def _mvd_state_root_for_results() -> Path:
+    output_dir = (
+        st.session_state.get("_mvd_output_dir")
+        or st.session_state.get("exec_output_dir")
+        or "store/artifacts/run_output"
+    )
+    root = Path(str(output_dir)).expanduser()
+    if not root.is_absolute():
+        root = (Path(__file__).resolve().parents[1] / root).resolve()
+    return root
+
+
+def _mvd_snapshot_to_results_row(snap: dict, *, source: str) -> dict:
+    opts = snap.get("options") or {}
+    if not opts and snap.get("options_json"):
+        try:
+            opts = json.loads(str(snap.get("options_json") or "{}"))
+        except Exception:
+            opts = {}
+    artifact_or_workspace = snap.get("artifact_dir") or snap.get("workspace_dir")
+    return {
+        "run_id": snap.get("physical_attempt_id"),
+        "dataset_id": opts.get("dataset_slug"),
+        "dataset_name": opts.get("dataset_slug"),
+        "model_slug": opts.get("model_slug"),
+        "model_version": opts.get("model_version"),
+        "model_name": opts.get("model_slug"),
+        "status": snap.get("primary_state"),
+        "output_path": artifact_or_workspace,
+        "failure_reason": snap.get("failure_reason"),
+        "submitted_wall_iso": snap.get("submitted_wall_iso"),
+        "_source": source,
+    }
+
+
+def _sort_mvd_result_rows(rows: list[dict]) -> list[dict]:
+    rows.sort(
+        key=lambda r: (str(r.get("submitted_wall_iso") or ""), str(r.get("run_id") or "")),
+        reverse=True,
+    )
+    return rows
+
+
+def _fetch_mvd_runs(status_filter: str | None = None) -> list[dict]:
+    try:
+        from multiverse.runner.mvd_inprocess import get_controller
+
+        snapshots = get_controller(state_root=_mvd_state_root_for_results()).list_runs(
+            state=status_filter
+        )
+    except Exception:
+        return []
+
+    rows = [
+        _mvd_snapshot_to_results_row(snap, source="mvd")
+        for snap in snapshots
+    ]
+    return _sort_mvd_result_rows(rows)
+
+
+def _fetch_mvd_index_runs(status_filter: str | None = None) -> list[dict]:
+    index_path = _mvd_state_root_for_results() / INDEX_FILENAME
+    try:
+        with open_index(index_path, create_if_missing=False) as index:
+            rows = index.list_runs(primary_state=status_filter)
+    except Exception:
+        return []
+    mapped = [_mvd_snapshot_to_results_row(row, source="mvd-index") for row in rows]
+    return _sort_mvd_result_rows(mapped)
+
+
+def _dedupe_runs(rows: list[dict]) -> list[dict]:
+    seen: set[str] = set()
+    out: list[dict] = []
+    for row in rows:
+        run_id = str(row.get("run_id") or "")
+        key = f"{row.get('_source')}:{run_id}" if not run_id else run_id
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def _flatten_dict(d: dict, parent_key: str = "", sep: str = ".") -> dict:
     """Recursively flatten a nested dict for display."""
     items = {}
@@ -1479,7 +1563,7 @@ def _selected_run_from_summary(summary_df: pd.DataFrame, runs: list[dict]) -> di
             selection_mode="single-row",
             on_select="rerun",
             column_config={
-                "Run ID": st.column_config.NumberColumn("Run ID", width="small"),
+                "Run ID": st.column_config.TextColumn("Run ID", width="small"),
                 "Dataset": st.column_config.TextColumn("Dataset", width="medium"),
                 "Model": st.column_config.TextColumn("Model", width="medium"),
                 "Status": st.column_config.TextColumn("Status", width="small"),
@@ -1529,7 +1613,7 @@ def _render_results_tab() -> None:
     with col_filter:
         status_choice = st.selectbox(
             "Filter by status",
-            options=["All", "SUCCESS", "FAILED", "RUNNING"],
+            options=["All", "ARTIFACT_SUCCESS", "FAILED", "RUNNING", "CANCELLED", "RECOVERY_PENDING", "SUCCESS"],
             key="results_status_filter",
         )
     with col_refresh:
@@ -1537,9 +1621,15 @@ def _render_results_tab() -> None:
             st.rerun()
 
     filter_val = None if status_choice == "All" else status_choice
-    runs = paginate(
-        lambda: _count_runs(filter_val),
-        lambda limit, offset: _fetch_runs(filter_val, limit=limit, offset=offset),
+    mvd_runs = _dedupe_runs(
+        _fetch_mvd_runs(filter_val) + _fetch_mvd_index_runs(filter_val)
+    )
+    legacy_filter = filter_val
+    if filter_val in {"ARTIFACT_SUCCESS", "CANCELLED", "RECOVERY_PENDING"}:
+        legacy_filter = None
+    runs = mvd_runs + paginate(
+        lambda: _count_runs(legacy_filter),
+        lambda limit, offset: _fetch_runs(legacy_filter, limit=limit, offset=offset),
         page_size=50,
         key="results_page",
     )
@@ -1576,17 +1666,19 @@ def _render_results_tab() -> None:
         st.error(selected_run.get("failure_reason") or "Run failed without a recorded failure reason.")
 
     if str(selected_run.get("failure_reason") or "").startswith("VALIDATION_ERROR:"):
-        if st.button("Retry", key=f"retry_validation_{selected_run['run_id']}"):
-            conn = get_db_connection()
-            try:
-                conn.execute(
-                    "UPDATE runs SET status = 'QUEUED', failure_reason = NULL WHERE run_id = ?",
-                    (selected_run["run_id"],),
-                )
-                conn.commit()
-            finally:
-                conn.close()
-            st.rerun()
+        # STRATEGY v2 §6: the GUI cutover moves run-state mutations off the
+        # direct DB write path and onto the mvd client. Until the resubmit
+        # verb is wired through the kernel, surface a message that points
+        # the user at the CLI rather than re-queueing via SQL.
+        if st.button(
+            "Retry (re-submit via CLI)",
+            key=f"retry_validation_{selected_run['run_id']}",
+        ):
+            st.info(
+                "Retry now goes through `multiverse run --manifest <yours>`. "
+                "Direct DB mutation from the GUI was removed during the "
+                "mvd cutover."
+            )
 
     artifact_dir = Path(selected_run["output_path"]) if selected_run["output_path"] else None
     job_spec_file = artifact_dir / "job_spec.json" if artifact_dir else None

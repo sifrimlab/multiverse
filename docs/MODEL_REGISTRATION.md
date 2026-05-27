@@ -8,7 +8,7 @@ Registration writes a row into the `models` table of `mvexp_state.db` based on a
 
 ```mermaid
 flowchart LR
-    A[model.yaml] --> B[multiverse.runner.cli register-model]
+    A[model.yaml] --> B[multiverse register-model]
     C[hyperparameters schema] --> B
     B --> D[models table in mvexp_state.db]
     D --> E[Configure compatibility matrix]
@@ -41,7 +41,7 @@ make register-model manifest=/path/to/model.yaml
 The Makefile delegates to the CLI:
 
 ```bash
-uv run python -m multiverse.runner.cli register-model --slug <slug>
+uv run python -m multiverse register-model --slug <slug>
 ```
 
 The six built-in models (`pca`, `mofa`, `multivi`, `mowgli`, `cobolt`, `totalvi`) are registered automatically by `make bootstrap`.
@@ -54,7 +54,7 @@ The six built-in models (`pca`, `mofa`, `multivi`, `mowgli`, `cobolt`, `totalvi`
 | `version` | yes | Semantic version of the model package. |
 | `contract_version` | yes | Container I/O contract version; currently `1.0.0`. |
 | `supported_omics` | yes | List of modality slugs the model requires: `rna`, `atac`, `adt`. |
-| `runtime.image` | yes | Image tag invoked by `docker_runner` (e.g. `multiverse-pca:1.0.0`). |
+| `runtime.image` | yes | Image tag invoked by the mvd Docker executor (e.g. `multiverse-pca:1.0.0`). |
 | `hyperparameters_schema` | recommended | Path (repo-relative) to the JSON schema used to render controls and validate sweep ranges. |
 | `build.context` | optional | Build context for local image builds; typically `../../..` (repo root). |
 | `build.dockerfile` | optional | Dockerfile path relative to the build context. |

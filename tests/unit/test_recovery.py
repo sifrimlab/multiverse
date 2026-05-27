@@ -12,21 +12,34 @@ def _init_db(path):
     conn.close()
 
 
-def test_promoting_no_marker_marks_failed(tmp_path):
+def test_promoting_no_marker_quarantines_without_deletion(tmp_path):
+    """STRATEGY v2 §3: recovery must classify, never delete result-like
+    data. An incomplete promotion is moved into ``store/quarantine/`` and
+    a tombstone is left at the original path."""
     db_path = str(tmp_path / "registry.db")
-    artifact = tmp_path / "artifact"
-    artifact.mkdir()
+    store_dir = tmp_path / "store"
+    store_dir.mkdir()
+    artifact = store_dir / "artifacts" / "demo"
+    artifact.mkdir(parents=True)
+    (artifact / "container.log").write_text("partial output")
     _init_db(db_path)
     conn = sqlite3.connect(db_path)
-    conn.execute("INSERT INTO runs (status, output_path) VALUES (?, ?)", ("PROMOTING", str(artifact)))
-    conn.commit(); conn.close()
+    conn.execute(
+        "INSERT INTO runs (status, output_path) VALUES (?, ?)",
+        ("PROMOTING", str(artifact)),
+    )
+    conn.commit()
+    conn.close()
 
-    old = registry_db.DB_NAME
+    old_db = registry_db.DB_NAME
+    old_store = registry_db.STORE_DIR
     registry_db.DB_NAME = db_path
+    registry_db.STORE_DIR = str(store_dir)
     try:
         healed = registry_db.recover_orphaned_runs()
     finally:
-        registry_db.DB_NAME = old
+        registry_db.DB_NAME = old_db
+        registry_db.STORE_DIR = old_store
 
     conn = sqlite3.connect(db_path)
     status, reason = conn.execute("SELECT status, failure_reason FROM runs").fetchone()
@@ -34,7 +47,15 @@ def test_promoting_no_marker_marks_failed(tmp_path):
     assert healed == 1
     assert status == "FAILED"
     assert reason == "INCOMPLETE_PROMOTION"
-    assert not artifact.exists()
+    # Recovery never deletes. The artifact directory was moved into
+    # quarantine and a tombstone marks the original path.
+    assert not artifact.exists(), "original path no longer hosts the dir"
+    quarantine_dir = store_dir / "quarantine"
+    assert quarantine_dir.is_dir()
+    moved_files = list(quarantine_dir.rglob("container.log"))
+    assert moved_files, "the partial workspace must be preserved in quarantine"
+    tombstone = list(artifact.parent.glob("*.quarantined"))
+    assert tombstone, ".quarantined tombstone must be left at the original location"
 
 
 def test_running_dead_container_marks_orphaned(tmp_path):

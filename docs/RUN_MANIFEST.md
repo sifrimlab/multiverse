@@ -1,9 +1,9 @@
 # Run Manifest Reference
 
-The run manifest is the recipe for a benchmark. It is a YAML document at the repository root (conventionally `run_manifest.yaml`) that the GUI writes from the **Configure** tab and that the orchestrator consumes in the **Run** tab or via the CLI:
+The run manifest is the recipe for a benchmark. It is a YAML document at the repository root (conventionally `run_manifest.yaml`) that the GUI writes from the **Configure** tab and that mvd consumes in the **Run** tab or via the CLI:
 
 ```bash
-python -m multiverse.runner.cli run --manifest run_manifest.yaml --output ./results
+multiverse run --manifest run_manifest.yaml --output ./results
 ```
 
 A manifest is the single artifact a reader needs in order to reproduce a benchmark. It travels alongside each artifact directory as `run_manifest.yaml` and should be included with publication supplementary materials.
@@ -30,7 +30,7 @@ jobs:
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `experiment_name` | string (alphanum + `-`) | yes | Used as the MLflow experiment name and as the top-level directory under `store/artifacts/`. |
+| `experiment_name` | string (alphanum + `-`) | yes | Used as the run grouping label and, when projection sync is enabled, the MLflow experiment name. |
 | `random_seed` | integer | yes | Propagated into every `job_spec.json`. Containers must apply this seed before any stochastic call. |
 | `run_user_params` | boolean | yes | When `true`, the runner uses the parameters in each `jobs[].model_params` block. When `false`, the runner uses each model's registered defaults. |
 | `run_gridsearch` | boolean | yes | When `true`, each job becomes an Optuna study with the parameter distributions defined in the model's hyperparameter schema. |

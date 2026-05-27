@@ -14,6 +14,11 @@ dependencies = [
     "mlflow>=2.16.0",
 ]
 
+[project.scripts]
+multiverse = "multiverse.cli_entrypoints:main"
+multiverse-cli = "multiverse.runner.cli:main"
+multiverse-rebuild-metrics = "multiverse.tools.rebuild_run_metrics:main"
+
 [dependency-groups]
 dev = [
     "pytest",
