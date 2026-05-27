@@ -975,6 +975,25 @@ async def run_workflow_local_async(args: argparse.Namespace) -> None:
 
 def execute_run(args: argparse.Namespace):
     """Executes the model running logic — always uses async/parallel for registry jobs."""
+    if getattr(args, "simple", False):
+        # Simple-mode is the contract-only path: no SQLite, no MLflow, no
+        # Optuna, no daemon. See STRATEGY R7.
+        from ..simple.cli import main as simple_main
+        argv: list[str] = [str(getattr(args, "manifest", "") or "")]
+        out = getattr(args, "output", None) or getattr(args, "out", None)
+        if out:
+            argv += ["--out", str(out)]
+        if getattr(args, "strict", False):
+            argv.append("--strict")
+        if getattr(args, "validators", None):
+            argv += ["--validators", str(args.validators)]
+        if getattr(args, "no_image_pull", False):
+            argv.append("--no-image-pull")
+        seed = getattr(args, "seed", None)
+        if seed is not None:
+            argv += ["--seed", str(seed)]
+        raise SystemExit(simple_main(argv))
+
     if getattr(args, "local", False):
         try:
             asyncio.run(run_workflow_local_async(args))
@@ -1083,6 +1102,39 @@ def main():
                 "Requires model Python deps installed on the host. "
                 "Use with --manifest for manifest-driven local dev runs."
             ),
+        )
+        p.add_argument(
+            "--simple",
+            action="store_true",
+            default=False,
+            help=(
+                "Simple-mode contract runner. Produces a portable artifact "
+                "bundle without consulting mvd, SQLite, MLflow, or Optuna. "
+                "Requires --manifest pointing at a simple-mode manifest."
+            ),
+        )
+        p.add_argument(
+            "--strict",
+            action="store_true",
+            default=False,
+            help=(
+                "Publication mode. Requires a strict-acceptable image "
+                "identity (registry digest or build-context hash) and "
+                "upgrades validator warnings to refusals."
+            ),
+        )
+        p.add_argument(
+            "--validators",
+            choices=["basic", "strict", "developer"],
+            default=None,
+            help="Validator level for the simple-mode runner (default: basic).",
+        )
+        p.add_argument(
+            "--no-image-pull",
+            dest="no_image_pull",
+            action="store_true",
+            default=False,
+            help="Simple-mode: do not pull images, use only local copies.",
         )
 
     import sys
