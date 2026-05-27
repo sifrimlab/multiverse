@@ -7,25 +7,34 @@ import streamlit as st
 
 TAB_LABELS: dict[str, str] = {
     "registry": "Registry",
-    "jobs": "Job Builder",
-    "params": "Parameters",
-    "execute": "Execute",
+    "configure": "Configure",
+    "run": "Run",
     "results": "Results",
-    "mlflow": "Experiment Analysis",
-    "optuna": "Sweep Tracker",
-    "settings": "Settings",
+    "analysis": "Analysis",
 }
 TABS = list(TAB_LABELS.keys())
+LEGACY_TAB_REDIRECTS: dict[str, str] = {
+    "jobs": "configure",
+    "params": "configure",
+    "execute": "run",
+    "mlflow": "analysis",
+    "optuna": "analysis",
+    "settings": "registry",
+}
 
 
 def _query_tab() -> str:
     tab = st.query_params.get("tab", "registry")
     if isinstance(tab, list):
         tab = tab[0] if tab else "registry"
+    if tab in LEGACY_TAB_REDIRECTS:
+        tab = LEGACY_TAB_REDIRECTS[tab]
+        st.query_params["tab"] = tab
     return tab if tab in TABS else "registry"
 
 
 def go_to(tab_slug: str) -> None:
+    tab_slug = LEGACY_TAB_REDIRECTS.get(tab_slug, tab_slug)
     if tab_slug in TABS:
         st.query_params["tab"] = tab_slug
     st.rerun()
@@ -37,27 +46,18 @@ def current_tab_slug() -> str:
 
 def render_top_nav() -> str:
     current = current_tab_slug()
-    labels = [TAB_LABELS[slug] for slug in TABS]
-    selected = st.radio(
-        "Section",
-        options=labels,
-        index=TABS.index(current),
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    selected_slug = TABS[labels.index(selected)]
-    if selected_slug != current:
-        st.query_params["tab"] = selected_slug
-        st.rerun()
-    return selected_slug
+    cols = st.columns(len(TABS))
+    for col, slug in zip(cols, TABS):
+        label = TAB_LABELS[slug]
+        button_type = "primary" if slug == current else "secondary"
+        with col:
+            if st.button(label, key=f"top_nav_{slug}", type=button_type, width="stretch"):
+                if slug != current:
+                    st.query_params["tab"] = slug
+                    st.rerun()
+    return current
 
 
 def render_workflow_stepper() -> None:
-    st.subheader("Workflow")
-    current = current_tab_slug()
-    for idx, slug in enumerate(TABS, start=1):
-        label = f"{idx}. {TAB_LABELS[slug]}"
-        if slug == current:
-            st.caption(f"Current: {label}")
-        elif st.button(label, key=f"nav_step_{slug}"):
-            go_to(slug)
+    """Deprecated compatibility shim; top navigation is now canonical."""
+    return None

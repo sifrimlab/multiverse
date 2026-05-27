@@ -121,6 +121,23 @@ def _log_final_scalars(
         mlflow.log_metrics(standalone)
 
 
+def _log_final_scalars_client(
+    client: Any,
+    run_id: str,
+    scalars: Dict[str, float],
+    histories: Dict[str, List[float]],
+) -> None:
+    standalone = {k: v for k, v in scalars.items() if k not in histories}
+    if not standalone:
+        return
+    step = max(len(series) for series in histories.values()) - 1 if histories else None
+    for key, value in standalone.items():
+        if step is None:
+            client.log_metric(run_id, key, value)
+        else:
+            client.log_metric(run_id, key, value, step=step)
+
+
 def find_metrics_json(workspace_dir: str) -> Optional[str]:
     """Return the path to metrics.json under a run workspace, if present."""
     root = os.path.join(workspace_dir, "metrics.json")
@@ -182,48 +199,38 @@ def start_parent_mlflow_run(
     job_spec: Dict[str, Any],
     run_name: str,
 ) -> Optional[str]:
-    """Open an MLflow run on the host *before* the container launches.
+    """Create an MLflow parent run without relying on fluent active-run state.
 
-    Returns the run_id so the caller can forward it via ``MLFLOW_RUN_ID`` to the
-    container's :class:`EpochLogger` (which will attach to the same run and stream
-    per-epoch metrics live). Enables system metrics on the parent so CPU/GPU
-    samples are captured while the container trains.
-
-    The caller is responsible for ending the run via :func:`finalize_parent_mlflow_run`.
+    The returned run_id is forwarded to the container via ``MLFLOW_RUN_ID`` so
+    EpochLogger can attach to the same run. Host-side finalization uses
+    MlflowClient with explicit run IDs to avoid cross-job active-run conflicts.
     """
-    mlflow, _experiment, run_settings = _resolve_mlflow_settings(job_context, job_spec)
+    mlflow, experiment_name, run_settings = _resolve_mlflow_settings(job_context, job_spec)
     if mlflow is None:
         return None
 
-    start_kwargs: Dict[str, Any] = {"run_name": run_name}
     try:
-        import inspect
-        if "log_system_metrics" in inspect.signature(mlflow.start_run).parameters:
-            start_kwargs["log_system_metrics"] = True
-    except Exception:
-        pass
-
-    try:
-        active = mlflow.start_run(**start_kwargs)
-    except Exception as exc:
-        logger.warning("MLflow start_parent failed: %s", exc)
-        return None
-
-    try:
-        params = _to_flat_str_params(job_spec.get("hyperparameters", {}))
-        if params:
-            mlflow.log_params(params)
-        tags: Dict[str, str] = {}
+        client = mlflow.tracking.MlflowClient()
+        experiment = mlflow.get_experiment_by_name(experiment_name)
+        experiment_id = (
+            experiment.experiment_id
+            if experiment is not None
+            else mlflow.create_experiment(experiment_name)
+        )
+        tags: Dict[str, str] = {"mlflow.runName": run_name}
         if isinstance(run_settings.get("mlflow_tags"), dict):
             tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
         if "optuna_trial_id" in run_settings:
             tags["optuna_trial_id"] = str(run_settings["optuna_trial_id"])
-        if tags:
-            mlflow.set_tags(tags)
-    except Exception as exc:
-        logger.warning("MLflow parent run metadata logging failed: %s", exc)
 
-    return active.info.run_id
+        run = client.create_run(str(experiment_id), tags=tags)
+        run_id = run.info.run_id
+        for key, value in _to_flat_str_params(job_spec.get("hyperparameters", {})).items():
+            client.log_param(run_id, key, value)
+        return run_id
+    except Exception as exc:
+        logger.warning("MLflow start_parent failed: %s", exc)
+        return None
 
 
 def finalize_parent_mlflow_run(
@@ -247,27 +254,25 @@ def finalize_parent_mlflow_run(
         return
 
     try:
-        active = mlflow.active_run()
-        if active is None or active.info.run_id != run_id:
-            mlflow.start_run(run_id=run_id)
+        client = mlflow.tracking.MlflowClient()
     except Exception as exc:
-        logger.warning("MLflow finalize attach failed: %s", exc)
+        logger.warning("MLflow finalize client init failed: %s", exc)
         return
 
     try:
         scalars, histories = split_metrics_payload(metrics)
         try:
-            _log_final_scalars(mlflow, scalars, histories)
+            _log_final_scalars_client(client, run_id, scalars, histories)
         except Exception as exc:
             logger.warning("MLflow final scalar logging failed: %s", exc)
-        _log_artifacts_filtered(mlflow, artifacts_dir)
+        _log_artifacts_filtered_client(client, run_id, artifacts_dir)
     except Exception as exc:
         logger.warning("MLflow finalize body raised: %s", exc)
     finally:
         try:
-            mlflow.end_run(status=status)
+            client.set_terminated(run_id, status=status)
         except Exception as exc:
-            logger.warning("MLflow end_run failed: %s", exc)
+            logger.warning("MLflow set_terminated failed: %s", exc)
 
 
 def log_successful_run_to_mlflow(
@@ -354,5 +359,22 @@ def _log_artifacts_filtered(mlflow: Any, artifacts_dir: str) -> None:
             full = os.path.join(dirpath, filename)
             try:
                 mlflow.log_artifact(full, artifact_path=artifact_path)
+            except Exception as exc:
+                logger.warning("MLflow log_artifact failed for %s: %s", full, exc)
+
+
+def _log_artifacts_filtered_client(client: Any, run_id: str, artifacts_dir: str) -> None:
+    """Log artifacts with explicit run_id, skipping markers and tolerating per-file errors."""
+    if not os.path.isdir(artifacts_dir):
+        return
+    for dirpath, _, filenames in os.walk(artifacts_dir):
+        rel_dir = os.path.relpath(dirpath, artifacts_dir)
+        artifact_path = None if rel_dir in (".", "") else rel_dir
+        for filename in filenames:
+            if filename in _ARTIFACT_SKIP_NAMES:
+                continue
+            full = os.path.join(dirpath, filename)
+            try:
+                client.log_artifact(run_id, full, artifact_path=artifact_path)
             except Exception as exc:
                 logger.warning("MLflow log_artifact failed for %s: %s", full, exc)

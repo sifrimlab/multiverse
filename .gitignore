@@ -50,3 +50,5 @@ multiverse.config.yaml
 !/store/models/**
 # Documentation builds
 site/
+
+.understand-anything/

@@ -1,15 +1,18 @@
 """Tests for MLflow metric payload splitting and workspace discovery."""
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from multiverse.tracking import (
+    finalize_parent_mlflow_run,
     find_metrics_json,
     load_run_metrics,
     log_successful_run_to_mlflow,
     sanitize_nan_inf,
     split_metrics_payload,
+    start_parent_mlflow_run,
 )
 
 
@@ -99,3 +102,57 @@ def test_split_metrics_payload_filters_non_finite_history():
     scalars, histories = split_metrics_payload({"history": {"loss": [1.0, float("inf"), 0.5]}})
     assert histories == {"loss": [1.0, 0.5]}
     assert scalars == {"loss": 0.5}
+
+
+def test_start_parent_mlflow_run_uses_client_without_active_run():
+    fake_client = MagicMock()
+    fake_client.create_run.return_value = SimpleNamespace(info=SimpleNamespace(run_id="run-1"))
+    fake_mlflow = MagicMock()
+    fake_mlflow.tracking.MlflowClient.return_value = fake_client
+    fake_mlflow.get_experiment_by_name.return_value = SimpleNamespace(experiment_id="7")
+
+    with patch.dict("sys.modules", {"mlflow": fake_mlflow}):
+        run_id = start_parent_mlflow_run(
+            job_context={"experiment_name": "exp"},
+            job_spec={
+                "hyperparameters": {"lr": 0.01},
+                "run_settings": {"mlflow_tags": {"team": "bench"}, "optuna_trial_id": 3},
+            },
+            run_name="pbmc-pca-run",
+        )
+
+    assert run_id == "run-1"
+    fake_mlflow.start_run.assert_not_called()
+    fake_client.create_run.assert_called_once_with(
+        "7",
+        tags={"mlflow.runName": "pbmc-pca-run", "team": "bench", "optuna_trial_id": "3"},
+    )
+    fake_client.log_param.assert_called_once_with("run-1", "lr", "0.01")
+
+
+def test_finalize_parent_mlflow_run_uses_client_and_ignores_fluent_active_run(tmp_path):
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("ok", encoding="utf-8")
+    (tmp_path / ".promotion_complete").write_text("", encoding="utf-8")
+
+    fake_client = MagicMock()
+    fake_mlflow = MagicMock()
+    fake_mlflow.tracking.MlflowClient.return_value = fake_client
+    fake_mlflow.active_run.return_value = SimpleNamespace(info=SimpleNamespace(run_id="other-run"))
+
+    with patch.dict("sys.modules", {"mlflow": fake_mlflow}):
+        finalize_parent_mlflow_run(
+            run_id="run-1",
+            job_context={"experiment_name": "exp"},
+            job_spec={},
+            metrics={"score": 0.7, "history": {"loss": [1.0, 0.5]}},
+            artifacts_dir=str(tmp_path),
+            status="FINISHED",
+        )
+
+    fake_mlflow.active_run.assert_not_called()
+    fake_mlflow.start_run.assert_not_called()
+    fake_mlflow.end_run.assert_not_called()
+    fake_client.log_metric.assert_called_once_with("run-1", "score", 0.7, step=1)
+    fake_client.log_artifact.assert_called_once_with("run-1", str(artifact), artifact_path=None)
+    fake_client.set_terminated.assert_called_once_with("run-1", status="FINISHED")

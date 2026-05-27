@@ -346,6 +346,37 @@ def get_all_models() -> List[Dict]:
     conn.close()
     return models
 
+
+def mark_dataset_removed(slug_or_id: str | int) -> bool:
+    """Soft-remove a dataset while preserving historical run references."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if isinstance(slug_or_id, int) or str(slug_or_id).isdigit():
+        cursor.execute("UPDATE datasets SET status = 'REMOVED' WHERE id = ?", (int(slug_or_id),))
+    else:
+        cursor.execute("UPDATE datasets SET status = 'REMOVED' WHERE slug = ?", (str(slug_or_id),))
+    changed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def mark_model_inactive(slug: str, version: Optional[str] = None) -> bool:
+    """Soft-remove one model version, or all versions for a slug."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if version:
+        cursor.execute(
+            "UPDATE models SET status = 'INACTIVE' WHERE slug = ? AND version = ?",
+            (slug, version),
+        )
+    else:
+        cursor.execute("UPDATE models SET status = 'INACTIVE' WHERE slug = ?", (slug,))
+    changed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
 def recover_orphaned_runs(docker_client: Any = None, reattach_callback: Any = None) -> int:
     """Heal runs left in non-terminal FSM states by a crashed orchestrator.
 

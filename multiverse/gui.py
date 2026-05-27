@@ -1,3 +1,4 @@
+import html
 import json
 import os
 import re
@@ -18,7 +19,7 @@ import streamlit as st
 import streamlit.components.v1 as components  # type: ignore[import-untyped]
 import yaml
 from multiverse.gui_artifacts import render_artifact_tree, render_download_button, render_log_viewer
-from multiverse.gui_navigation import go_to, render_top_nav, render_workflow_stepper
+from multiverse.gui_navigation import go_to, render_top_nav
 from multiverse.gui_telemetry import track
 from multiverse.gui_state import bump_editor_version, get_state, init_state
 from multiverse.gui_utils import LIVE_METRIC_KEYS, fetch_live_metrics, render_hyperparameters_form
@@ -29,7 +30,14 @@ from multiverse.multiverse_config import (
     save_config,
 )
 from multiverse.registry import generate_compatibility_matrix
-from multiverse.registry_db import get_all_datasets, get_all_models, get_db_connection, init_db
+from multiverse.registry_db import (
+    get_all_datasets,
+    get_all_models,
+    get_db_connection,
+    init_db,
+    mark_dataset_removed,
+    mark_model_inactive,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +47,7 @@ from multiverse.registry_db import get_all_datasets, get_all_models, get_db_conn
 @st.cache_data
 def fetch_registry_data():
     init_db()
-    datasets = get_all_datasets()
+    datasets = [d for d in get_all_datasets() if d.get("status") != "REMOVED"]
     models = get_all_models()
     return datasets, models
 
@@ -226,11 +234,11 @@ def _render_registry_welcome() -> None:
     )
     c2.markdown(
         "**2. Plan** &nbsp;\n\n"
-        "Go to **Job Builder** to pick dataset × model pairs from the compatibility matrix."
+        "Go to **Configure** to pick dataset × model pairs from the compatibility matrix."
     )
     c3.markdown(
         "**3. Execute** &nbsp;\n\n"
-        "Hit **Launch Run** on the Execute tab and watch metrics stream into the Results tab."
+        "Hit **Launch Run** on the Run tab and watch metrics stream into the Results tab."
     )
     st.divider()
     st.markdown("**Try it without a real dataset:**")
@@ -257,10 +265,16 @@ def _render_registry_welcome() -> None:
 def _render_registry_tab() -> None:
     st.header("Asset Registry")
 
-    if st.button("🔄 Refresh Registry"):
+    if st.session_state.get("registry_dirty"):
+        st.warning("Registry changed. Refresh the registry data before building or launching new jobs.")
+        if st.button("Refresh Registry Data", key="btn_refresh_registry_dirty"):
+            track("registry_refreshed")
+            fetch_registry_data.clear()
+            st.session_state["registry_dirty"] = False
+            st.rerun()
+    elif st.button("Refresh Registry", key="btn_refresh_registry"):
         track("registry_refreshed")
         fetch_registry_data.clear()
-        st.session_state["registry_dirty"] = False
         st.rerun()
 
     datasets, models = fetch_registry_data()
@@ -282,7 +296,17 @@ def _render_registry_tab() -> None:
                     }
                     for d in datasets
                 ]
-                st.dataframe(pd.DataFrame(ds_rows), width="stretch")
+                st.dataframe(
+                    pd.DataFrame(ds_rows),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "slug": st.column_config.TextColumn("Slug", width="medium"),
+                        "name": st.column_config.TextColumn("Name", width="medium"),
+                        "omics": st.column_config.TextColumn("Omics", width="small"),
+                        "status": st.column_config.TextColumn("Status", width="small"),
+                    },
+                )
             else:
                 st.caption("No datasets registered.")
 
@@ -299,9 +323,68 @@ def _render_registry_tab() -> None:
                     }
                     for m in models
                 ]
-                st.dataframe(pd.DataFrame(md_rows), width="stretch")
+                st.dataframe(
+                    pd.DataFrame(md_rows),
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "slug": st.column_config.TextColumn("Slug", width="medium"),
+                        "version": st.column_config.TextColumn("Version", width="small"),
+                        "name": st.column_config.TextColumn("Name", width="medium"),
+                        "omics": st.column_config.TextColumn("Omics", width="small"),
+                        "status": st.column_config.TextColumn("Status", width="small"),
+                    },
+                )
             else:
                 st.caption("No models registered.")
+
+
+        if datasets or models:
+            st.divider()
+            col_rm_ds, col_rm_md = st.columns(2)
+            with col_rm_ds:
+                st.subheader("Remove Dataset")
+                if datasets:
+                    ds_options = {f"{d.get('name', d.get('slug'))} ({d.get('slug')})": d for d in datasets}
+                    ds_label = st.selectbox("Dataset", options=list(ds_options), key="remove_dataset_choice")
+                    ds = ds_options[ds_label]
+                    if st.button("Remove dataset", key="btn_remove_dataset"):
+                        st.session_state["confirm_remove_dataset"] = ds.get("slug") or ds.get("id")
+                    if st.session_state.get("confirm_remove_dataset") == (ds.get("slug") or ds.get("id")):
+                        st.warning("This hides the dataset from new jobs but keeps historical runs.")
+                        if st.button("Confirm remove dataset", key="btn_confirm_remove_dataset"):
+                            if mark_dataset_removed(ds.get("slug") or ds.get("id")):
+                                track("dataset_removed", slug=ds.get("slug"))
+                                fetch_registry_data.clear()
+                                st.session_state.pop("confirm_remove_dataset", None)
+                                st.session_state["registry_dirty"] = True
+                                st.rerun()
+                            else:
+                                st.error("Dataset was not found.")
+                else:
+                    st.caption("No datasets registered.")
+            with col_rm_md:
+                st.subheader("Remove Model")
+                if models:
+                    md_options = {f"{m.get('name', m.get('slug'))} {m.get('version', '')} ({m.get('slug')})": m for m in models}
+                    md_label = st.selectbox("Model", options=list(md_options), key="remove_model_choice")
+                    md = md_options[md_label]
+                    confirm_key = f"{md.get('slug')}::{md.get('version')}"
+                    if st.button("Remove model", key="btn_remove_model"):
+                        st.session_state["confirm_remove_model"] = confirm_key
+                    if st.session_state.get("confirm_remove_model") == confirm_key:
+                        st.warning("This hides the model from new jobs but keeps historical runs.")
+                        if st.button("Confirm remove model", key="btn_confirm_remove_model"):
+                            if mark_model_inactive(str(md.get("slug")), md.get("version")):
+                                track("model_removed", slug=md.get("slug"), version=md.get("version"))
+                                fetch_registry_data.clear()
+                                st.session_state.pop("confirm_remove_model", None)
+                                st.session_state["registry_dirty"] = True
+                                st.rerun()
+                            else:
+                                st.error("Model was not found.")
+                else:
+                    st.caption("No models registered.")
 
     st.divider()
 
@@ -331,7 +414,7 @@ def _render_registry_tab() -> None:
             ds_batch_key = st.text_input("batch_key (optional)", key="ds_batch_key")
             ds_cell_type_key = st.text_input("cell_type_key (optional)", key="ds_cell_type_key")
 
-            if st.button("Register Dataset", key="btn_register_ds_fields"):
+            if st.button("Register from fields", key="btn_register_ds_fields"):
                 if not ds_name.strip():
                     st.error("Dataset name is required.")
                 elif not ds_omics:
@@ -378,12 +461,13 @@ def _render_registry_tab() -> None:
                         track("dataset_registered", source="fields", manifest_path=str(manifest_path))
                         st.session_state["registry_dirty"] = True
                         fetch_registry_data.clear()
+                        st.rerun()
         else:
             ds_manifest_path = st.text_input(
                 "Path to dataset.yaml", key="ds_manifest_path_direct",
                 placeholder="store/datasets/pbmc10k/dataset.yaml",
             )
-            if st.button("Register Dataset", key="btn_register_ds_manifest"):
+            if st.button("Register from manifest", key="btn_register_ds_manifest"):
                 if not ds_manifest_path.strip():
                     st.error("Manifest path is required.")
                 else:
@@ -398,56 +482,311 @@ def _render_registry_tab() -> None:
                         track("dataset_registered", source="manifest", manifest_path=ds_manifest_path.strip())
                         st.session_state["registry_dirty"] = True
                         fetch_registry_data.clear()
+                        st.rerun()
 
     # --- Register model ---
-    with st.expander("➕ Register Model", expanded=False):
-        md_manifest_path = st.text_input(
-            "Path to model.yaml", key="md_manifest_path",
-            placeholder="store/models/pca/model.yaml",
+    with st.expander("Register Model", expanded=False):
+        use_model_fields = st.toggle(
+            "Build manifest from fields (I don't have a model.yaml yet)",
+            key="md_use_fields",
         )
         build_local = st.toggle("Build Docker image locally", key="md_build_local")
 
-        if st.button("Register Model", key="btn_register_model"):
-            if not md_manifest_path.strip():
-                st.error("Manifest path is required.")
+        if use_model_fields:
+            md_name = st.text_input("Model name", key="md_name")
+            md_version = st.text_input("Version", value="0.1.0", key="md_version")
+            md_image = st.text_input(
+                "Runtime image tag",
+                key="md_image",
+                placeholder="ghcr.io/org/model:0.1.0",
+            )
+            md_omics = st.multiselect(
+                "Supported omics",
+                options=["rna", "atac", "adt", "any"],
+                key="md_omics",
+            )
+            if st.button("Register from fields", key="btn_register_model_fields"):
+                if not md_name.strip():
+                    st.error("Model name is required.")
+                elif not md_version.strip():
+                    st.error("Version is required.")
+                elif not md_image.strip():
+                    st.error("Runtime image tag is required.")
+                elif not md_omics:
+                    st.error("Select at least one supported omics modality.")
+                elif "any" in md_omics and len(md_omics) > 1:
+                    st.error("Use `any` by itself, or select specific modalities.")
+                else:
+                    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", md_name.strip()).strip("-").lower()
+                    manifest_dir = Path("store/models") / slug
+                    manifest_dir.mkdir(parents=True, exist_ok=True)
+                    manifest_path = manifest_dir / "model.yaml"
+                    manifest_data = {
+                        "name": md_name.strip(),
+                        "version": md_version.strip(),
+                        "supported_omics": md_omics,
+                        "runtime": {"image": md_image.strip()},
+                    }
+                    with manifest_path.open("w") as fh:
+                        yaml.safe_dump(manifest_data, fh, default_flow_style=False, sort_keys=False)
+                    cmd = [
+                        sys.executable, "-m", "multiverse.runner.cli",
+                        "register-model", "--manifest", str(manifest_path),
+                    ]
+                    if build_local:
+                        cmd.append("--build")
+                    ok = _stream_subprocess(cmd, "Registering model...")
+                    if ok:
+                        track("model_registered", source="fields", manifest_path=str(manifest_path), build_local=build_local)
+                        st.session_state["registry_dirty"] = True
+                        fetch_registry_data.clear()
+                        st.rerun()
+        else:
+            md_manifest_path = st.text_input(
+                "Path to model.yaml", key="md_manifest_path",
+                placeholder="store/models/pca/model.yaml",
+            )
+            if st.button("Register from manifest", key="btn_register_model"):
+                if not md_manifest_path.strip():
+                    st.error("Manifest path is required.")
+                else:
+                    cmd = [
+                        sys.executable, "-m", "multiverse.runner.cli",
+                        "register-model", "--manifest", md_manifest_path.strip(),
+                    ]
+                    if build_local:
+                        cmd.append("--build")
+                    ok = _stream_subprocess(cmd, "Registering model...")
+                    if ok:
+                        track("model_registered", source="manifest", manifest_path=md_manifest_path.strip(), build_local=build_local)
+                        st.session_state["registry_dirty"] = True
+                        fetch_registry_data.clear()
+                        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Tab: Configure
+# ---------------------------------------------------------------------------
+
+def _parse_manifest_job_selection(loaded: dict) -> tuple[list[dict], dict[tuple[str, str], dict]]:
+    jobs = loaded.get("jobs", []) if isinstance(loaded, dict) else []
+    staged_jobs: list[dict] = []
+    staged_params: dict[tuple[str, str], dict] = {}
+    if not isinstance(jobs, list):
+        return staged_jobs, staged_params
+    for item in jobs:
+        if not isinstance(item, dict):
+            continue
+        dataset_slug = str(item.get("dataset_slug") or "").strip()
+        model_name = str(item.get("model_name") or "").strip()
+        if not dataset_slug or not model_name:
+            continue
+        staged_jobs.append({"dataset_slug": dataset_slug, "model_name": model_name})
+        params = item.get("model_params", {})
+        if isinstance(params, dict):
+            staged_params[(dataset_slug, model_name)] = dict(params)
+    return staged_jobs, staged_params
+
+
+def _stage_loaded_manifest(loaded: dict, load_path: str) -> None:
+    globals_cfg = loaded.get("globals", {}) if isinstance(loaded, dict) else {}
+    if "experiment_name" in globals_cfg:
+        st.session_state["_pending_shared_experiment_name"] = str(globals_cfg["experiment_name"])
+    if "random_seed" in globals_cfg:
+        st.session_state["_pending_shared_seed"] = int(globals_cfg["random_seed"])
+    if globals_cfg.get("run_gridsearch"):
+        st.session_state["_pending_shared_run_mode"] = "Run Gridsearch"
+    elif globals_cfg.get("run_user_params"):
+        st.session_state["_pending_shared_run_mode"] = "Use User Params"
+    staged_jobs, staged_params = _parse_manifest_job_selection(loaded)
+    st.session_state["_pending_manifest_jobs"] = staged_jobs
+    st.session_state["_pending_manifest_pair_params"] = staged_params
+    st.session_state["_pending_shared_manifest_path"] = load_path.strip() or "run_manifest.yaml"
+    count = len(staged_jobs)
+    noun = "job" if count == 1 else "jobs"
+    st.session_state["_manifest_load_notice"] = f"Manifest settings loaded ({count} {noun})."
+
+
+def _apply_pending_manifest_jobs(
+    datasets: list[dict],
+    models: list[dict],
+) -> dict[tuple[str, str], dict]:
+    staged_jobs = st.session_state.pop("_pending_manifest_jobs", None)
+    staged_params = st.session_state.pop("_pending_manifest_pair_params", {})
+    if not staged_jobs:
+        return {}
+
+    dataset_slug_to_name = {
+        str(d.get("slug") or re.sub(r"[^a-zA-Z0-9._-]+", "-", d.get("name", "")).strip("-").lower()): d.get("name")
+        for d in datasets
+    }
+    model_name_lookup = {str(m.get("name")): str(m.get("name")) for m in models}
+    for m in models:
+        name = str(m.get("name"))
+        slug = str(m.get("slug") or "")
+        model_name_lookup.setdefault(name.lower(), name)
+        if slug:
+            model_name_lookup.setdefault(slug, name)
+            model_name_lookup.setdefault(slug.lower(), name)
+    selected_datasets: list[str] = []
+    selected_models: list[str] = []
+    loaded_pair_params: dict[tuple[str, str], dict] = {}
+
+    for job in staged_jobs:
+        if not isinstance(job, dict):
+            continue
+        dataset_slug = str(job.get("dataset_slug") or "")
+        requested_model_name = str(job.get("model_name") or "")
+        model_name = model_name_lookup.get(requested_model_name) or model_name_lookup.get(requested_model_name.lower())
+        dataset_name = dataset_slug_to_name.get(dataset_slug)
+        if not dataset_name or not model_name:
+            continue
+        if dataset_name not in selected_datasets:
+            selected_datasets.append(dataset_name)
+        if model_name not in selected_models:
+            selected_models.append(model_name)
+        params = staged_params.get((dataset_slug, requested_model_name), {})
+        if isinstance(params, dict):
+            loaded_pair_params[(dataset_name, model_name)] = dict(params)
+
+    if selected_datasets:
+        st.session_state["selected_datasets"] = selected_datasets
+    if selected_models:
+        st.session_state["selected_models"] = selected_models
+    if loaded_pair_params:
+        st.session_state["_loaded_manifest_pair_params"] = loaded_pair_params
+    bump_editor_version()
+    st.session_state.pop("job_matrix_signature", None)
+    return loaded_pair_params
+
+
+def _prefill_hyperparameter_widget_state(job_key: str, params: dict) -> None:
+    for param_name, value in params.items():
+        if isinstance(value, dict) and value.get("type") in {"int", "float", "categorical"}:
+            st.session_state[f"{job_key}::sweep_toggle::{param_name}"] = True
+            base_key = f"{job_key}::sweep::{param_name}"
+            if value.get("type") == "categorical":
+                st.session_state[f"{base_key}::choices"] = value.get("choices", [])
             else:
-                cmd = [
-                    sys.executable, "-m", "multiverse.runner.cli",
-                    "register-model", "--manifest", md_manifest_path.strip(),
-                ]
-                if build_local:
-                    cmd.append("--build")
-                ok = _stream_subprocess(cmd, "Registering model…")
-                if ok:
-                    track("model_registered", manifest_path=md_manifest_path.strip(), build_local=build_local)
-                    st.session_state["registry_dirty"] = True
-                    fetch_registry_data.clear()
+                if "low" in value:
+                    st.session_state[f"{base_key}::low"] = value["low"]
+                if "high" in value:
+                    st.session_state[f"{base_key}::high"] = value["high"]
+                st.session_state[f"{base_key}::dist"] = (
+                    "int_log_uniform" if value.get("type") == "int" and value.get("log")
+                    else "int_uniform" if value.get("type") == "int"
+                    else "float_log_uniform" if value.get("log")
+                    else "float_uniform"
+                )
+            continue
+        st.session_state.setdefault(f"{job_key}::sweep_toggle::{param_name}", False)
+        st.session_state[f"{job_key}::fixed::{param_name}"] = value
 
 
-# ---------------------------------------------------------------------------
-# Tab: Job Builder
-# ---------------------------------------------------------------------------
+def _consume_loaded_pair_params(ds_name: str, mod_name: str) -> dict:
+    loaded = st.session_state.get("_loaded_manifest_pair_params", {})
+    if not isinstance(loaded, dict):
+        return {}
+    params = loaded.pop((ds_name, mod_name), {})
+    if not loaded:
+        st.session_state.pop("_loaded_manifest_pair_params", None)
+    return params if isinstance(params, dict) else {}
 
-def _render_job_builder_tab() -> None:
-    import psutil
-    import yaml as _yaml
 
-    # Promote any experiment name staged by the Load Manifest button before the
-    # text_input widget renders.  Direct session-state assignment for a widget key
-    # after the widget has been rendered raises StreamlitAPIException in Streamlit
-    # ≥1.25, so we use this staging key as an intermediary.
-    if "_pending_experiment_name" in st.session_state:
-        st.session_state["experiment_name"] = st.session_state.pop("_pending_experiment_name")
 
-    st.header("Job Builder")
+def _apply_pending_shared_config() -> None:
+    pending_map = {
+        "_pending_shared_experiment_name": "shared_experiment_name",
+        "_pending_shared_seed": "shared_seed",
+        "_pending_shared_run_mode": "shared_run_mode",
+        "_pending_shared_manifest_path": "shared_manifest_path",
+    }
+    for pending_key, target_key in pending_map.items():
+        if pending_key in st.session_state:
+            st.session_state[target_key] = st.session_state.pop(pending_key)
+    st.session_state["experiment_name"] = st.session_state.get("shared_experiment_name", "benchmark_run")
+    st.session_state["run_mode"] = st.session_state.get("shared_run_mode", "Use User Params")
+
+
+def _render_load_manifest_panel() -> None:
+    st.subheader("Load Existing Manifest")
+    st.info("Import global settings from an existing run manifest before selecting jobs.")
+    load_path = st.text_input(
+        "Manifest to load",
+        value=st.session_state.get("shared_manifest_path", "run_manifest.yaml"),
+        key="configure_load_manifest_path",
+    )
+    if st.button("Load Manifest Settings", key="btn_load_manifest_settings"):
+        try:
+            loaded = yaml.safe_load(Path(load_path).read_text(encoding="utf-8")) or {}
+            _stage_loaded_manifest(loaded, load_path)
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Could not load manifest: {exc}")
+
+
+def _render_manifest_load_notice() -> None:
+    notice = st.session_state.pop("_manifest_load_notice", None)
+    if notice:
+        st.success(str(notice))
+
+
+def _render_run_configuration() -> tuple[str, int, str, str]:
+    st.subheader("Run Configuration")
+    experiment_name_input = st.text_input(
+        "Experiment Name",
+        value=st.session_state.get("shared_experiment_name", "benchmark_run"),
+        key="shared_experiment_name",
+        help="Used for manifest generation and live metrics.",
+    )
+    random_seed = st.number_input(
+        "Random Seed",
+        min_value=0,
+        step=1,
+        value=int(st.session_state.get("shared_seed", 42)),
+        key="shared_seed",
+    )
+    run_mode = st.radio(
+        "Run Mode",
+        options=["Use User Params", "Run Gridsearch"],
+        index=0 if st.session_state.get("shared_run_mode", "Use User Params") == "Use User Params" else 1,
+        horizontal=True,
+        key="shared_run_mode",
+    )
+    st.session_state["run_mode"] = run_mode
+    st.session_state["experiment_name"] = experiment_name_input or "benchmark_run"
+    manifest_path = st.text_input(
+        "Manifest save path",
+        value=st.session_state.get("shared_manifest_path", "run_manifest.yaml"),
+        key="shared_manifest_path",
+    )
+    return experiment_name_input or "benchmark_run", int(random_seed), run_mode, manifest_path
+
+
+def _render_configure_tab() -> None:
+    _apply_pending_shared_config()
+
+    st.header("Configure")
+    _render_load_manifest_panel()
+    _render_manifest_load_notice()
+    st.divider()
+    experiment_name_input, random_seed, run_mode, manifest_path = _render_run_configuration()
+    st.divider()
 
     datasets, models = fetch_registry_data()
 
     if not datasets:
         st.warning("No datasets found in registry. Register a dataset in the Registry tab first.")
-        if st.button("Go to Registry ->", key="shortcut_jobs_registry"):
+        if st.button("Go to Registry →", key="shortcut_configure_registry"):
             go_to("registry")
         return
+    if not models:
+        st.warning("No models found in registry. Register a model in the Registry tab first.")
+        if st.button("Go to Registry →", key="shortcut_configure_registry_models"):
+            go_to("registry")
+        return
+
+    loaded_pair_params = _apply_pending_manifest_jobs(datasets, models)
 
     dataset_name_to_slug = {
         d["name"]: (
@@ -457,8 +796,7 @@ def _render_job_builder_tab() -> None:
         for d in datasets
     }
 
-    # --- Selection-first compatibility matrix ---
-    st.subheader("Compatibility Matrix")
+    st.subheader("1. Select Jobs")
     matrix_df = generate_compatibility_matrix(datasets, models)
 
     dataset_names = [d["name"] for d in datasets]
@@ -485,20 +823,7 @@ def _render_job_builder_tab() -> None:
         st.session_state["planned_jobs"] = []
         return
 
-    def _color_compat(val):
-        if val == "Compatible":
-            return "background-color: #90ee90; color: #000000"
-        if val == "Partial":
-            return "background-color: #ffffe0; color: #000000"
-        if val == "Incompatible":
-            return "background-color: #ffcccb; color: #000000"
-        return ""
-
-    visible_matrix = matrix_df.loc[selected_datasets, selected_models]
-    st.dataframe(visible_matrix.style.map(_color_compat), width="stretch")
-
-    # --- Editable job selection matrix ---
-    st.subheader("Select Jobs")
+    loaded_selected_pairs = set(loaded_pair_params)
     rows = []
     for ds_name in selected_datasets:
         for mod_name in selected_models:
@@ -507,8 +832,13 @@ def _render_job_builder_tab() -> None:
                 if ds_name in matrix_df.index and mod_name in matrix_df.columns
                 else "Incompatible"
             )
+            default_selected = (
+                (ds_name, mod_name) in loaded_selected_pairs
+                if loaded_selected_pairs
+                else compat in ("Compatible", "Partial")
+            )
             rows.append({
-                "Selected": compat in ("Compatible", "Partial"),
+                "Selected": default_selected and compat in ("Compatible", "Partial"),
                 "Dataset": ds_name,
                 "Model": mod_name,
                 "Compatibility": compat,
@@ -519,15 +849,15 @@ def _render_job_builder_tab() -> None:
     if st.session_state.get("job_matrix_signature") != editor_signature:
         st.session_state["job_matrix_signature"] = editor_signature
         bump_editor_version()
-    editor_key = f"job_matrix_editor_v{get_state().editor_version}"
+    editor_key = f"job_matrix_editor_v{int(st.session_state.get("editor_version", 0) or 0)}"
 
     edited = st.data_editor(
         editor_df,
         column_config={
             "Selected": st.column_config.CheckboxColumn("Selected", default=False),
-            "Dataset": st.column_config.TextColumn("Dataset", disabled=True),
-            "Model": st.column_config.TextColumn("Model", disabled=True),
-            "Compatibility": st.column_config.TextColumn("Compatibility", disabled=True),
+            "Dataset": st.column_config.TextColumn("Dataset", disabled=True, width="medium"),
+            "Model": st.column_config.TextColumn("Model", disabled=True, width="medium"),
+            "Compatibility": st.column_config.TextColumn("Compatibility", disabled=True, width="small"),
         },
         width="stretch",
         hide_index=True,
@@ -547,125 +877,11 @@ def _render_job_builder_tab() -> None:
 
     if not planned_jobs:
         st.info("Check rows above to build a job plan.")
-
-    # --- T2.2: Resource summary ---
-    if planned_jobs:
-        unique_models = {j["Model"] for j in planned_jobs}
-        unique_datasets = {j["Dataset"] for j in planned_jobs}
-
-        model_name_to_manifest = {m["name"]: m.get("manifest_path") for m in models}
-        committed_gb = 0.0
-        for mod_name in unique_models:
-            mpath = model_name_to_manifest.get(mod_name)
-            if mpath and Path(mpath).exists():
-                try:
-                    spec = _yaml.safe_load(Path(mpath).read_text())
-                    mem_str = spec.get("resources", {}).get("memory_limit", "16g")
-                    committed_gb += _parse_memory_gb(mem_str)
-                except Exception:
-                    committed_gb += 16.0
-            else:
-                committed_gb += 16.0
-
-        avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-        delta = avail_gb - committed_gb
-
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.metric("Total Jobs", len(planned_jobs))
-        c2.metric("Unique Datasets", len(unique_datasets))
-        c3.metric("Unique Models", len(unique_models))
-        c4.metric("Committed RAM", f"{committed_gb:.1f} GB")
-        c5.metric("Available RAM", f"{avail_gb:.1f} GB", delta=f"{delta:+.1f} GB")
-
-    # --- Manifest generation ---
-    if planned_jobs:
-        st.divider()
-        st.subheader("Generate Run Manifest")
-        experiment_name_input = st.text_input(
-            "Experiment Name",
-            value=st.session_state.get("experiment_name", "benchmark_run"),
-            key="experiment_name",
-            help="Shared with the Execute tab's live metrics panel.",
-        )
-        random_seed = st.number_input(
-            "Random Seed", min_value=0, step=1, value=42, key="jb_seed"
-        )
-        run_mode = st.radio(
-            "Run Mode",
-            options=["Use User Params", "Run Gridsearch"],
-            index=0,
-            horizontal=True,
-            key="jb_run_mode",
-        )
-        st.session_state["run_mode"] = run_mode
-        manifest_path = st.text_input("Manifest save path", value="run_manifest.yaml", key="jb_manifest_path")
-
-        with st.expander("Load manifest settings", expanded=False):
-            load_path = st.text_input("Manifest to load", value=manifest_path, key="jb_load_manifest_path")
-            if st.button("Load Manifest", key="btn_load_manifest_settings"):
-                try:
-                    loaded = yaml.safe_load(Path(load_path).read_text(encoding="utf-8")) or {}
-                    globals_cfg = loaded.get("globals", {}) if isinstance(loaded, dict) else {}
-                    if "experiment_name" in globals_cfg:
-                        st.session_state["_pending_experiment_name"] = str(globals_cfg["experiment_name"])
-                    if globals_cfg.get("run_gridsearch"):
-                        st.session_state["run_mode"] = "Run Gridsearch"
-                    elif globals_cfg.get("run_user_params"):
-                        st.session_state["run_mode"] = "Use User Params"
-                    st.success("Loaded manifest settings.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not load manifest: {exc}")
-
-        if st.button("Generate Run Manifest", key="btn_gen_manifest"):
-            try:
-                manifest = build_run_manifest(
-                    experiment_name=experiment_name_input or "benchmark_run",
-                    random_seed=int(random_seed),
-                    run_mode=run_mode,
-                    planned_jobs=planned_jobs,
-                    dataset_name_to_slug=dataset_name_to_slug,
-                    pair_params=st.session_state.get("pair_params", {}),
-                )
-            except ValueError as exc:
-                st.error(str(exc))
-                return
-
-            manifest_path = manifest_path.strip() or "run_manifest.yaml"
-            with open(manifest_path, "w") as fh:
-                yaml.safe_dump(manifest, fh, default_flow_style=False, sort_keys=False)
-
-            track("manifest_generated", n_jobs=len(planned_jobs), run_mode=run_mode, manifest_path=manifest_path)
-            st.success(f"Manifest saved to `{manifest_path}`")
-            st.code(f"make benchmark config={manifest_path}")
-            st.code(
-                yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False),
-                language="yaml",
-            )
-
-
-# ---------------------------------------------------------------------------
-# Tab: Parameters
-# ---------------------------------------------------------------------------
-
-def _render_parameters_tab() -> None:
-    # Promote any experiment name staged by the Load Manifest button before the
-    # text_input widget renders (same pattern as _render_job_builder_tab).
-    if "_pending_experiment_name" in st.session_state:
-        st.session_state["experiment_name"] = st.session_state.pop("_pending_experiment_name")
-
-    st.header("Hyperparameter Overrides")
-
-    planned_jobs: list[dict] = st.session_state.get("planned_jobs", [])
-    if not planned_jobs:
-        st.info("Plan your jobs in the Job Builder tab first.")
-        if st.button("Go to Job Builder ->", key="shortcut_params_jobs"):
-            go_to("jobs")
         return
 
-    _, models = fetch_registry_data()
+    st.divider()
+    st.subheader("2. Hyperparameter Overrides")
     model_name_to_schema_path = {m["name"]: m.get("hyperparameters_schema") for m in models}
-
     st.caption("Fields are generated from each model's hyperparameter schema.")
     pair_params: dict[tuple[str, str], dict] = {}
 
@@ -674,16 +890,26 @@ def _render_parameters_tab() -> None:
         mod_name = job["Model"]
         job_key = f"{ds_name}::{mod_name}"
         field_key = f"params::{job_key}"
+        expected_path = model_name_to_schema_path.get(mod_name) or f"schemas/models/{slugify_experiment_name(mod_name)}.hyperparameters.schema.json"
 
         with st.expander(f"{ds_name} × {mod_name}", expanded=False):
             schema = _load_hyperparameter_schema(model_name_to_schema_path.get(mod_name))
+            loaded_params = _consume_loaded_pair_params(ds_name, mod_name)
+            if loaded_params:
+                _prefill_hyperparameter_widget_state(job_key, loaded_params)
             if schema and isinstance(schema.get("properties"), dict):
                 pair_params[(ds_name, mod_name)] = render_hyperparameters_form(schema, job_key)
             else:
-                st.info("No schema found for this model. Falling back to JSON override input.")
+                st.info(
+                    f"No hyperparameter schema found at `{expected_path}`. "
+                    "Add a `hyperparameters.json` or schema path in `model.yaml` to enable form fields."
+                )
+                raw_default = json.dumps(loaded_params, indent=2, sort_keys=True) if loaded_params else "{}"
+                if loaded_params:
+                    st.session_state[field_key] = raw_default
                 raw_params = st.text_area(
                     "Model Params (JSON)",
-                    value="{}",
+                    value=raw_default,
                     key=field_key,
                     help="Optional override dictionary passed as model_params for this job.",
                 ).strip()
@@ -698,31 +924,13 @@ def _render_parameters_tab() -> None:
                     st.error(f"Invalid JSON for {ds_name} × {mod_name}: {exc}")
                     pair_params[(ds_name, mod_name)] = {}
 
-    # Always persist so Job Builder's manifest button can read it
     st.session_state["pair_params"] = pair_params
 
-    # Manifest generation with params
-    st.divider()
-    experiment_name_input = st.text_input(
-        "Experiment Name",
-        value=st.session_state.get("experiment_name", "benchmark_run"),
-        key="experiment_name",
-        help="Shared with the Job Builder tab.",
-    )
-    if st.button("Generate Run Manifest (with params)", key="btn_gen_manifest_params"):
-        datasets, _ = fetch_registry_data()
-        dataset_name_to_slug = {
-            d["name"]: (
-                d.get("slug")
-                or re.sub(r"[^a-zA-Z0-9._-]+", "-", d["name"]).strip("-").lower()
-            )
-            for d in datasets
-        }
-        run_mode = st.session_state.get("run_mode", "Use User Params")
+    if st.button("Generate & Save Manifest", key="btn_gen_manifest"):
         try:
             manifest = build_run_manifest(
                 experiment_name=experiment_name_input or "benchmark_run",
-                random_seed=int(st.session_state.get("jb_seed", 42)),
+                random_seed=random_seed,
                 run_mode=run_mode,
                 planned_jobs=planned_jobs,
                 dataset_name_to_slug=dataset_name_to_slug,
@@ -732,16 +940,26 @@ def _render_parameters_tab() -> None:
             st.error(str(exc))
             return
 
-        manifest_path = st.session_state.get("jb_manifest_path", "run_manifest.yaml") or "run_manifest.yaml"
+        manifest_path = manifest_path.strip() or "run_manifest.yaml"
         with open(manifest_path, "w") as fh:
             yaml.safe_dump(manifest, fh, default_flow_style=False, sort_keys=False)
 
         track("manifest_generated", n_jobs=len(planned_jobs), run_mode=run_mode, manifest_path=manifest_path)
-        st.success(f"Manifest saved to `{manifest_path}`")
-        st.code(
-            yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False),
-            language="yaml",
+        st.session_state["_pending_shared_manifest_path"] = manifest_path
+        st.session_state["manifest_generated_path"] = manifest_path
+        st.session_state["manifest_generated_yaml"] = yaml.safe_dump(
+            manifest, default_flow_style=False, sort_keys=False
         )
+        st.success(f"Manifest saved to `{manifest_path}`")
+
+    generated_path = st.session_state.get("manifest_generated_path")
+    if generated_path:
+        st.code(f"make benchmark config={generated_path}")
+        generated_yaml = st.session_state.get("manifest_generated_yaml")
+        if generated_yaml:
+            st.code(generated_yaml, language="yaml")
+        if st.button("Proceed to Run →", key="btn_proceed_run"):
+            go_to("run")
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +1160,7 @@ def _finalize_run() -> None:
                 job_statuses[k] = "Failed"
     st.session_state["is_running"] = False
     st.session_state["run_finalized"] = True
+    st.session_state["_run_just_finalized"] = True
 
 
 @st.fragment(run_every=timedelta(seconds=1))
@@ -970,12 +1189,40 @@ def _run_monitor_fragment() -> None:
         hide_index=True,
     )
 
-    if still_running:
-        if st.button("Cancel Run", key="btn_cancel_run"):
-            proc.terminate()
-            st.warning("Pipeline cancellation requested.")
+    log_text = "\n".join(list(log_lines)[-_LOG_DISPLAY_TAIL:]) or "(no output yet)"
+    components.html(
+        "<pre id='run-log' "
+        "style='height:400px;overflow-y:auto;white-space:pre-wrap;margin:0;"
+        "font-family:monospace;font-size:0.875rem;'>"
+        f"{html.escape(log_text)}"
+        "</pre>"
+        "<script>const el=document.getElementById('run-log');el.scrollTop=el.scrollHeight;</script>",
+        height=420,
+        scrolling=False,
+    )
 
-    st.code("\n".join(list(log_lines)[-_LOG_DISPLAY_TAIL:]) or "(no output yet)", language=None)
+    if st.session_state.get("run_finalized") and st.session_state.get("_run_just_finalized"):
+        st.session_state["_run_just_finalized"] = False
+        st.rerun()
+
+
+def _render_run_monitor() -> None:
+    proc: subprocess.Popen | None = st.session_state.get("_run_proc")
+    still_running = bool(proc and proc.poll() is None)
+    if still_running:
+        if not st.session_state.get("cancel_requested"):
+            if st.button("Cancel Run", key="btn_cancel_run"):
+                st.session_state["cancel_requested"] = True
+                st.warning("Click again to confirm cancellation.")
+        else:
+            st.warning("Click again to confirm cancellation.")
+            if st.button("Confirm Cancel Run", key="btn_confirm_cancel_run"):
+                proc.terminate()
+                st.session_state["cancel_requested"] = False
+                st.warning("Pipeline cancellation requested.")
+
+    with st.status("Pipeline log", expanded=True):
+        _run_monitor_fragment()
 
     if st.session_state.get("run_finalized"):
         rc = st.session_state.get("_run_returncode")
@@ -983,6 +1230,7 @@ def _run_monitor_fragment() -> None:
             st.success("Pipeline completed successfully.")
         else:
             st.error(f"Pipeline exited with code {rc}.")
+        log_lines: "deque[str]" = st.session_state.get("_run_log_lines", deque())
         if log_lines:
             st.download_button(
                 "Download pipeline log",
@@ -993,15 +1241,10 @@ def _run_monitor_fragment() -> None:
             )
 
 
-def _render_run_monitor() -> None:
-    with st.status("Pipeline run", expanded=True):
-        _run_monitor_fragment()
-
-
 def _render_execute_tab() -> None:
     import psutil
 
-    st.header("Execute")
+    st.header("Run")
 
     planned_jobs: list[dict] = st.session_state.get("planned_jobs", [])
     _, models = fetch_registry_data()
@@ -1085,9 +1328,9 @@ def _render_execute_tab() -> None:
 
     manifest_path_input = st.text_input(
         "Run Manifest Path",
-        value="run_manifest.yaml",
-        key="exec_manifest_path",
-        help="Manifest generated in the Job Builder or Parameters tab.",
+        value=st.session_state.get("shared_manifest_path", "run_manifest.yaml"),
+        key="shared_manifest_path",
+        help="Manifest generated in the Configure tab.",
     )
     output_dir_input = st.text_input(
         "Output Directory",
@@ -1095,19 +1338,19 @@ def _render_execute_tab() -> None:
         key="exec_output_dir",
     )
     exec_seed = st.number_input(
-        "Random Seed", min_value=0, value=42, step=1, key="exec_seed"
+        "Random Seed", min_value=0, value=int(st.session_state.get("shared_seed", 42)), step=1, key="shared_seed"
     )
 
     if not planned_jobs:
-        st.warning("No jobs planned. Go to the Job Builder tab first.")
-        if st.button("Go to Job Builder ->", key="shortcut_execute_jobs"):
-            go_to("jobs")
+        st.warning("No jobs planned. Go to the Configure tab first.")
+        if st.button("Go to Configure →", key="shortcut_execute_jobs"):
+            go_to("configure")
 
     if st.button(
         "Launch Run",
         key="btn_launch_run",
         disabled=(not planned_jobs or st.session_state.get("is_running", False)),
-        help=None if planned_jobs else "Plan jobs in the Job Builder tab first.",
+        help=None if planned_jobs else "Plan jobs in the Configure tab first.",
     ):
         repo_root = Path(__file__).resolve().parents[1]
         manifest_file = Path(manifest_path_input.strip())
@@ -1116,7 +1359,7 @@ def _render_execute_tab() -> None:
         if not manifest_file.exists():
             st.error(
                 f"Manifest not found: `{manifest_file}`. "
-                "Generate it in the Job Builder or Parameters tab first."
+                "Generate it in the Configure tab first."
             )
         else:
             from multiverse.runner.cli import parse_manifest
@@ -1129,7 +1372,7 @@ def _render_execute_tab() -> None:
             if not parsed_manifest.ok:
                 track("error_shown", component="execute_preflight", error_kind="manifest_validation")
                 render_manifest_errors(parsed_manifest.errors)
-                st.stop()
+                return
 
             track("run_launched", n_jobs=len(planned_jobs), manifest_path=str(manifest_file))
             _launch_run_subprocess(
@@ -1151,18 +1394,15 @@ def _render_execute_tab() -> None:
     st.subheader("Live MLflow Metrics")
 
     mlflow_base = _get_mlflow_url()
-    if not _check_service(f"{mlflow_base}/health"):
+    if not _cached_service_status("mlflow", f"{mlflow_base}/health"):
         st.info("MLflow is offline — start it with `make services-up` to see live metrics.")
     else:
-        # The Job Builder writes to st.session_state["experiment_name"]; reflect it
-        # here so the live metrics panel always tracks the same name without a
-        # second, drift-prone text input.
-        exp_raw = st.session_state.get("experiment_name", "benchmark_run") or "benchmark_run"
+        exp_raw = st.session_state.get("shared_experiment_name", "benchmark_run") or "benchmark_run"
         try:
             exp_slug = slugify_experiment_name(exp_raw)
         except ValueError:
             exp_slug = "benchmark_run"
-        st.caption(f"Monitoring MLflow experiment: `{exp_slug}` (edit in the Job Builder tab).")
+        st.caption(f"Monitoring MLflow experiment: `{exp_slug}` (edit in the Configure tab).")
 
         if exp_slug:
             _live_metrics_panel(exp_slug, mlflow_base)
@@ -1200,14 +1440,15 @@ def _fetch_runs(
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         sql = (
-            "SELECT run_id, dataset_id, model_slug, model_version, model_name, status, output_path, failure_reason "
-            "FROM runs"
+            "SELECT r.run_id, r.dataset_id, d.name AS dataset_name, r.model_slug, r.model_version, "
+            "r.model_name, r.status, r.output_path, r.failure_reason "
+            "FROM runs r LEFT JOIN datasets d ON d.id = r.dataset_id"
         )
         params: list = []
         if status_filter:
-            sql += " WHERE status = ?"
+            sql += " WHERE r.status = ?"
             params.append(status_filter)
-        sql += " ORDER BY run_id DESC"
+        sql += " ORDER BY r.run_id DESC"
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
             params.extend([int(limit), int(offset)])
@@ -1229,6 +1470,58 @@ def _flatten_dict(d: dict, parent_key: str = "", sep: str = ".") -> dict:
     return items
 
 
+def _selected_run_from_summary(summary_df: pd.DataFrame, runs: list[dict]) -> dict:
+    try:
+        event = st.dataframe(
+            summary_df,
+            width="stretch",
+            hide_index=True,
+            selection_mode="single-row",
+            on_select="rerun",
+            column_config={
+                "Run ID": st.column_config.NumberColumn("Run ID", width="small"),
+                "Dataset": st.column_config.TextColumn("Dataset", width="medium"),
+                "Model": st.column_config.TextColumn("Model", width="medium"),
+                "Status": st.column_config.TextColumn("Status", width="small"),
+                "Output Path": st.column_config.TextColumn("Output Path", width="large"),
+                "Failure Reason": st.column_config.TextColumn("Failure Reason", width="large"),
+            },
+        )
+        selected_rows = getattr(getattr(event, "selection", None), "rows", []) or []
+        selected_idx = int(selected_rows[0]) if selected_rows else 0
+        return runs[selected_idx]
+    except TypeError:
+        st.dataframe(summary_df, width="stretch", hide_index=True)
+        run_labels = [
+            f"Run {r['run_id']} - {r['status']} - {r.get('dataset_name') or r.get('dataset_id') or 'unknown'} - {r['model_name'] or r.get('model_slug') or 'unknown'}"
+            for r in runs
+        ]
+        selected_label = st.selectbox("Select a run", options=run_labels, key="results_run_selector")
+        return runs[run_labels.index(selected_label)]
+
+
+def _set_mlflow_context_from_job_spec(job_spec_file: Path, mlflow_base: str) -> str | None:
+    if not job_spec_file.exists():
+        return None
+    try:
+        spec_data = json.loads(job_spec_file.read_text(encoding="utf-8"))
+        auto_exp_name = (
+            spec_data.get("run_settings", {}).get("experiment_name")
+            or spec_data.get("globals", {}).get("experiment_name")
+            or spec_data.get("experiment_name")
+        )
+    except Exception:
+        return None
+    if not auto_exp_name:
+        return None
+    exp_id = _resolve_mlflow_experiment_id(auto_exp_name, mlflow_base)
+    if exp_id:
+        st.session_state["active_experiment_id"] = exp_id
+        st.session_state["active_experiment_name"] = auto_exp_name
+        return auto_exp_name
+    return None
+
+
 def _render_results_tab() -> None:
     st.header("Results")
 
@@ -1240,9 +1533,8 @@ def _render_results_tab() -> None:
             key="results_status_filter",
         )
     with col_refresh:
-        st.write("")
         if st.button("Refresh", key="btn_results_refresh"):
-            st.cache_data.clear()
+            st.rerun()
 
     filter_val = None if status_choice == "All" else status_choice
     runs = paginate(
@@ -1253,69 +1545,84 @@ def _render_results_tab() -> None:
     )
 
     if not runs:
-        st.info("No runs found. Launch a benchmarking run from the Execute tab first.")
-        if st.button("Go to Execute ->", key="shortcut_results_execute"):
-            go_to("execute")
+        st.info("No runs found. Launch a benchmarking run from the Run tab first.")
+        if st.button("Go to Run →", key="shortcut_results_execute"):
+            go_to("run")
         return
 
-    # Summary table
     summary_rows = [
         {
             "Run ID": r["run_id"],
-            "Model": r["model_name"] or "—",
+            "Dataset": r.get("dataset_name") or r.get("dataset_id") or "-",
+            "Model": r["model_name"] or r.get("model_slug") or "-",
             "Status": r["status"],
-            "Output Path": r["output_path"] or "—",
+            "Output Path": r["output_path"] or "-",
             "Failure Reason": r.get("failure_reason") or "",
         }
         for r in runs
     ]
-    st.dataframe(pd.DataFrame(summary_rows), width="stretch", hide_index=True)
+    summary_df = pd.DataFrame(summary_rows)
+    selected_run = _selected_run_from_summary(summary_df, runs)
 
-    retryable = [
-        r for r in runs
-        if str(r.get("failure_reason") or "").startswith("VALIDATION_ERROR:")
-    ]
-    if retryable:
-        st.subheader("Validation Retries")
-        for r in retryable:
-            cols = st.columns([4, 1])
-            with cols[0]:
-                st.caption(
-                    f"Run {r['run_id']} — {r.get('model_name') or r.get('model_slug') or 'unknown'} — {r.get('failure_reason')}"
-                )
-            with cols[1]:
-                if st.button("Retry", key=f"retry_validation_{r['run_id']}"):
-                    conn = get_db_connection()
-                    try:
-                        conn.execute(
-                            "UPDATE runs SET status = 'QUEUED', failure_reason = NULL WHERE run_id = ?",
-                            (r["run_id"],),
-                        )
-                        conn.commit()
-                    finally:
-                        conn.close()
-                    st.rerun()
-
-    # Drill-down selector
     st.subheader("Drill Down")
-    run_labels = [
-        f"Run {r['run_id']} — {r['status']} — {r['model_name'] or r.get('model_slug') or 'unknown'}"
-        for r in runs
-    ]
-    selected_label = st.selectbox("Select a run", options=run_labels, key="results_run_selector")
-    selected_run = runs[run_labels.index(selected_label)]
+    st.write(
+        f"Run {selected_run['run_id']} - "
+        f"{selected_run.get('dataset_name') or selected_run.get('dataset_id') or 'unknown'} - "
+        f"{selected_run.get('model_name') or selected_run.get('model_slug') or 'unknown'}"
+    )
 
     if selected_run["status"] == "FAILED":
         track("error_shown", component="results_drilldown", error_kind="failed_run")
         st.error(selected_run.get("failure_reason") or "Run failed without a recorded failure reason.")
 
+    if str(selected_run.get("failure_reason") or "").startswith("VALIDATION_ERROR:"):
+        if st.button("Retry", key=f"retry_validation_{selected_run['run_id']}"):
+            conn = get_db_connection()
+            try:
+                conn.execute(
+                    "UPDATE runs SET status = 'QUEUED', failure_reason = NULL WHERE run_id = ?",
+                    (selected_run["run_id"],),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            st.rerun()
+
     artifact_dir = Path(selected_run["output_path"]) if selected_run["output_path"] else None
+    job_spec_file = artifact_dir / "job_spec.json" if artifact_dir else None
+
+    mlflow_base = _get_mlflow_url()
+    mlflow_live = _cached_service_status("mlflow", f"{mlflow_base}/health")
+    if mlflow_live and job_spec_file:
+        exp_name = _set_mlflow_context_from_job_spec(job_spec_file, mlflow_base)
+        if exp_name:
+            if st.button("Open in Analysis →", key=f"btn_open_analysis_{selected_run['run_id']}"):
+                go_to("analysis")
+        else:
+            with st.expander("Set MLflow experiment manually", expanded=False):
+                manual_exp = st.text_input(
+                    "MLflow experiment name",
+                    value=st.session_state.get("active_experiment_name", ""),
+                    key="manual_exp_name",
+                    placeholder="benchmark_run",
+                )
+                if st.button("Set active experiment", key="btn_set_exp"):
+                    name = manual_exp.strip()
+                    if name:
+                        exp_id = _resolve_mlflow_experiment_id(name, mlflow_base)
+                        if exp_id:
+                            st.session_state["active_experiment_id"] = exp_id
+                            st.session_state["active_experiment_name"] = name
+                            st.success(f"Linked to experiment '{name}' (ID: {exp_id})")
+                        else:
+                            st.warning(f"Experiment '{name}' not found in MLflow.")
+    elif not mlflow_live:
+        st.caption("MLflow is offline; start it with `make services-up` to enable deep-linking.")
 
     if not artifact_dir or not artifact_dir.exists():
         st.warning(f"Artifact directory not found: `{artifact_dir}`")
         return
 
-    # Metrics
     from multiverse.tracking import find_metrics_json
 
     metrics_path = find_metrics_json(str(artifact_dir))
@@ -1343,7 +1650,6 @@ def _render_results_tab() -> None:
     else:
         st.info("No metrics.json found in artifact directory.")
 
-    # Artifacts and container log
     st.subheader("Artifacts")
     render_artifact_tree(artifact_dir)
 
@@ -1351,11 +1657,9 @@ def _render_results_tab() -> None:
     with st.expander("Container Log", expanded=False):
         render_log_viewer(log_file)
 
-    # Provenance note
-    job_spec_file = artifact_dir / "job_spec.json"
     st.subheader("Provenance")
     st.caption(f"Artifact directory: `{artifact_dir}`")
-    if job_spec_file.exists():
+    if job_spec_file and job_spec_file.exists():
         st.caption(f"Job spec: `{job_spec_file}`")
         render_download_button(job_spec_file, "Download job_spec.json")
         with st.expander("Job Spec", expanded=False):
@@ -1363,70 +1667,6 @@ def _render_results_tab() -> None:
                 st.json(json.loads(job_spec_file.read_text(encoding="utf-8")))
             except Exception:
                 st.text(job_spec_file.read_text(encoding="utf-8", errors="replace"))
-
-    # MLflow contextual routing — auto-detect experiment name from job_spec, then
-    # resolve to an MLflow experiment ID so the 🔬 tab can deep-link directly.
-    st.divider()
-    st.subheader("MLflow Deep-Link")
-    mlflow_base = _get_mlflow_url()
-    mlflow_live = _check_service(f"{mlflow_base}/health")
-
-    if not mlflow_live:
-        st.caption("MLflow is offline — start it with `make services-up` to enable deep-linking.")
-    else:
-        # Try auto-detection from job_spec.json
-        auto_exp_name: str | None = None
-        if job_spec_file.exists():
-            try:
-                spec_data = json.loads(job_spec_file.read_text(encoding="utf-8"))
-                auto_exp_name = (
-                    spec_data.get("run_settings", {}).get("experiment_name")
-                    or spec_data.get("globals", {}).get("experiment_name")
-                    or spec_data.get("experiment_name")
-                )
-            except Exception:
-                pass
-
-        if auto_exp_name:
-            exp_id = _resolve_mlflow_experiment_id(auto_exp_name, mlflow_base)
-            if exp_id:
-                st.session_state["active_experiment_id"] = exp_id
-                st.session_state["active_experiment_name"] = auto_exp_name
-                st.success(
-                    f"Active experiment set to **{auto_exp_name}** (ID: `{exp_id}`). "
-                    "Switch to the 🔬 Experiment Analysis tab to view it."
-                )
-            else:
-                st.info(
-                    f"Experiment `{auto_exp_name}` not found in MLflow yet "
-                    "(run may not have been tracked)."
-                )
-
-        # Always offer manual override
-        with st.expander("Set experiment manually", expanded=auto_exp_name is None):
-            manual_exp = st.text_input(
-                "MLflow experiment name",
-                value=st.session_state.get("active_experiment_name", ""),
-                key="manual_exp_name",
-                placeholder="benchmark_run",
-            )
-            col_set, col_clear = st.columns([2, 1])
-            with col_set:
-                if st.button("Set active experiment", key="btn_set_exp"):
-                    name = manual_exp.strip()
-                    if name:
-                        exp_id = _resolve_mlflow_experiment_id(name, mlflow_base)
-                        if exp_id:
-                            st.session_state["active_experiment_id"] = exp_id
-                            st.session_state["active_experiment_name"] = name
-                            st.success(f"Linked to experiment '{name}' (ID: {exp_id})")
-                        else:
-                            st.warning(f"Experiment '{name}' not found in MLflow.")
-            with col_clear:
-                if st.button("Clear", key="btn_clear_exp_results"):
-                    st.session_state["active_experiment_id"] = None
-                    st.session_state["active_experiment_name"] = ""
-                    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1440,6 +1680,17 @@ def _check_service(url: str, timeout: float = 1.5) -> bool:
             return resp.status < 500
     except Exception:
         return False
+
+
+def _cached_service_status(name: str, url: str, *, ttl: float = 10.0) -> bool:
+    cache = st.session_state.setdefault("service_health_cache", {})
+    now = time.monotonic()
+    entry = cache.get(name)
+    if entry and now - float(entry.get("checked_at", 0.0)) < ttl:
+        return bool(entry.get("ok", False))
+    ok = _check_service(url)
+    cache[name] = {"ok": ok, "checked_at": now, "url": url}
+    return ok
 
 
 def _get_mlflow_url() -> str:
@@ -1472,29 +1723,23 @@ def _resolve_mlflow_experiment_id(experiment_name: str, mlflow_base: str) -> str
 def _render_observability_sidebar() -> None:
     mlflow_base = _get_mlflow_url()
     optuna_base = _get_optuna_url()
-    mlflow_up = _check_service(f"{mlflow_base}/health")
-    optuna_up = _check_service(optuna_base)
+    mlflow_up = _cached_service_status("mlflow", f"{mlflow_base}/health")
+    optuna_up = _cached_service_status("optuna", optuna_base)
 
     with st.sidebar:
-        st.subheader("Observability Services")
-        col_mf, col_op = st.columns(2)
-        with col_mf:
-            if mlflow_up:
-                st.success("MLflow")
-                st.markdown(f"[Open]({mlflow_base})")
-            else:
-                st.error("MLflow offline")
-                st.caption("`make services-up`")
-        with col_op:
-            if optuna_up:
-                st.success("Optuna")
-                st.markdown(f"[Open]({optuna_base})")
-            else:
-                st.error("Optuna offline")
-                st.caption("`make services-up`")
+        st.subheader("Services")
+        mf_status = "● MLflow online" if mlflow_up else "○ MLflow offline"
+        op_status = "● Optuna online" if optuna_up else "○ Optuna offline"
+        st.write(mf_status)
+        st.link_button("Open MLflow", mlflow_base, width="stretch")
+        st.write(op_status)
+        st.link_button("Open Optuna", f"{optuna_base}/dashboard", width="stretch")
+        if not mlflow_up or not optuna_up:
+            st.caption("Start services with `make services-up`.")
 
         st.divider()
-        render_workflow_stepper()
+        with st.expander("Settings", expanded=False):
+            _render_settings_panel()
 
 
 # ---------------------------------------------------------------------------
@@ -1503,9 +1748,9 @@ def _render_observability_sidebar() -> None:
 
 def _render_mlflow_tab() -> None:
     mlflow_base = _get_mlflow_url()
-    mlflow_up = _check_service(f"{mlflow_base}/health")
+    mlflow_up = _cached_service_status("mlflow", f"{mlflow_base}/health")
 
-    st.header("Experiment Analysis")
+    st.header("Analysis")
 
     if not mlflow_up:
         st.warning(
@@ -1523,7 +1768,7 @@ def _render_mlflow_tab() -> None:
         with col_info:
             st.info(f"Showing experiment **{exp_name}** — ID `{exp_id}`")
         with col_clear:
-            if st.button("Show all", key="btn_mlflow_show_all"):
+            if st.button("Clear filter", key="btn_mlflow_show_all", type="secondary"):
                 st.session_state["active_experiment_id"] = None
                 st.session_state["active_experiment_name"] = ""
                 st.rerun()
@@ -1533,99 +1778,70 @@ def _render_mlflow_tab() -> None:
             "No active experiment selected. "
             "Pick a run in the Results tab to deep-link here automatically."
         )
-        if st.button("Go to Results ->", key="shortcut_mlflow_results"):
+        if st.button("Go to Results →", key="shortcut_mlflow_results"):
             go_to("results")
 
-    col_link, col_h = st.columns([3, 1])
-    with col_link:
-        st.link_button("Open in new tab", deep_url)
-    with col_h:
-        iframe_h = st.slider("Height (px)", 400, 1200, 860, step=50, key="mlflow_iframe_h")
-
-    st.caption(
-        "If the frame appears blank your browser may be blocking mixed content "
-        "(HTTP iframe inside an HTTPS page). Use the button above to open in a new tab. "
-        "For remote deployments, front both services through a TLS-terminating reverse proxy."
+    st.link_button("Open in new tab", deep_url)
+    components.html(
+        "<script>"
+        "try {"
+        "if (window.parent.location.protocol === 'https:') "
+        "document.body.innerHTML = '<div style=\"font:14px sans-serif;color:#9a6700\">The embedded MLflow frame may be blocked because it is served over HTTP inside an HTTPS page.</div>';"
+        "} catch(e) {}"
+        "</script>",
+        height=36,
     )
-    components.iframe(deep_url, height=iframe_h, scrolling=True)
+    components.iframe(deep_url, height=900, scrolling=True)
 
 
 # ---------------------------------------------------------------------------
-# Tab: Sweep Tracker (Optuna)
+# Sidebar settings
 # ---------------------------------------------------------------------------
 
-def _render_optuna_tab() -> None:
-    optuna_base = _get_optuna_url()
-    optuna_url = f"{optuna_base}/dashboard"
-    optuna_up = _check_service(optuna_base)
-
-    st.header("Sweep Tracker")
-
-    if not optuna_up:
-        st.warning(
-            "Optuna Dashboard is not reachable. "
-            "Start it with `make services-up`, then refresh this tab."
-        )
-        st.link_button("Open Optuna Dashboard (new tab)", optuna_url)
-        return
-
-    st.info(
-        "Optuna Dashboard cannot be embedded due to its Content-Security-Policy. "
-        "Open it in a new tab using the button below."
-    )
-    st.link_button("Open Optuna Dashboard", optuna_url)
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-def _render_settings_tab() -> None:
-    """Render the Settings tab for configuring Docker data root and other options."""
-    st.header("Settings")
-
+def _render_settings_panel() -> None:
+    """Render Docker data-root controls inside the sidebar."""
     current_root = get_docker_data_root()
 
-    st.subheader("Docker Data Root")
     st.caption(f"Default: `{DEFAULT_DOCKER_DATA_ROOT}`")
-    st.write(f"**Current Docker data root:** `{current_root}`")
+    st.write(f"Current: `{current_root}`")
 
-    # Disk usage for current path.
     if os.path.exists(current_root):
         try:
             usage = shutil.disk_usage(current_root)
             total_gb = usage.total / (1024 ** 3)
             used_gb = usage.used / (1024 ** 3)
             free_gb = usage.free / (1024 ** 3)
-            st.write(
-                f"Disk usage at `{current_root}`: "
-                f"**{used_gb:.1f} GB used** / {total_gb:.1f} GB total "
-                f"({free_gb:.1f} GB free)"
-            )
+            st.caption(f"{used_gb:.1f} GB used / {total_gb:.1f} GB total; {free_gb:.1f} GB free")
         except OSError as exc:
             st.warning(f"Could not read disk usage: {exc}")
     else:
-        st.info(f"Path `{current_root}` does not exist yet (it will be created by Docker on first use).")
+        st.info("Path does not exist yet; Docker will create it on first use.")
 
     new_root = st.text_input(
         "Docker data root path",
         value=current_root,
         help="Absolute path where Docker will store images and containers.",
+        key="settings_docker_data_root",
     )
 
-    if st.button("Save & Apply"):
+    if st.button("Save configuration", key="btn_save_docker_root"):
         new_root = new_root.strip()
         if not new_root:
             st.error("Path must not be empty.")
         elif not os.path.isabs(new_root):
             st.error("Path must be absolute (start with '/').")
         else:
-            # Persist to config.
+            st.session_state["pending_docker_data_root"] = new_root
+            st.warning("Saving will restart the Docker daemon. Running benchmark jobs will be interrupted.")
+
+    pending_root = st.session_state.get("pending_docker_data_root")
+    if pending_root:
+        st.warning("Confirm to restart Docker and apply the new data root.")
+        if st.button("Save and restart Docker", key="btn_confirm_docker_restart"):
             cfg = get_config()
-            cfg["docker_data_root"] = new_root
+            cfg["docker_data_root"] = pending_root
             save_config(cfg)
 
-            # Update daemon.json.
             daemon_json_path = Path.home() / ".config" / "docker" / "daemon.json"
             daemon_json_path.parent.mkdir(parents=True, exist_ok=True)
             if daemon_json_path.exists():
@@ -1637,11 +1853,10 @@ def _render_settings_tab() -> None:
             else:
                 daemon_cfg = {}
 
-            daemon_cfg["data-root"] = new_root
+            daemon_cfg["data-root"] = pending_root
             with open(daemon_json_path, "w") as fh:
                 json.dump(daemon_cfg, fh, indent=2)
 
-            # Restart Docker daemon.
             try:
                 subprocess.run(
                     ["systemctl", "--user", "restart", "docker"],
@@ -1652,7 +1867,6 @@ def _render_settings_tab() -> None:
                 st.error(f"Failed to restart Docker daemon: {exc.stderr.decode().strip()}")
                 return
 
-            # Wait up to 10 s for Docker to be responsive.
             deadline = time.monotonic() + 10.0
             ok = False
             while time.monotonic() < deadline:
@@ -1666,15 +1880,18 @@ def _render_settings_tab() -> None:
                     break
                 time.sleep(0.5)
 
+            st.session_state.pop("pending_docker_data_root", None)
             if ok:
-                st.success(
-                    f"Docker data root updated to `{new_root}` and daemon restarted successfully."
-                )
+                st.success(f"Docker data root updated to `{pending_root}` and daemon restarted.")
             else:
                 st.warning(
-                    "Config saved and daemon restarted, but Docker did not become responsive "
-                    "within 10 s. Check `systemctl --user status docker`."
+                    "Config saved and daemon restarted, but Docker did not become responsive within 10 s."
                 )
+
+
+def _render_settings_tab() -> None:
+    st.header("Settings")
+    _render_settings_panel()
 
 
 def main() -> None:
@@ -1683,8 +1900,6 @@ def main() -> None:
     _render_observability_sidebar()
 
     st.title("Multiverse Benchmarking Platform")
-    if st.session_state.get("registry_dirty"):
-        st.warning("Registry changed. Refresh the registry data before building or launching new jobs.")
 
     previous_tab = st.session_state.get("_last_tab")
     active_tab = render_top_nav()
@@ -1694,20 +1909,14 @@ def main() -> None:
 
     if active_tab == "registry":
         _render_registry_tab()
-    elif active_tab == "jobs":
-        _render_job_builder_tab()
-    elif active_tab == "params":
-        _render_parameters_tab()
-    elif active_tab == "execute":
+    elif active_tab == "configure":
+        _render_configure_tab()
+    elif active_tab == "run":
         _render_execute_tab()
     elif active_tab == "results":
         _render_results_tab()
-    elif active_tab == "mlflow":
+    elif active_tab == "analysis":
         _render_mlflow_tab()
-    elif active_tab == "optuna":
-        _render_optuna_tab()
-    elif active_tab == "settings":
-        _render_settings_tab()
 
 
 if __name__ == "__main__":
