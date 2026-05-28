@@ -36,6 +36,7 @@ batch fsync succeeds.
 from .errors import (
     JournalError,
     JournalCorruptError,
+    JournalLocked,
     JournalReplayError,
 )
 from .record import (
@@ -59,6 +60,7 @@ __all__ = [
     "JournalError",
     "JournalKind",
     "JournalLayout",
+    "JournalLocked",
     "JournalReader",
     "JournalRecord",
     "JournalReplayError",

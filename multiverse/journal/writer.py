@@ -19,6 +19,7 @@ Durability protocol (R3):
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import time
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from ..artifact.checksums import atomic_write_bytes, fsync_path, sha256_bytes
-from .errors import JournalError
+from .errors import JournalError, JournalLocked
 from .layout import JournalLayout
 from .record import INLINE_BLOB_SPILL_THRESHOLD, JournalKind, JournalRecord
 
@@ -87,6 +88,14 @@ class JournalWriter:
         self._segment_is_new: bool = False
         self._segment_base_seq: int = 0
         self._segment_path: Path = self._layout.current_segment
+        self._lock_fd: int = -1
+
+        # An exclusive flock guards against a second writer (in this process
+        # or any other) opening the same journal — two writers would each
+        # manage an independent seq counter and silently produce duplicate
+        # seqs. Acquired before we scan for the next free seq so the scan is
+        # serialized with respect to other writers.
+        self._acquire_writer_lock()
 
         # Seq counter is global across boot lifetimes; replay determines the
         # next free seq from disk if ``starting_seq`` is not supplied.
@@ -94,7 +103,11 @@ class JournalWriter:
             starting_seq = _scan_max_seq_plus_one(self._layout)
         self._next_seq = int(starting_seq)
 
-        self._open_current_segment()
+        try:
+            self._open_current_segment()
+        except Exception:
+            self._release_writer_lock()
+            raise
 
     # ---- public API --------------------------------------------------
 
@@ -218,8 +231,35 @@ class JournalWriter:
                 os.close(self._segment_fd)
             finally:
                 self._segment_fd = -1
+        self._release_writer_lock()
 
     # ---- internal ----------------------------------------------------
+
+    def _acquire_writer_lock(self) -> None:
+        lock_path = self._layout.writer_lock
+        fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            os.close(fd)
+            raise JournalLocked(
+                f"journal at {self._layout.root} is already held by another "
+                f"writer ({lock_path})"
+            ) from exc
+        self._lock_fd = fd
+
+    def _release_writer_lock(self) -> None:
+        if self._lock_fd < 0:
+            return
+        try:
+            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            try:
+                os.close(self._lock_fd)
+            finally:
+                self._lock_fd = -1
 
     def _open_current_segment(self) -> None:
         path = self._layout.current_segment

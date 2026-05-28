@@ -1204,17 +1204,37 @@ def _render_run_monitor() -> None:
     if submissions and not snapshots and st.session_state.get("is_running"):
         active_attempts = [s["attempt_id"] for s in submissions]
 
+    cancel_in_flight = st.session_state.get("cancellation_sent") or any(
+        snap.get("primary_state") == "CANCEL_REQUESTED" for snap in snapshots
+    )
+
     if active_attempts:
-        if not st.session_state.get("cancel_requested"):
+        if cancel_in_flight:
+            st.info("Cancellation requested — waiting for runs to terminate…")
+        elif not st.session_state.get("cancel_requested"):
             if st.button("Cancel Run", key="btn_cancel_run"):
                 st.session_state["cancel_requested"] = True
-                st.warning("Click again to confirm cancellation.")
+                st.rerun()
         else:
-            st.warning("Click again to confirm cancellation.")
-            if st.button("Confirm Cancel Run", key="btn_confirm_cancel_run"):
-                _mvd_controller_for_session().cancel_many(active_attempts)
-                st.session_state["cancel_requested"] = False
-                st.warning("Pipeline cancellation requested.")
+            st.warning("Cancel this run? In-flight work will be terminated.")
+            col_confirm, col_abort = st.columns(2)
+            with col_confirm:
+                if st.button(
+                    "Confirm Cancel",
+                    key="btn_confirm_cancel_run",
+                    type="primary",
+                ):
+                    _mvd_controller_for_session().cancel_many(active_attempts)
+                    st.session_state["cancel_requested"] = False
+                    st.session_state["cancellation_sent"] = True
+                    st.rerun()
+            with col_abort:
+                if st.button("Keep Running", key="btn_abort_cancel_run"):
+                    st.session_state["cancel_requested"] = False
+                    st.rerun()
+    else:
+        st.session_state["cancel_requested"] = False
+        st.session_state["cancellation_sent"] = False
 
     with st.status("Pipeline events", expanded=True):
         _run_monitor_fragment()
@@ -1554,10 +1574,19 @@ def _flatten_dict(d: dict, parent_key: str = "", sep: str = ".") -> dict:
     return items
 
 
+def _arrow_safe_summary_df(summary_df: pd.DataFrame) -> pd.DataFrame:
+    display_df = summary_df.copy()
+    for column in ["Run ID", "Dataset", "Model", "Status", "Output Path", "Failure Reason"]:
+        if column in display_df.columns:
+            display_df[column] = display_df[column].fillna("").astype(str)
+    return display_df
+
+
 def _selected_run_from_summary(summary_df: pd.DataFrame, runs: list[dict]) -> dict:
+    display_df = _arrow_safe_summary_df(summary_df)
     try:
         event = st.dataframe(
-            summary_df,
+            display_df,
             width="stretch",
             hide_index=True,
             selection_mode="single-row",
@@ -1575,7 +1604,7 @@ def _selected_run_from_summary(summary_df: pd.DataFrame, runs: list[dict]) -> di
         selected_idx = int(selected_rows[0]) if selected_rows else 0
         return runs[selected_idx]
     except TypeError:
-        st.dataframe(summary_df, width="stretch", hide_index=True)
+        st.dataframe(display_df, width="stretch", hide_index=True)
         run_labels = [
             f"Run {r['run_id']} - {r['status']} - {r.get('dataset_name') or r.get('dataset_id') or 'unknown'} - {r['model_name'] or r.get('model_slug') or 'unknown'}"
             for r in runs

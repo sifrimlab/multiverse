@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import asyncio
 import signal
 import sys
@@ -341,6 +342,22 @@ def validate_pending_jobs(
     return validated, warnings
 
 
+
+
+def _docker_image_status(image: str) -> tuple[bool, str | None]:
+    if not image:
+        return False, "model registry has no Docker image tag"
+    try:
+        import docker  # type: ignore
+        client = docker.from_env()
+        client.ping()
+        client.images.get(image)
+        return True, None
+    except ImportError:
+        return False, "Docker SDK is not installed in the active Python environment"
+    except Exception as exc:
+        return False, f"Docker image {image!r} is not available locally: {exc}"
+
 def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
     """Parse, validate, and dry-run a run manifest against the live registry."""
     path = Path(manifest_path).expanduser().resolve()
@@ -401,7 +418,7 @@ def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
         for model_name in models_to_run:
             model_key = str(model_name).strip().lower()
             cursor.execute(
-                "SELECT status FROM models WHERE slug = ? ORDER BY version DESC LIMIT 1",
+                "SELECT status, docker_image FROM models WHERE slug = ? ORDER BY version DESC LIMIT 1",
                 (model_key,),
             )
             row = cursor.fetchone()
@@ -409,6 +426,16 @@ def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
                 parsed.errors.append(_manifest_error(f"{field_prefix}.models", f"model '{model_name}' is not registered", "stale_model_slug"))
             elif row[0] != "ACTIVE":
                 parsed.errors.append(_manifest_error(f"{field_prefix}.models", f"model '{model_name}' is {row[0]}, not ACTIVE", "model_not_active"))
+            else:
+                ok, reason = _docker_image_status(str(row[1] or ""))
+                if not ok:
+                    parsed.errors.append(
+                        _manifest_error(
+                            f"{field_prefix}.models",
+                            f"model '{model_name}' cannot run: {reason}",
+                            "model_image_missing",
+                        )
+                    )
 
     if parsed.errors:
         return parsed
@@ -473,9 +500,6 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
 
             m_image, m_slug, m_version = model_row
 
-            # Manifest-driven runs always execute — the user explicitly requested
-            # them. Deduplication (skip prior-SUCCESS) applies only to the
-            # headless registry-sweep path (generate_execution_plan).
             job_metrics = job.get("metrics", {})
             merged_metrics = {**global_metrics, **job_metrics}
 
@@ -484,11 +508,30 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
                 json.dumps(model_params, sort_keys=True).encode()
             ).hexdigest()[:12]
 
-            output_path = os.path.join(ARTIFACTS_DIR, f"{d_name}_{m_slug}")
+            experiment_name = str(
+                manifest_data.get("globals", {}).get("experiment_name")
+                or manifest_data.get("experiment_name")
+                or "manifest"
+            )
+            experiment_slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", experiment_name).strip("._-") or "manifest"
+            artifact_dir_name = f"{experiment_slug}_{d_name}_{m_slug}_{params_hash}_{uuid.uuid4().hex[:8]}"
+            output_path = os.path.join(ARTIFACTS_DIR, artifact_dir_name)
+            dataset_n_obs = _read_obs_count(d_path)
+            if dataset_n_obs <= 0:
+                logger.warning(
+                    "Dataset '%s' has no readable obs count at %s. "
+                    "Continuing with dataset_n_obs=0 for %s.",
+                    dataset_key,
+                    d_path,
+                    m_slug,
+                )
+
             job_entry = {
                 "dataset_id": d_id,
                 "dataset_name": d_name,
+                "dataset_slug": str(dataset_key),
                 "dataset_path": d_path,
+                "dataset_n_obs": dataset_n_obs,
                 "omics_available": d_omics,
                 "batch_key": d_batch_key,
                 "cell_type_key": d_cell_type_key,
@@ -497,6 +540,7 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
                 "model_version": m_version,
                 "model_image": m_image,
                 "output_path": output_path,
+                "artifact_dir_name": artifact_dir_name,
                 "mode": mode,
                 "model_params": model_params,
                 "params_hash": params_hash,
@@ -533,6 +577,14 @@ def generate_execution_plan(conn) -> List[Dict]:
 
     for d_id, d_name, d_path, d_omics_json, d_batch_key, d_cell_type_key in datasets:
         d_omics = set(json.loads(d_omics_json))
+        dataset_n_obs = _read_obs_count(d_path)
+        if dataset_n_obs <= 0:
+            logger.warning(
+                "Dataset '%s' has no readable obs count at %s. Skipping registry sweep jobs.",
+                d_name,
+                d_path,
+            )
+            continue
 
         for m_slug, m_version, m_image, m_omics_json in models:
             m_omics = set(json.loads(m_omics_json))
@@ -549,7 +601,9 @@ def generate_execution_plan(conn) -> List[Dict]:
                     pending_jobs.append({
                         "dataset_id": d_id,
                         "dataset_name": d_name,
+                        "dataset_slug": d_name,
                         "dataset_path": d_path,
+                        "dataset_n_obs": dataset_n_obs,
                         "omics_available": list(d_omics),
                         "batch_key": d_batch_key,
                         "cell_type_key": d_cell_type_key,

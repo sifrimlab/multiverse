@@ -91,6 +91,23 @@ def test_fetch_runs_includes_dataset_name(tmp_path, monkeypatch):
     assert rows[0]["dataset_name"] == "Dataset One"
 
 
+def test_arrow_safe_summary_df_coerces_display_columns():
+    from multiverse import gui
+
+    df = gui.pd.DataFrame(
+        [
+            {"Run ID": 27, "Dataset": "PBMC10K", "Model": "pca", "Status": "FAILED"},
+            {"Run ID": "3801ed44-a927", "Dataset": 3, "Model": None, "Status": "ARTIFACT_SUCCESS"},
+        ]
+    )
+
+    safe = gui._arrow_safe_summary_df(df)
+
+    assert safe["Run ID"].tolist() == ["27", "3801ed44-a927"]
+    assert safe["Dataset"].tolist() == ["PBMC10K", "3"]
+    assert safe["Model"].tolist() == ["pca", ""]
+
+
 def test_selected_run_defaults_to_first_row(monkeypatch):
     from multiverse import gui
 
@@ -293,3 +310,49 @@ def test_prefill_hyperparameter_widget_state_handles_fixed_and_sweep(monkeypatch
     assert fake_state["PBMC10K::PCA::sweep::latent_dimensions::high"] == 8
     assert fake_state["PBMC10K::PCA::sweep::latent_dimensions::dist"] == "int_uniform"
     assert fake_state["PBMC10K::PCA::sweep::solver::choices"] == ["a", "b"]
+
+
+def test_find_umap_images_returns_only_supported_umap_images(tmp_path):
+    from multiverse.gui_artifacts import find_umap_images
+
+    (tmp_path / "umap.png").write_bytes(b"png")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "rna_umap.jpeg").write_bytes(b"jpeg")
+    (tmp_path / "plot.png").write_bytes(b"png")
+    (tmp_path / "umap.txt").write_text("not an image")
+
+    found = [path.relative_to(tmp_path).as_posix() for path in find_umap_images(tmp_path)]
+
+    assert found == ["nested/rna_umap.jpeg", "umap.png"]
+
+
+def test_render_artifact_tree_expands_umap_image_with_preview_and_download(tmp_path, monkeypatch):
+    from multiverse import gui_artifacts
+
+    image = tmp_path / "umap.png"
+    image.write_bytes(b"png")
+    calls = {"expander": [], "image": [], "download": [], "dataframe": []}
+
+    class Expander:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_expander(label, expanded=False):
+        calls["expander"].append((label, expanded))
+        return Expander()
+
+    monkeypatch.setattr(gui_artifacts.st, "expander", fake_expander)
+    monkeypatch.setattr(gui_artifacts.st, "image", lambda *args, **kwargs: calls["image"].append((args, kwargs)))
+    monkeypatch.setattr(gui_artifacts.st, "download_button", lambda *args, **kwargs: calls["download"].append((args, kwargs)) or False)
+    monkeypatch.setattr(gui_artifacts.st, "dataframe", lambda *args, **kwargs: calls["dataframe"].append((args, kwargs)))
+
+    gui_artifacts.render_artifact_tree(tmp_path)
+
+    assert calls["expander"] == [("umap.png (0.00 MB)", True)]
+    assert calls["image"]
+    assert calls["image"][0][0][0] == str(image)
+    assert calls["download"]
+    assert calls["download"][0][1]["file_name"] == "umap.png"

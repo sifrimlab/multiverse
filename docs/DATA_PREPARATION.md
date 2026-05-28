@@ -237,7 +237,8 @@ import h5py
 import mudata as md
 import scanpy as sc
 
-artifact_dir = Path("store/artifacts/my_experiment/pbmc_multiome/multivi/run_abc123def456")
+artifact_dir = Path("store/artifacts/run_output/store/artifacts/<artifact-id>")
+# Copy the exact path from the Results tab.
 
 with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
     latent = f["latent"][:]

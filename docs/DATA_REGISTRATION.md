@@ -1,6 +1,6 @@
 # Data Registration
 
-This how-to explains how to make a prepared dataset visible to mvexp through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` (or `python -m multiverse.runner.cli register-dataset --slug <slug>`).
+This how-to explains how to make a prepared dataset visible to mvexp through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` or `uv run multiverse register-dataset --slug <slug>`.
 
 Use [Data Preparation](DATA_PREPARATION.md) for notebook-side formatting details. This page focuses on onboarding the prepared files into the platform.
 
@@ -66,6 +66,23 @@ assert "batch" in adata.obs
 assert "cell_type" in adata.obs
 assert adata.n_obs > 0
 assert adata.n_vars > 0
+```
+
+
+## Register from the CLI
+
+For a dataset stored at `store/datasets/hello_pbmc/dataset.yaml`:
+
+```bash
+uv run multiverse register-dataset --slug hello_pbmc
+# or with an explicit manifest path
+uv run multiverse register-dataset --manifest store/datasets/hello_pbmc/dataset.yaml
+```
+
+Use `--update` when you intentionally changed an existing manifest:
+
+```bash
+uv run multiverse register-dataset --slug hello_pbmc --update
 ```
 
 ## Reference: `dataset.yaml` Fields

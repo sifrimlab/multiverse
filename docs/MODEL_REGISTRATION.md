@@ -38,10 +38,12 @@ make register-model slug=<slug>
 make register-model manifest=/path/to/model.yaml
 ```
 
-The Makefile delegates to the CLI:
+The Makefile delegates to the canonical CLI:
 
 ```bash
-uv run python -m multiverse register-model --slug <slug>
+uv run multiverse register-model --slug <slug>
+uv run multiverse register-model --manifest /path/to/model.yaml
+uv run multiverse register-model --slug <slug> --build
 ```
 
 The six built-in models (`pca`, `mofa`, `multivi`, `mowgli`, `cobolt`, `totalvi`) are registered automatically by `make bootstrap`.
@@ -132,4 +134,4 @@ Built images follow the micromamba pattern documented in [Model Container Contra
 | Model has no parameter controls | `hyperparameters_schema` path missing or schema invalid. | Validate the JSON; ensure the path is repo-relative. |
 | Model is never `Compatible` | `supported_omics` does not match any registered dataset. | Use canonical slugs: `rna`, `atac`, `adt`. |
 | Runner fails with `image not found` | Image tag in `runtime.image` does not exist on the daemon. | `docker images | grep <slug>`; run `make build-<slug>`. |
-| Model row marked `STALE` | `model.yaml` edited after registration. | Re-register: `make register-model slug=<slug>`. |
+| Model row marked `STALE` | `model.yaml` edited after registration. | Re-register: `make register-model slug=<slug>` or `uv run multiverse register-model --slug <slug>`. |

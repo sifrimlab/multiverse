@@ -10,12 +10,15 @@ install:
 .PHONY: init
 init:
 	@echo "Initializing registry state..."
-	uv run python -m multiverse.runner.cli init-db
+	uv run multiverse init-db
 
 .PHONY: setup
 setup:
-	@echo "Installing dependencies using uv (dev + ml-legacy)..."
+	@echo "Installing GUI/local-runner dependencies using uv (dev + ml-legacy)..."
 	uv sync --group dev --group ml-legacy
+
+.PHONY: gui
+gui:
 	@echo "Starting Multiverse GUI (Streamlit)..."
 	uv run python -m streamlit run multiverse/gui.py
 
@@ -29,7 +32,8 @@ bootstrap: install init register-models
 	@echo "  Next steps:"
 	@echo "    make register-all-datasets   # if datasets already exist in store/datasets/"
 	@echo "    make services-up             # start MLflow + Optuna Dashboard"
-	@echo "    make setup                   # launch the Streamlit GUI"
+	@echo "    make setup                   # install GUI/local-runner extras"
+	@echo "    make gui                     # launch the Streamlit GUI"
 
 # register-all-datasets: batch-register every dataset.yaml found under store/datasets/.
 # Safe to re-run; uses --update to refresh existing registry rows.
@@ -41,7 +45,7 @@ register-all-datasets:
 		[ -f "$$yaml" ] || continue; \
 		slug=$$(basename $$(dirname "$$yaml")); \
 		echo "  → registering '$$slug'"; \
-		uv run python -m multiverse.runner.cli register-dataset --slug "$$slug" --update || true; \
+		uv run multiverse register-dataset --slug "$$slug" --update || true; \
 		found=$$((found + 1)); \
 	done; \
 	echo "Done — $$found dataset(s) processed."
@@ -125,13 +129,13 @@ MANIFEST ?= run_manifest.yaml
 
 .PHONY: run
 run:
-	@echo "Running Multi-verse pipeline..."
-	uv run python runner.py $(CONFIG_FILE)
+	@echo "Running multiverse benchmark from manifest..."
+	uv run multiverse run --output $(OUTPUT_DIR) --manifest $(MANIFEST)
 
 .PHONY: benchmark
 benchmark:
 	@echo "Running Multi-verse benchmark from manifest..."
-	uv run python -m multiverse.runner.cli run --output $(OUTPUT_DIR) --manifest $(MANIFEST)
+	uv run multiverse run --output $(OUTPUT_DIR) --manifest $(MANIFEST)
 
 .PHONY: test
 test:
@@ -147,10 +151,10 @@ clean:
 register:
 	@if [ -n "$(slug)" ]; then \
 		echo "Registering dataset slug $(slug)"; \
-		uv run python -m multiverse.runner.cli register-dataset --slug "$(slug)"; \
+		uv run multiverse register-dataset --slug "$(slug)"; \
 	elif [ -n "$(manifest)" ]; then \
 		echo "Registering manifest $(manifest)"; \
-		uv run python -m multiverse.runner.cli register-dataset --manifest "$(manifest)"; \
+		uv run multiverse register-dataset --manifest "$(manifest)"; \
 	else \
 		echo "Usage: make register slug=<dataset-slug> OR make register manifest=/path/to/dataset.yaml"; \
 		exit 1; \
@@ -160,10 +164,10 @@ register:
 register-model:
 	@if [ -n "$(slug)" ]; then \
 		echo "Registering model slug $(slug)"; \
-		uv run python -m multiverse.runner.cli register-model --slug "$(slug)"; \
+		uv run multiverse register-model --slug "$(slug)"; \
 	elif [ -n "$(manifest)" ]; then \
 		echo "Registering model manifest $(manifest)"; \
-		uv run python -m multiverse.runner.cli register-model --manifest "$(manifest)"; \
+		uv run multiverse register-model --manifest "$(manifest)"; \
 	else \
 		echo "Usage: make register-model slug=<model-slug> OR make register-model manifest=/path/to/model.yaml"; \
 		exit 1; \
@@ -172,9 +176,9 @@ register-model:
 .PHONY: register-models
 register-models:
 	@echo "Registering all built-in models..."
-	uv run python -m multiverse.runner.cli register-model --slug pca
-	uv run python -m multiverse.runner.cli register-model --slug mofa
-	uv run python -m multiverse.runner.cli register-model --slug multivi
-	uv run python -m multiverse.runner.cli register-model --slug mowgli
-	uv run python -m multiverse.runner.cli register-model --slug cobolt
-	uv run python -m multiverse.runner.cli register-model --slug totalvi
+	uv run multiverse register-model --slug pca
+	uv run multiverse register-model --slug mofa
+	uv run multiverse register-model --slug multivi
+	uv run multiverse register-model --slug mowgli
+	uv run multiverse register-model --slug cobolt
+	uv run multiverse register-model --slug totalvi

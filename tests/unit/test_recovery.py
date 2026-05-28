@@ -58,6 +58,39 @@ def test_promoting_no_marker_quarantines_without_deletion(tmp_path):
     assert tombstone, ".quarantined tombstone must be left at the original location"
 
 
+def test_running_dead_container_without_injected_client_uses_default_client(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "registry.db")
+    _init_db(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "INSERT INTO runs (status, output_path, container_id) VALUES (?, ?, ?)",
+        ("RUNNING", "/tmp/work", "missing"),
+    )
+    conn.commit(); conn.close()
+
+    class Containers:
+        def get(self, container_id):
+            raise RuntimeError("missing")
+
+    monkeypatch.setattr(
+        registry_db,
+        "_build_recovery_docker_client",
+        lambda: SimpleNamespace(containers=Containers()),
+    )
+    old = registry_db.DB_NAME
+    registry_db.DB_NAME = db_path
+    try:
+        healed = registry_db.recover_orphaned_runs()
+    finally:
+        registry_db.DB_NAME = old
+
+    conn = sqlite3.connect(db_path)
+    status, reason = conn.execute("SELECT status, failure_reason FROM runs").fetchone()
+    conn.close()
+    assert healed == 1
+    assert (status, reason) == ("FAILED", "ORPHANED")
+
+
 def test_running_dead_container_marks_orphaned(tmp_path):
     db_path = str(tmp_path / "registry.db")
     _init_db(db_path)

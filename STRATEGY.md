@@ -1,6 +1,6 @@
 # multiverse Current Gaps and Next Moves
 
-**Recheck date:** 2026-05-27  
+**Recheck date:** 2026-05-28  
 **Scope:** Remaining work before calling the local single-user product production-grade.  
 **Product boundary:** Single-user, local workstation execution. No hosted service, cluster, multi-user, or legacy-migration requirement.
 
@@ -8,18 +8,17 @@ Completed strategy work is intentionally excluded. This file now tracks only gap
 
 ## Current Required Implementations
 
-### 1. Make the real-Docker mvd integration suite non-skipping in the target environment
+### 1. Provide deterministic real-Docker OOM evidence
 
-The code now includes optional real-Docker end-to-end coverage in `tests/integration/test_mvd_real_path.py`, but it skips unless the machine already has a local shell base image. This is correct for normal developer runs because tests must not pull from the network implicitly, but it means production-grade evidence still requires a prepared Docker test environment.
+The real-Docker mvd suite now runs against local images without requiring Docker image builds or network pulls. On this machine, the suite produced `7 passed, 1 skipped`: happy path, non-zero exit, validation failure, cancellation, crash-after-staging recovery, SQLite rebuild, and adapter smoke coverage all ran through real Docker. The only remaining skip is OOM classification because the available local Python image exits `1` under memory pressure instead of Docker reporting `OOMKilled=true`.
 
 Required work:
 
-- Preload `busybox:latest` or `alpine:latest`, or set `MVD_REAL_DOCKER_BASE_IMAGE` to a local shell image with `sh` and `cp`.
-- Run `pytest -q tests/integration/test_mvd_real_path.py tests/integration/test_mvd_real_docker_engine.py` on that prepared machine.
-- Add or provide `MVD_REAL_DOCKER_OOM_IMAGE` for deterministic OOM classification coverage, or replace the explicit image requirement with a reliable locally built OOM fixture.
-- Keep these tests optional for default local runs, but mandatory in the release/acceptance checklist.
+- Provide `MVD_REAL_DOCKER_OOM_IMAGE` as a local image that reliably triggers Docker `OOMKilled=true` under the test's memory limit, or add an equivalent deterministic local fixture.
+- Run `pytest -q -rs tests/integration/test_mvd_real_path.py tests/integration/test_mvd_real_docker_engine.py` and confirm the OOM test no longer skips.
+- Keep the OOM test optional for ordinary developer machines; make it mandatory only for release/acceptance evidence where the required local image exists.
 
-Done when: the real path, not only fake-engine unit tests or adapter smoke tests, passes happy path, non-zero exit, validation failure, cancellation, crash-after-staging recovery, SQLite rebuild, and OOM/OOM-like classification in a prepared Docker environment.
+Done when: the real-Docker suite reports all tests passing non-skipped in a prepared Docker environment, including OOM classification.
 
 ## Production-Grade Exit Criteria
 
@@ -27,8 +26,8 @@ Done when: the real path, not only fake-engine unit tests or adapter smoke tests
 |---|---|
 | GUI results persist through restart. | A GUI-launched mvd run appears in Results from the rebuildable index with artifact browsing intact. |
 | SQLite is rebuildable. | Deleting `mvexp_state.db` and running `rebuild-index` restores promoted runs and classifies incomplete attempts without deleting data. |
-| Real-path fault tests pass. | The optional real-Docker suite is run non-skipped in a prepared local Docker environment. |
+| Real-path fault tests pass. | The optional real-Docker suite runs non-skipped in a prepared local Docker environment, including deterministic OOM evidence. |
 
 ## Immediate Next Move
 
-Prepare the local/CI Docker environment with the required base image and run the real-Docker suite non-skipped. The implementation hooks are now present; the remaining gap is hard evidence from the actual Docker-backed path.
+Create or pre-load a deterministic OOM fixture image and set `MVD_REAL_DOCKER_OOM_IMAGE` for acceptance runs. The rest of the real Docker-backed path now has passing evidence on this workstation.

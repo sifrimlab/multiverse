@@ -111,6 +111,14 @@ def _is_not_found(exc: Exception) -> bool:
     return False
 
 
+def _is_not_running_conflict(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) != 409:
+        return False
+    msg = str(exc).lower()
+    return "not running" in msg or "is not running" in msg
+
+
 def _docker_volumes(volumes: Optional[Dict[str, str]]) -> Dict[str, Any]:
     """Accept the supervisor's simple host->container mapping and the
     Docker SDK's expanded mapping. Dataset-like file mounts default to
@@ -230,6 +238,8 @@ class RealDockerEngine:
         except Exception as exc:
             if _is_not_found(exc):
                 raise NoSuchContainerError(f"no such container: {container_id}") from exc
+            if _is_not_running_conflict(exc):
+                return
             raise ContainerEngineError(
                 f"Docker kill failed for {container_id}: {type(exc).__name__}: {exc}"
             ) from exc

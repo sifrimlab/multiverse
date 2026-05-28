@@ -7,9 +7,10 @@ This page documents the current execution path for turning `run_manifest.yaml` i
 | Surface | Command | Notes |
 |---|---|---|
 | Canonical CLI | `multiverse run --manifest <path> --output <dir>` | Installed command; delegates to the mvd-backed runner. |
-| Module CLI | `python -m multiverse.runner.cli run --manifest <path> --output <dir>` | Same run path, useful from a source checkout. |
+| Source checkout | `uv run multiverse run --manifest <path> --output <dir>` | Same run path without installing the package globally. |
+| Compatibility CLI | `python -m multiverse.runner.cli run --manifest <path> --output <dir>` | Kept for compatibility; prefer `multiverse`. |
 | GUI | Streamlit **Run** tab | Submits to the in-process mvd controller; it does not spawn the runner as a subprocess. |
-| Maintenance | `multiverse doctor`, `multiverse rebuild-index`, `multiverse gc --dry-run`, `multiverse mlflow-sync` | Recovery and projection commands. |
+| Maintenance | `multiverse doctor`, `multiverse rebuild-index`, `multiverse gc --dry-run`, `multiverse mlflow-sync` | Recovery and projection commands. Use `uv run multiverse ...` from a source checkout. |
 
 ## Execution Pipeline
 
@@ -52,7 +53,13 @@ flowchart LR
 
 Every successful run must contain a verified `artifact_manifest.json` and `artifact_manifest.sha256`. The manifest records logical and physical run IDs, dataset fingerprint, image identity, parameter hash, timestamps, owner token, and validated artifact entries with checksums.
 
-SQLite is an index over this state, not the scientific source of truth. If the SQLite file is lost, `multiverse rebuild-index` reconstructs run visibility from the journal and artifact store.
+SQLite is an index over this state, not the scientific source of truth. If the SQLite file is lost, `multiverse rebuild-index` reconstructs run visibility from the journal and artifact store. For the default tutorial output directory, use:
+
+```bash
+uv run multiverse rebuild-index \
+  --state-root store/artifacts/run_output \
+  --store-root store/artifacts/run_output/store
+```
 
 ## Required Outputs
 
@@ -80,3 +87,4 @@ The full I/O contract is documented in [Model Container Contract](MODEL_CONTAINE
 | Run reaches `RECOVERY_PENDING` | Promotion or recovery found data that requires user decision. | Use recovery/quarantine reports before deleting anything. |
 | MLflow has no successful entry | Projection sync is pending or failed. | The artifact bundle is still authoritative; run `multiverse mlflow-sync` later. |
 | SQLite state looks wrong | Index drift or DB loss. | Run `multiverse rebuild-index` against the state and store roots. |
+| `multiverse run` cannot import Docker SDK | The active environment was not synced from project dependencies. | Run `uv sync --group dev`, or install the package with its declared dependencies. |

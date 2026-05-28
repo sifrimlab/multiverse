@@ -35,7 +35,7 @@ You should be able to answer scientific questions such as:
 4. Register the dataset in the Registry tab.
 5. Choose dataset x model pairs in Job Builder.
 6. Set parameters in the Parameters tab.
-7. Launch the run in Execute.
+7. Launch the run in Run.
 8. Review metrics, embeddings, logs, and artifacts in Results and MLflow.
 9. Bring the selected `embeddings.h5` back into Jupyter for figures and downstream analysis.
 
@@ -47,15 +47,20 @@ Prerequisites:
 - `uv`
 - Docker with Compose v2
 
-Set up the platform:
+Set up the platform from a source checkout:
 
 ```bash
-make bootstrap
-make services-up
-make setup
+make bootstrap      # install dev deps, initialize the registry, register built-in models
+make services-up    # optional: MLflow on :5000 and Optuna Dashboard on :8080
+make setup          # optional: install GUI/local-runner extras
+make gui            # launch Streamlit on :8501
 ```
 
-Then open the GUI at `http://localhost:8501`.
+Then open the GUI at `http://localhost:8501`. For a headless run, generate or edit `run_manifest.yaml` and use:
+
+```bash
+uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output
+```
 
 In the GUI:
 
@@ -65,7 +70,7 @@ In the GUI:
 4. Click **Register Dataset**.
 5. Open **Job Builder** and select compatible dataset x model pairs.
 6. Open **Parameters** and set model hyperparameters.
-7. Open **Execute** and click **Launch Run**.
+7. Open **Run** and click **Launch Run**.
 8. Open **Results** to inspect completed runs and artifact paths.
 
 For a full guided tutorial, see [Getting Started](docs/GETTING_STARTED.md).
@@ -136,7 +141,8 @@ import h5py
 import mudata as md
 import scanpy as sc
 
-artifact_dir = Path("store/artifacts/benchmark_run/pbmc_rna_atac/pca/run_abc123def456")
+artifact_dir = Path("store/artifacts/run_output/store/artifacts/<artifact-id>")
+# In practice, copy the exact artifact directory from the Results tab.
 
 with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
     latent = f["latent"][:]

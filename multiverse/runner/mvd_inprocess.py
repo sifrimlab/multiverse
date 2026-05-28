@@ -9,19 +9,23 @@ that the GUI can call on each rerun.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from ..artifact import BootContext, compute_manifest_hash
 from ..broker import ResourceBroker
 from ..docker_supervisor import DockerSupervisor
 from ..index.sqlite_index import INDEX_FILENAME, open_index
 from ..journal import JournalLayout, JournalWriter
+from ..logging_utils import get_logger
 from ..mvd import Kernel, KernelConfig, MvdDockerExecutor, PrimaryState
 from ..promotion import StoreLayout
 from .mvd_entrypoint import _build_engine, _job_name, _observer, _options_for_job
+
+logger = get_logger(__name__)
 
 
 TERMINAL_STATES = {
@@ -59,6 +63,10 @@ class InProcessMvdController:
         self._closed = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._kernel: Optional[Kernel] = None
+        self._mlflow_run_id_by_attempt: Dict[str, str] = {}
+        self._mlflow_sync_in_flight: Set[str] = set()
+        self._mlflow_sync_done: Set[str] = set()
+        self._mlflow_lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._thread_main,
             name=f"mvd-gui-{self.state_root.name}",
@@ -163,16 +171,37 @@ class InProcessMvdController:
     ) -> List[SubmittedRun]:
         kernel = self._require_kernel()
         manifest_hash = compute_manifest_hash(manifest_text or "")
+        experiment_name = _experiment_name_from_manifest(manifest_text)
+        tracking_uri = _mlflow_tracking_uri()
         submitted: List[SubmittedRun] = []
         projected_attempts: List[str] = []
         for job in pending_jobs:
             if job.get("_skipped"):
                 continue
             options = _options_for_job(job, manifest_hash=manifest_hash, seed=seed)
+            if experiment_name:
+                options["experiment_name"] = experiment_name
+            parent_run_id = _maybe_start_parent_mlflow_run(
+                job=job,
+                experiment_name=experiment_name,
+                tracking_uri=tracking_uri,
+            )
+            env_extra: Dict[str, str] = {}
+            if tracking_uri:
+                env_extra["MLFLOW_TRACKING_URI"] = _rewrite_tracking_uri_for_docker(tracking_uri)
+            if experiment_name:
+                env_extra["MLFLOW_EXPERIMENT_NAME"] = experiment_name
+            if parent_run_id:
+                env_extra["MLFLOW_RUN_ID"] = parent_run_id
+            if env_extra:
+                options["container_env_extra"] = env_extra
             attempt_id = await kernel.submit_run(
                 manifest_path=str(manifest_path),
                 options=options,
             )
+            if parent_run_id:
+                with self._mlflow_lock:
+                    self._mlflow_run_id_by_attempt[attempt_id] = parent_run_id
             projected_attempts.append(attempt_id)
             submitted.append(
                 SubmittedRun(
@@ -230,12 +259,262 @@ class InProcessMvdController:
             # The SQLite index is a rebuildable GUI projection. Do not let a
             # read-only/corrupt projection database block kernel queries or run
             # cancellation; the journal remains authoritative.
+            pass
+        self._maybe_schedule_mlflow_syncs(snapshots)
+
+    def _maybe_schedule_mlflow_syncs(self, snapshots: Iterable[Dict[str, Any]]) -> None:
+        """Kick off MLflow sync for each newly-successful run with a
+        pending tracking projection. Idempotent: each attempt_id is synced
+        at most once per controller lifetime."""
+        loop = getattr(self, "_loop", None)
+        if loop is None:
             return
+        if not hasattr(self, "_mlflow_lock"):
+            return
+        for snap in snapshots:
+            if snap.get("primary_state") != PrimaryState.ARTIFACT_SUCCESS.value:
+                continue
+            projections = snap.get("projections") or {}
+            if projections.get("mlflow") != "TRACKING_PENDING":
+                continue
+            attempt_id = str(snap["physical_attempt_id"])
+            bundle_dir = snap.get("artifact_dir")
+            if not bundle_dir:
+                continue
+            with self._mlflow_lock:
+                if attempt_id in self._mlflow_sync_done:
+                    continue
+                if attempt_id in self._mlflow_sync_in_flight:
+                    continue
+                self._mlflow_sync_in_flight.add(attempt_id)
+                parent_run_id = self._mlflow_run_id_by_attempt.get(attempt_id)
+            options = snap.get("options") or {}
+            experiment_name = str(options.get("experiment_name") or "multiverse")
+            asyncio.run_coroutine_threadsafe(
+                self._run_mlflow_sync(
+                    attempt_id=attempt_id,
+                    bundle_dir=Path(bundle_dir),
+                    experiment_name=experiment_name,
+                    existing_run_id=parent_run_id,
+                ),
+                loop,
+            )
+
+    async def _run_mlflow_sync(
+        self,
+        *,
+        attempt_id: str,
+        bundle_dir: Path,
+        experiment_name: str,
+        existing_run_id: Optional[str],
+    ) -> None:
+        """Run the MLflow sync off the loop and report the outcome to the
+        kernel. Exceptions are swallowed so a misconfigured MLflow doesn't
+        knock out the controller."""
+        try:
+            result = await asyncio.get_running_loop().run_in_executor(
+                None,
+                _do_mlflow_sync,
+                bundle_dir,
+                experiment_name,
+                existing_run_id,
+            )
+            kernel = self._kernel
+            if kernel is not None and result is not None:
+                try:
+                    await kernel.report_projection_status(
+                        plugin="mlflow",
+                        physical_attempt_id=attempt_id,
+                        status=result.outcome.value,
+                        details=(
+                            {"failure_reason": result.failure_reason}
+                            if result.failure_reason
+                            else {"target_run_id": result.target_run_id or ""}
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "report_projection_status for %s failed: %s", attempt_id, exc
+                    )
+        finally:
+            with self._mlflow_lock:
+                self._mlflow_sync_in_flight.discard(attempt_id)
+                self._mlflow_sync_done.add(attempt_id)
 
     def _require_kernel(self) -> Kernel:
         if self._kernel is None:
             raise RuntimeError("mvd kernel has not been initialised")
         return self._kernel
+
+
+def _do_mlflow_sync(
+    bundle_dir: Path,
+    experiment_name: str,
+    existing_run_id: Optional[str],
+):
+    """Thread-pool worker that runs the MLflow sync against a real target.
+
+    Returns a ``SyncResult`` or ``None`` on import / target construction
+    failures (treated as "tracking not configured" by the caller).
+    """
+    try:
+        from ..projection.mlflow_sync import sync_artifact_bundle
+    except Exception as exc:
+        logger.warning("projection.mlflow_sync unavailable: %s", exc)
+        return None
+    target = _build_real_mlflow_target()
+    if target is None:
+        return None
+    try:
+        return sync_artifact_bundle(
+            bundle_dir=bundle_dir,
+            target=target,
+            experiment_name=experiment_name,
+            existing_run_id=existing_run_id,
+        )
+    except Exception as exc:
+        logger.warning("MLflow sync_artifact_bundle raised: %s", exc)
+        return None
+
+
+def _build_real_mlflow_target():
+    """Construct a real MLflow target using the local ``mlflow`` SDK.
+
+    Mirrors ``cli_entrypoints._build_mlflow_target`` so the GUI controller
+    and the standalone ``multiverse mlflow-sync`` CLI hit the same server
+    with the same auth flow.
+    """
+    try:
+        import mlflow  # type: ignore
+    except Exception as exc:
+        logger.warning("mlflow SDK unavailable; skipping sync. (%s)", exc)
+        return None
+
+    uri = _mlflow_tracking_uri() or "http://localhost:5000"
+
+    class _RealAdapter:
+        name = "mlflow"
+
+        def __init__(self) -> None:
+            mlflow.set_tracking_uri(uri)
+
+        def create_run(self, *, experiment_name, run_name, tags):
+            mlflow.set_experiment(experiment_name)
+            with mlflow.start_run(run_name=run_name, tags=dict(tags)) as run:
+                return run.info.run_id
+
+        def log_params(self, *, run_id, params):
+            with mlflow.start_run(run_id=run_id):
+                mlflow.log_params(dict(params))
+
+        def log_metrics(self, *, run_id, metrics):
+            with mlflow.start_run(run_id=run_id):
+                mlflow.log_metrics(dict(metrics))
+
+        def log_artifact(self, *, run_id, path):
+            with mlflow.start_run(run_id=run_id):
+                mlflow.log_artifact(path)
+
+        def set_terminal_status(self, *, run_id, status):
+            client = mlflow.tracking.MlflowClient()
+            client.set_terminated(run_id, status=status)
+
+    try:
+        return _RealAdapter()
+    except Exception as exc:
+        logger.warning("could not construct MLflow target: %s", exc)
+        return None
+
+
+def _mlflow_tracking_uri() -> Optional[str]:
+    """Return the configured MLflow tracking URI, or None to skip MLflow."""
+    return os.environ.get("MLFLOW_TRACKING_URI") or "http://localhost:5000"
+
+
+def _rewrite_tracking_uri_for_docker(uri: str) -> str:
+    """Replace localhost in a tracking URI with host.docker.internal so
+    a container can reach an MLflow server bound to the host."""
+    return uri.replace("//localhost", "//host.docker.internal").replace(
+        "//127.0.0.1", "//host.docker.internal"
+    )
+
+
+def _maybe_start_parent_mlflow_run(
+    *,
+    job: Dict[str, Any],
+    experiment_name: Optional[str],
+    tracking_uri: Optional[str],
+) -> Optional[str]:
+    """Create an MLflow parent run for ``job`` and return its run_id.
+
+    Returns ``None`` if MLflow is unavailable, the tracking URI is unset,
+    or run creation fails. The container's EpochLogger attaches to the
+    parent run via ``MLFLOW_RUN_ID``; the controller's post-success sync
+    appends final scalars + artifacts to the same run.
+    """
+    if not tracking_uri:
+        return None
+    try:
+        from ..tracking import start_parent_mlflow_run
+    except Exception as exc:
+        logger.warning("MLflow tracking helpers unavailable: %s", exc)
+        return None
+
+    job_context: Dict[str, Any] = {
+        "experiment_name": experiment_name or "multiverse",
+        "dataset_name": job.get("dataset_name") or job.get("dataset_slug") or "dataset",
+        "dataset_slug": job.get("dataset_slug") or job.get("dataset_name") or "dataset",
+        "mlflow_tracking_uri": tracking_uri,
+    }
+    job_spec: Dict[str, Any] = {
+        "model_name": job.get("model_name") or job.get("model_slug") or "model",
+        "hyperparameters": {
+            (job.get("model_slug") or job.get("model_name") or "model"): dict(
+                job.get("model_params") or {}
+            ),
+        },
+        "run_settings": {
+            "mlflow_tracking_uri": tracking_uri,
+            "mlflow_experiment_name": experiment_name or "multiverse",
+        },
+    }
+    run_name = f"{job_context['dataset_name']}-{job_spec['model_name']}"
+    try:
+        return start_parent_mlflow_run(
+            job_context=job_context,
+            job_spec=job_spec,
+            run_name=run_name,
+        )
+    except Exception as exc:
+        logger.warning("start_parent_mlflow_run failed: %s", exc)
+        return None
+
+
+def _experiment_name_from_manifest(manifest_text: str) -> Optional[str]:
+    """Pull ``globals.experiment_name`` out of a manifest's YAML text.
+
+    Returns ``None`` if PyYAML is unavailable, the text is unparseable, or
+    no experiment name is set. Tolerated as best-effort: the sync falls
+    back to a default experiment when this returns ``None``.
+    """
+    if not manifest_text:
+        return None
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return None
+    try:
+        data = yaml.safe_load(manifest_text)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    globals_block = data.get("globals") if isinstance(data.get("globals"), dict) else {}
+    name = (
+        globals_block.get("experiment_name")
+        or data.get("experiment_name")
+    )
+    return str(name) if name else None
 
 
 _CONTROLLERS: Dict[Path, InProcessMvdController] = {}

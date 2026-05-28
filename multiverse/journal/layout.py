@@ -10,6 +10,7 @@ CURRENT_SEGMENT_NAME = "current.log"
 ROTATED_SUBDIR = "rotated"
 BLOBS_SUBDIR = "blobs"
 CHECKPOINT_FILENAME = "checkpoint.json"
+WRITER_LOCK_FILENAME = ".writer.lock"
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,10 @@ class JournalLayout:
     @property
     def checkpoint(self) -> Path:
         return self.root / CHECKPOINT_FILENAME
+
+    @property
+    def writer_lock(self) -> Path:
+        return self.root / WRITER_LOCK_FILENAME
 
     def ensure(self) -> "JournalLayout":
         self.root.mkdir(parents=True, exist_ok=True)

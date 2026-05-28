@@ -384,15 +384,38 @@ class Kernel:  # implements KernelAPI
             # Kernel shutdown.
             raise
         except Exception as exc:
-            # Last-resort: if the executor raises, the run goes FAILED.
+            reason = f"executor crashed: {type(exc).__name__}: {exc}"
             try:
-                await self.transition(
-                    record.physical_attempt_id,
-                    to_state=PrimaryState.FAILED,
-                    reason=f"executor crashed: {type(exc).__name__}: {exc}",
-                )
+                if record.primary_state is PrimaryState.PROMOTING:
+                    await self.transition(
+                        record.physical_attempt_id,
+                        to_state=PrimaryState.PROMOTION_FAILED,
+                        reason=reason,
+                    )
+                    await self.transition(
+                        record.physical_attempt_id,
+                        to_state=PrimaryState.RECOVERY_PENDING,
+                        reason="promotion crashed; recovery required",
+                    )
+                elif record.primary_state is PrimaryState.EVALUATING:
+                    await self.transition(
+                        record.physical_attempt_id,
+                        to_state=PrimaryState.EVALUATION_FAILED,
+                        reason=reason,
+                    )
+                    await self.transition(
+                        record.physical_attempt_id,
+                        to_state=PrimaryState.RECOVERY_PENDING,
+                        reason="evaluation crashed; recovery required",
+                    )
+                else:
+                    await self.transition(
+                        record.physical_attempt_id,
+                        to_state=PrimaryState.FAILED,
+                        reason=reason,
+                    )
             except ValueError:
-                # Already terminal; nothing to do.
+                # Already terminal or no legal crash transition remains.
                 pass
 
     async def _broadcast(self, event: KernelEvent) -> None:

@@ -76,14 +76,18 @@ def test_generate_execution_plan_from_manifest():
 
     plan = generate_execution_plan_from_manifest(conn, manifest_data)
 
-    # Expected: dataset1+pca and dataset2+mofa; dataset2+pca is skipped
-    assert len(plan) == 2
+    # Explicit manifests are user submissions, so prior SUCCESS rows do not dedupe them.
+    assert len(plan) == 3
 
     job1 = next(j for j in plan if j["dataset_name"] == "dataset1")
     assert job1["model_name"] == "pca"
 
-    job2 = next(j for j in plan if j["dataset_name"] == "dataset2")
+    job2 = next(j for j in plan if j["dataset_name"] == "dataset2" and j["model_name"] == "mofa")
     assert job2["model_name"] == "mofa"
+    assert job2["artifact_dir_name"].startswith("manifest_dataset2_mofa_")
+
+    job2_pca = next(j for j in plan if j["dataset_name"] == "dataset2" and j["model_name"] == "pca")
+    assert job2_pca["artifact_dir_name"].startswith("manifest_dataset2_pca_")
 
 
 if __name__ == "__main__":

@@ -12,15 +12,26 @@ This tutorial walks through a first mvexp benchmark, from a Jupyter-prepared obj
 
 ## Before You Start
 
-Install dependencies, initialize the registry, start observability services, then launch the GUI:
+Install dependencies, initialize the registry, optionally start observability services, then launch the GUI:
 
 ```bash
-make bootstrap      # uv sync + create SQLite registry + register built-in models
-make services-up    # MLflow on :5000, Optuna Dashboard on :8080
-make setup          # install ML dependencies and start Streamlit on :8501
+make bootstrap      # uv sync --group dev + init registry + register built-in models
+make services-up    # optional: MLflow on :5000, Optuna Dashboard on :8080
+make setup          # optional: GUI/local-runner extras such as Streamlit and Scanpy
+make gui            # Streamlit on :8501
 ```
 
-Open `http://localhost:8501`. You do not need to run `docker` commands by hand during normal use; the orchestrator manages model containers on your behalf.
+Open `http://localhost:8501`. You do not need to run `docker` commands by hand during normal use; the mvd-backed runner manages model containers on your behalf.
+
+The same setup can be driven directly through the canonical CLI:
+
+```bash
+uv run multiverse init-db
+uv run multiverse register-model --slug pca
+uv run multiverse register-model --slug multivi
+uv run multiverse register-dataset --slug pbmc_rna
+uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output
+```
 
 ## Step 1: Prepare Data in Jupyter
 
@@ -94,6 +105,8 @@ The CLI equivalent, useful for scripted workflows:
 
 ```bash
 make register slug=pbmc_rna
+# or
+uv run multiverse register-dataset --slug pbmc_rna
 ```
 
 ## Step 4: Configure the Benchmark
@@ -110,10 +123,18 @@ The resulting `run_manifest.yaml` is part of your scientific record. See [Run Ma
 
 ## Step 5: Launch and Monitor
 
+In the GUI:
+
 1. Open the **Run** tab.
-2. Confirm the manifest path.
+2. Confirm the manifest path and output directory, usually `store/artifacts/run_output`.
 3. Click **Launch Run**.
 4. Watch the status table. Jobs cycle through kernel states such as `PENDING -> RUNNING -> PROMOTING -> ARTIFACT_SUCCESS`, or `FAILED` / `CANCELLED`.
+
+From the CLI:
+
+```bash
+uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output
+```
 
 
 ## Step 6: Inspect Results
@@ -126,13 +147,14 @@ The resulting `run_manifest.yaml` is part of your scientific record. See [Run Ma
 The artifact layout is:
 
 ```text
-store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
-  run_manifest.yaml
+<output-dir>/store/artifacts/<artifact-id>/
+  artifact_manifest.json
+  artifact_manifest.sha256
   job_spec.json
   embeddings.h5
-  metrics.json
-  umap.png
-  container.log
+  metrics.json        # optional
+  umap.png            # optional
+  container.log       # optional
 ```
 
 For cross-run comparison and metric histories, open the **Analysis** tab or visit MLflow at `http://localhost:5000` directly.
@@ -144,7 +166,8 @@ from pathlib import Path
 import h5py
 import scanpy as sc
 
-artifact_dir = Path("store/artifacts/pbmc-benchmark/pbmc_rna/pca/run_abc123def456")
+artifact_dir = Path("store/artifacts/run_output/store/artifacts/<artifact-id>")
+# Copy the exact path from the Results tab.
 
 with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
     embedding = f["latent"][:]
@@ -164,7 +187,7 @@ sc.pl.umap(adata, color=["batch", "cell_type"])
 | Dataset does not appear in Configure | Registry has not refreshed. | Registry → **Refresh Registry**. |
 | Job is `FAILED` | Docker launch, container execution, or output validation failed. | Inspect the run failure reason and preserved logs. |
 | Metric is missing | `batch_key` or `cell_type_key` does not support that metric. | Confirm columns exist in your `obs`; re-register if you fix them. |
-| `database is locked` | Concurrent writes on SQLite. | Transient; the registry uses WAL mode and retries. |
+| `database is locked` | Concurrent registry writes or an interrupted process. | Retry. If Results looks stale, run `uv run multiverse rebuild-index --state-root store/artifacts/run_output --store-root store/artifacts/run_output/store`. |
 
 ## Writing Your Methods Section
 

@@ -376,6 +376,18 @@ def mark_model_inactive(slug: str, version: Optional[str] = None) -> bool:
     conn.close()
     return changed
 
+def _build_recovery_docker_client() -> Any | None:
+    """Return a live Docker client for recovery, or None if Docker is unavailable."""
+    try:
+        import docker  # type: ignore
+
+        client = docker.from_env()
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
 def recover_orphaned_runs(docker_client: Any = None, reattach_callback: Any = None) -> int:
     """Heal runs left in non-terminal FSM states by a crashed orchestrator.
 
@@ -409,6 +421,9 @@ def recover_orphaned_runs(docker_client: Any = None, reattach_callback: Any = No
         _StoreLayout = None  # type: ignore[assignment]
         _quarantine_directory = None  # type: ignore[assignment]
         _OwnershipMismatchError = Exception  # type: ignore[assignment]
+
+    if docker_client is None:
+        docker_client = _build_recovery_docker_client()
 
     conn = get_db_connection()
     cursor = conn.cursor()

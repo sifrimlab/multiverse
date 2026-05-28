@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -87,8 +87,8 @@ class MvdDockerExecutor:
     state_root: Path
     mvd_version: str = "0.1.0-mvd"
     git_commit: Optional[str] = None
-    poll_interval_seconds: float = 0.05
-    max_poll_iterations: int = 1200
+    poll_interval_seconds: float = 1.0
+    max_poll_iterations: int = 86400
     producer_hook: Optional[ProducerHook] = None
     """Tests pass a callable that synthesizes container outputs into the
     workspace right after launch. Production leaves this None."""
@@ -146,6 +146,11 @@ class MvdDockerExecutor:
             # ---- 2. WORKSPACE ----
             workspace = self.store.workspaces / record.physical_attempt_id
             workspace.mkdir(parents=True, exist_ok=True)
+            # Model images may run as container-specific UIDs. This directory
+            # is per-attempt scratch owned by mvd, so make the bind mount
+            # writable before launch instead of requiring every image to run as
+            # the host user.
+            workspace.chmod(0o777)
             record.workspace_dir = str(workspace)
             self._write_job_spec(spec, workspace)
 
@@ -392,6 +397,7 @@ class _ExecutorJobSpec:
     container_entrypoint: Optional[str]
     validators: ValidationLevel
     seed: Optional[int]
+    env_extra: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_options(
@@ -432,6 +438,9 @@ class _ExecutorJobSpec:
             or f"{fingerprint['slug']}_{str(_req('model_slug'))}_{attempt_id[:8]}"
         )
 
+        env_extra_raw = options.get("container_env_extra") or {}
+        env_extra = {str(k): str(v) for k, v in dict(env_extra_raw).items()}
+
         return cls(
             physical_attempt_id=attempt_id,
             model_slug=str(_req("model_slug")),
@@ -465,15 +474,18 @@ class _ExecutorJobSpec:
             ),
             validators=validators,
             seed=(int(options["seed"]) if options.get("seed") is not None else None),
+            env_extra=env_extra,
         )
 
     @property
     def container_env(self) -> Dict[str, str]:
-        return {
+        base = {
             "MVR_INPUT_DATA_PATH": "/input/data.h5mu",
             "MVR_OUTPUT_DIR": "/output",
             "MVR_JOB_SPEC_PATH": "/output/job_spec.json",
         }
+        base.update(self.env_extra)
+        return base
 
     def container_volumes(self, workspace: Path) -> Dict[str, str]:
         return {
@@ -513,6 +525,7 @@ def build_executor_options(
     validators: str = "basic",
     artifact_dir_name: Optional[str] = None,
     seed: Optional[int] = None,
+    container_env_extra: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     """Build a canonical ``options`` dict for ``Kernel.submit_run``.
 
@@ -546,4 +559,8 @@ def build_executor_options(
         out["container_entrypoint"] = str(container_entrypoint)
     if artifact_dir_name:
         out["artifact_dir_name"] = artifact_dir_name
+    if container_env_extra:
+        out["container_env_extra"] = {
+            str(k): str(v) for k, v in dict(container_env_extra).items()
+        }
     return out

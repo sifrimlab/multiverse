@@ -54,18 +54,21 @@ Set `globals.run_gridsearch: true` in the manifest (or toggle the sweep controls
 Every successful run is promoted to an artifact directory similar to:
 
 ```text
-store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
-  run_manifest.yaml
+<output-dir>/store/artifacts/<artifact-id>/
+  artifact_manifest.json
+  artifact_manifest.sha256
   job_spec.json
   embeddings.h5
-  metrics.json
-  umap.png
-  container.log
+  metrics.json        # optional
+  metrics.jsonl       # optional
+  umap.png            # optional
+  container.log       # optional
 ```
 
 | File | Why it matters |
 |---|---|
-| `run_manifest.yaml` | The benchmark recipe: datasets, models, parameters, metrics, seed, and experiment name. |
+| `artifact_manifest.json` | Durable bundle metadata: run IDs, dataset fingerprint, image identity, checksums, and validated artifact entries. |
+| `artifact_manifest.sha256` | Sidecar checksum for the artifact manifest. |
 | `job_spec.json` | The exact per-run instruction passed to the model. |
 | `embeddings.h5` | The latent representation used for evaluation and downstream notebook work. |
 | `metrics.json` | Model-level diagnostics and final metric histories where available. |

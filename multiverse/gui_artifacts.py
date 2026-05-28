@@ -22,6 +22,22 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+
+
+def find_umap_images(artifact_dir: Path) -> list[Path]:
+    artifact_dir = Path(artifact_dir)
+    if not artifact_dir.exists() or not artifact_dir.is_dir():
+        return []
+    images = [
+        path
+        for path in artifact_dir.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in IMAGE_SUFFIXES
+        and "umap" in path.stem.lower()
+    ]
+    return sorted(images, key=lambda p: str(p.relative_to(artifact_dir)))
+
 
 def render_download_button(
     path: Path,
@@ -91,6 +107,21 @@ def render_log_viewer(log_path: Path, *, default_tail: int = 200, with_filter: b
     st.caption(f"Showing {min(int(tail), len(visible))} of {len(visible)} matching line(s).")
 
 
+
+def _render_image_preview(path: Path, *, max_preview_mb: float = 25) -> None:
+    path = Path(path)
+    size_mb = path.stat().st_size / (1024 * 1024)
+    if size_mb <= max_preview_mb:
+        st.image(str(path), caption=path.name)
+    else:
+        st.caption(
+            f"Preview skipped because `{path.name}` is {size_mb:.1f} MB, "
+            f"larger than the {max_preview_mb:g} MB image preview limit."
+        )
+        st.code(str(path), language=None)
+    render_download_button(path, f"Download {path.name}")
+
+
 def render_artifact_tree(artifact_dir: Path, *, max_inline_mb: float = 200) -> None:
     artifact_dir = Path(artifact_dir)
     if not artifact_dir.exists() or not artifact_dir.is_dir():
@@ -112,9 +143,14 @@ def render_artifact_tree(artifact_dir: Path, *, max_inline_mb: float = 200) -> N
     for path in files:
         rel = path.relative_to(artifact_dir)
         size_mb = path.stat().st_size / (1024 * 1024)
-        with st.expander(f"{rel} ({size_mb:.2f} MB)", expanded=False):
-            render_download_button(path, f"Download artifact {rel}")
-            if path.suffix.lower() in TEXT_SUFFIXES and size_mb <= max_inline_mb:
-                st.code(path.read_text(encoding="utf-8", errors="replace")[:20000], language=None)
-            elif size_mb > max_inline_mb:
-                st.caption(f"Preview skipped because the file is larger than {max_inline_mb:g} MB.")
+        suffix = path.suffix.lower()
+        is_umap_image = suffix in IMAGE_SUFFIXES and "umap" in path.stem.lower()
+        with st.expander(f"{rel} ({size_mb:.2f} MB)", expanded=is_umap_image):
+            if suffix in IMAGE_SUFFIXES:
+                _render_image_preview(path, max_preview_mb=max_inline_mb)
+            else:
+                render_download_button(path, f"Download artifact {rel}")
+                if suffix in TEXT_SUFFIXES and size_mb <= max_inline_mb:
+                    st.code(path.read_text(encoding="utf-8", errors="replace")[:20000], language=None)
+                elif size_mb > max_inline_mb:
+                    st.caption(f"Preview skipped because the file is larger than {max_inline_mb:g} MB.")

@@ -1,5 +1,5 @@
 globals:
-  experiment_name: testname1
+  experiment_name: testname123
   random_seed: 42
   run_user_params: true
   run_gridsearch: false

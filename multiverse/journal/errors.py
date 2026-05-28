@@ -19,3 +19,12 @@ class JournalCorruptError(JournalError):
 class JournalReplayError(JournalError):
     """Replay could not reconstruct a coherent intent record from the
     journal — e.g. the seq counter goes backwards across segments."""
+
+
+class JournalLocked(JournalError):
+    """Another writer already holds the journal's exclusive flock.
+
+    Two writers on the same journal would each maintain an independent seq
+    counter and produce duplicate seqs — guaranteed corruption — so the
+    second opener fails fast.
+    """

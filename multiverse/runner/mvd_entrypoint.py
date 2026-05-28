@@ -212,7 +212,11 @@ def _options_for_job(job: Dict[str, Any], *, manifest_hash: str, seed: int | Non
         model_version=str(job.get("model_version") or "0.0.0"),
         manifest_text="",
         validators=str(job.get("validators") or "basic"),
-        artifact_dir_name=os.path.basename(str(job.get("output_path") or "")) or None,
+        artifact_dir_name=(
+            str(job.get("artifact_dir_name"))
+            if job.get("artifact_dir_name")
+            else os.path.basename(str(job.get("output_path") or "")) or None
+        ),
         mem_limit=job.get("mem_limit"),
         seed=seed,
     ) | {"manifest_hash": manifest_hash}
