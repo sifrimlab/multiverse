@@ -186,6 +186,29 @@ def replay_history(
                 ep.log(step=step, **row)
     return cleaned
 
+def sanitize_nan_inf(obj: Any) -> Any:
+    """Recursively replace NaN and +/-Inf float values with None, and convert non-serializable numeric types to Python natives."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    try:
+        import numpy as np
+
+        if isinstance(obj, np.floating):
+            v = float(obj)
+            return v if math.isfinite(v) else None
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return [sanitize_nan_inf(x) for x in obj.tolist()]
+    except ImportError:
+        pass
+    if isinstance(obj, dict):
+        return {key: sanitize_nan_inf(value) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_nan_inf(value) for value in obj]
+    if isinstance(obj, tuple):
+        return tuple(sanitize_nan_inf(value) for value in obj)
+    return obj
 
 # ---------------------------------------------------------------------------
 # Reusable adapter templates. Copy into your container/run.py as needed.

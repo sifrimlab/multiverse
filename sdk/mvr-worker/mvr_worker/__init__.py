@@ -12,6 +12,7 @@ from .io import (
     save_umap,
     setup_container_logging,
 )
+from .base import ModelFactory
 from .logging import get_logger, setup_logging
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "save_umap",
     "setup_container_logging",
     "setup_logging",
+    "ModelFactory",
 ]
