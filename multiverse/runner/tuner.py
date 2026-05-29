@@ -4,8 +4,6 @@ import sqlite3
 from typing import Any, Dict
 
 from ..logging_utils import get_logger
-from ..tracking import load_run_metrics
-from .docker_runner import run_job_container_sync
 
 logger = get_logger(__name__)
 
@@ -47,35 +45,10 @@ def _extract_metric(metrics: Dict[str, Any], metric_name: str) -> float:
 
 
 def objective(trial: Any, job_manifest: Dict[str, Any]) -> float:
-    optuna = __import__("optuna")
-
-    params = sample_hyperparameters(trial, job_manifest["search_space"])
-    run_settings = dict(job_manifest.get("run_settings", {}))
-    run_settings["optuna_trial_id"] = trial.number
-    mlflow_tags = dict(run_settings.get("mlflow_tags", {}))
-    mlflow_tags["optuna_trial_id"] = str(trial.number)
-    run_settings["mlflow_tags"] = mlflow_tags
-
-    trial_job = dict(job_manifest)
-    trial_job["hyperparameters"] = params
-    trial_job["run_settings"] = run_settings
-    trial_job["name"] = f"{job_manifest.get('name', 'sweep')}_trial_{trial.number}"
-
-    result = run_job_container_sync(
-        trial_job,
-        seed=int(job_manifest.get("seed", 42)),
-        use_gpu=bool(job_manifest.get("use_gpu", True)),
-        mem_limit=str(job_manifest.get("mem_limit", "16g")),
+    raise NotImplementedError(
+        "The legacy docker_runner sweep path was removed in G6. "
+        "Wire MvdDockerExecutor / MvdSlurmExecutor into your Optuna objective instead."
     )
-    if result["exit_code"] != 0:
-        logger.warning(f"Trial {trial.number} failed container execution; pruning.")
-        raise optuna.exceptions.TrialPruned()
-
-    metrics_payload = load_run_metrics(result["output_path"])
-    if not metrics_payload:
-        raise RuntimeError(f"metrics.json missing for successful trial at {result['output_path']}")
-
-    return _extract_metric(metrics_payload, str(job_manifest["optimize_metric"]))
 
 
 def _apply_wal_mode_to_optuna_db(storage_uri: str) -> None:

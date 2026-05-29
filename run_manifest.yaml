@@ -1,5 +1,5 @@
 globals:
-  experiment_name: testname123
+  experiment_name: benchtest
   random_seed: 42
   run_user_params: true
   run_gridsearch: false
@@ -18,7 +18,7 @@ jobs:
   model_name: MOFA
   model_params:
     device: cuda:0
-    n_iterations: 10
+    n_iterations: 20
     n_factors: 2
     umap_random_state: 42
     umap_color_type: cell_type

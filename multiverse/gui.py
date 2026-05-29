@@ -1479,15 +1479,18 @@ def _fetch_runs(
 
 
 def _mvd_state_root_for_results() -> Path:
+    from multiverse.state_paths import resolve_state_root
+
     output_dir = (
         st.session_state.get("_mvd_output_dir")
         or st.session_state.get("exec_output_dir")
-        or "store/artifacts/run_output"
     )
-    root = Path(str(output_dir)).expanduser()
-    if not root.is_absolute():
-        root = (Path(__file__).resolve().parents[1] / root).resolve()
-    return root
+    if output_dir:
+        root = Path(str(output_dir)).expanduser()
+        if not root.is_absolute():
+            root = (resolve_state_root() / root).resolve()
+        return root
+    return resolve_state_root()
 
 
 def _mvd_snapshot_to_results_row(snap: dict, *, source: str) -> dict:

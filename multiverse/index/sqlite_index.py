@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 INDEX_FILENAME = "mvexp_state.db"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "4"
 
 
 _SCHEMA_SQL = """
@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS runs (
     cancel_requested      INTEGER NOT NULL DEFAULT 0,
     submitted_wall_iso    TEXT,
     last_seq              INTEGER NOT NULL DEFAULT 0,
-    options_json          TEXT
+    options_json          TEXT,
+    user_id               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_state ON runs (primary_state);
 CREATE INDEX IF NOT EXISTS idx_runs_logical ON runs (logical_run_id);
@@ -59,6 +60,19 @@ CREATE TABLE IF NOT EXISTS run_projections (
     PRIMARY KEY (physical_attempt_id, plugin),
     FOREIGN KEY (physical_attempt_id) REFERENCES runs (physical_attempt_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS reservation_events (
+    physical_attempt_id TEXT NOT NULL,
+    seq                 INTEGER NOT NULL,
+    kind                TEXT NOT NULL,
+    wall_iso            TEXT NOT NULL,
+    ram_bytes           INTEGER,
+    gpu_index           INTEGER,
+    release_reason      TEXT,
+    PRIMARY KEY (physical_attempt_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_resv_attempt
+    ON reservation_events (physical_attempt_id);
 
 CREATE TABLE IF NOT EXISTS rebuild_reports (
     rebuilt_at_iso        TEXT PRIMARY KEY,
@@ -107,8 +121,9 @@ class SqliteIndex:
                 INSERT INTO runs (
                     physical_attempt_id, logical_run_id, primary_state,
                     failure_reason, artifact_dir, workspace_dir, manifest_path,
-                    cancel_requested, submitted_wall_iso, last_seq, options_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cancel_requested, submitted_wall_iso, last_seq, options_json,
+                    user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(physical_attempt_id) DO UPDATE SET
                     logical_run_id     = excluded.logical_run_id,
                     primary_state      = excluded.primary_state,
@@ -119,7 +134,8 @@ class SqliteIndex:
                     cancel_requested   = excluded.cancel_requested,
                     submitted_wall_iso = excluded.submitted_wall_iso,
                     last_seq           = MAX(runs.last_seq, excluded.last_seq),
-                    options_json       = excluded.options_json
+                    options_json       = excluded.options_json,
+                    user_id            = COALESCE(excluded.user_id, runs.user_id)
                 """,
                 (
                     record["physical_attempt_id"],
@@ -133,6 +149,7 @@ class SqliteIndex:
                     record.get("submitted_wall_iso"),
                     int(record.get("last_seq") or 0),
                     json.dumps(record.get("options") or {}, sort_keys=True),
+                    record.get("user_id"),
                 ),
             )
 
@@ -208,6 +225,50 @@ class SqliteIndex:
         )
         return {plugin: status for plugin, status in cur.fetchall()}
 
+    def upsert_reservation_event(
+        self,
+        *,
+        physical_attempt_id: str,
+        seq: int,
+        kind: str,
+        wall_iso: str,
+        ram_bytes: Optional[int] = None,
+        gpu_index: Optional[int] = None,
+        release_reason: Optional[str] = None,
+    ) -> None:
+        with self.conn:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO reservation_events
+                    (physical_attempt_id, seq, kind, wall_iso,
+                     ram_bytes, gpu_index, release_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    physical_attempt_id,
+                    int(seq),
+                    kind,
+                    wall_iso,
+                    ram_bytes,
+                    gpu_index,
+                    release_reason,
+                ),
+            )
+
+    def list_reservation_events(
+        self, physical_attempt_id: str
+    ) -> List[Dict[str, Any]]:
+        cur = self.conn.execute(
+            "SELECT * FROM reservation_events WHERE physical_attempt_id = ? "
+            "ORDER BY seq ASC",
+            (physical_attempt_id,),
+        )
+        return [_row_to_dict(row, cur.description) for row in cur.fetchall()]
+
+    def truncate_reservation_events(self) -> None:
+        with self.conn:
+            self.conn.execute("DELETE FROM reservation_events")
+
     # ---- rebuild bookkeeping ----
 
     def record_rebuild_report(self, report: Dict[str, Any]) -> None:
@@ -236,6 +297,7 @@ class SqliteIndex:
         full-rebuild mode. The kernel must be paused (R1 maintenance lock)
         before calling this."""
         with self.conn:
+            self.conn.execute("DELETE FROM reservation_events")
             self.conn.execute("DELETE FROM run_projections")
             self.conn.execute("DELETE FROM runs")
 
@@ -283,9 +345,39 @@ def open_index(
             )
     elif row[0] != SCHEMA_VERSION:
         actual = row[0]
-        conn.close()
-        raise RuntimeError(
-            f"index schema version {actual!r} != expected {SCHEMA_VERSION!r}; "
-            "run multiverse rebuild-index after upgrading"
-        )
+        if actual in ("2", "3"):
+            with conn:
+                if actual == "2":
+                    # G2: add user_id to runs.
+                    try:
+                        conn.execute("ALTER TABLE runs ADD COLUMN user_id TEXT")
+                    except Exception:
+                        pass
+                # G3: add reservation_events table.
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS reservation_events (
+                        physical_attempt_id TEXT NOT NULL,
+                        seq                 INTEGER NOT NULL,
+                        kind                TEXT NOT NULL,
+                        wall_iso            TEXT NOT NULL,
+                        ram_bytes           INTEGER,
+                        gpu_index           INTEGER,
+                        release_reason      TEXT,
+                        PRIMARY KEY (physical_attempt_id, seq)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_resv_attempt
+                        ON reservation_events (physical_attempt_id);
+                    """
+                )
+                conn.execute(
+                    "UPDATE schema_meta SET value = ? WHERE key = 'schema_version'",
+                    (SCHEMA_VERSION,),
+                )
+        else:
+            conn.close()
+            raise RuntimeError(
+                f"index schema version {actual!r} != expected {SCHEMA_VERSION!r}; "
+                "run multiverse rebuild-index after upgrading"
+            )
     return SqliteIndex(path=path, conn=conn)

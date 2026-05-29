@@ -27,6 +27,7 @@ from .broker import (
     PressureEvent,
     ReservationLedger,
     ResourceBroker,
+    reconstruct_ledger_from_journal,
 )
 from .pressure import (
     PressureMode,
@@ -47,4 +48,5 @@ __all__ = [
     "ReservationLedger",
     "ResourceBroker",
     "ResourceRequest",
+    "reconstruct_ledger_from_journal",
 ]

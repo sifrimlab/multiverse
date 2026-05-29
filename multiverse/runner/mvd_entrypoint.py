@@ -89,12 +89,16 @@ def run_via_mvd(args: argparse.Namespace) -> int:
         print("No pending jobs to execute.", file=sys.stderr)
         return 0
 
+    # Default: locally-built Docker images are the normal case for researchers.
+    # --strict opts into publication mode (requires a registry digest).
+    accept_degraded = not getattr(args, "strict", False)
     return asyncio.run(
         _drive_jobs(
             state_root=state_root,
             pending_jobs=pending_jobs,
             manifest_text=manifest_text,
             seed=getattr(args, "seed", None),
+            accept_degraded=accept_degraded,
         )
     )
 
@@ -105,10 +109,12 @@ async def _drive_jobs(
     pending_jobs: List[Dict[str, Any]],
     manifest_text: str,
     seed: int | None,
+    accept_degraded: bool = False,
 ) -> int:
     boot = BootContext.new(mvd_version="0.1.0-mvd")
+    config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
     layout = JournalLayout.at(state_root / "journal").ensure()
-    journal = JournalWriter(layout, boot_id=boot.boot_id)
+    journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
     store = StoreLayout(root=state_root / "store").ensure()
 
     # Lazy-import the real Docker engine adapter only when we actually
@@ -119,7 +125,7 @@ async def _drive_jobs(
         journal=journal,
         mvd_version="0.1.0-mvd",
     )
-    broker = ResourceBroker(observer=_observer())
+    broker = ResourceBroker(observer=_observer(), journal=journal)
     executor = MvdDockerExecutor(
         journal=journal,
         boot=boot,
@@ -127,12 +133,15 @@ async def _drive_jobs(
         supervisor=supervisor,
         broker=broker,
         state_root=state_root,
+        accept_degraded=config.accept_degraded,
+        user_id=config.user_id,
     )
     kernel = Kernel(
-        KernelConfig(state_root=state_root),
+        config,
         executor=executor,
         journal=journal,
         boot=boot,
+        broker=broker,
     )
 
     manifest_hash = compute_manifest_hash(manifest_text or "")

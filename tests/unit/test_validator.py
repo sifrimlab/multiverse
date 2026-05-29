@@ -1,9 +1,6 @@
-import sqlite3
-
 import anndata as ad
 import numpy as np
 
-from multiverse import registry_db
 from multiverse.runner.cli import _read_obs_count, validate_pending_jobs
 
 
@@ -23,12 +20,6 @@ def _job(path):
     }
 
 
-def _init_db(path):
-    conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, dataset_id INTEGER, model_slug TEXT, model_version TEXT, model_name TEXT, status TEXT, output_path TEXT, failure_reason TEXT)")
-    conn.commit(); conn.close()
-
-
 def test_empty_anndata_records_zero_cells(tmp_path):
     data = tmp_path / "empty.h5ad"
     ad.AnnData(X=np.zeros((0, 2))).write_h5ad(data)
@@ -38,40 +29,18 @@ def test_empty_anndata_records_zero_cells(tmp_path):
     assert "zero cells" in validated[0]["_skip_reason"]
 
 
-def test_corrupt_h5_records_validation_error_when_enabled(tmp_path):
-    db_path = str(tmp_path / "registry.db")
-    _init_db(db_path)
+def test_corrupt_h5_skips_job(tmp_path):
+    """Corrupt dataset → job is skipped with file_unreadable reason."""
     corrupt = tmp_path / "corrupt.h5ad"
     corrupt.write_bytes(b"not hdf5")
-
-    old = registry_db.DB_NAME
-    registry_db.DB_NAME = db_path
-    try:
-        validated, _ = validate_pending_jobs([_job(corrupt)], record_failures=True)
-    finally:
-        registry_db.DB_NAME = old
-
+    validated, _ = validate_pending_jobs([_job(corrupt)], record_failures=True)
     assert validated[0]["_skipped"]
-    conn = sqlite3.connect(db_path)
-    row = conn.execute("SELECT status, failure_reason FROM runs").fetchone()
-    conn.close()
-    assert row == ("FAILED", "VALIDATION_ERROR:file_unreadable")
+    assert "unreadable" in validated[0].get("_skip_reason", "").lower()
 
 
-def test_missing_batch_key_records_key_mismatch(tmp_path):
-    db_path = str(tmp_path / "registry.db")
-    _init_db(db_path)
+def test_missing_batch_key_skips_job(tmp_path):
+    """Dataset without expected batch key → job is skipped."""
     data = tmp_path / "data.h5ad"
     ad.AnnData(X=np.zeros((3, 2)), obs={"other": ["a", "b", "c"]}).write_h5ad(data)
-
-    old = registry_db.DB_NAME
-    registry_db.DB_NAME = db_path
-    try:
-        validate_pending_jobs([_job(data)], record_failures=True)
-    finally:
-        registry_db.DB_NAME = old
-
-    conn = sqlite3.connect(db_path)
-    reason = conn.execute("SELECT failure_reason FROM runs").fetchone()[0]
-    conn.close()
-    assert reason == "VALIDATION_ERROR:missing_batch_key"
+    validated, _ = validate_pending_jobs([_job(data)], record_failures=True)
+    assert validated[0]["_skipped"]

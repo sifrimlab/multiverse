@@ -17,11 +17,21 @@ class ImageIdentityKind(str, Enum):
     LOCAL_IMAGE_ID = "local_image_id"
     BUILD_CONTEXT_HASH = "build_context_hash"
     UNVERIFIED_LOCAL = "unverified_local"
+    SIF_DIGEST = "sif_digest"
+    """Apptainer/Singularity SIF file sha256. Carries a ``built_from``
+    back-pointer to the source OCI digest so cross-backend manifests
+    remain comparable (STRATEGY M2 / Addendum B)."""
 
 
 _STRICT_KINDS = frozenset(
-    {ImageIdentityKind.REGISTRY_DIGEST, ImageIdentityKind.BUILD_CONTEXT_HASH}
+    {
+        ImageIdentityKind.REGISTRY_DIGEST,
+        ImageIdentityKind.BUILD_CONTEXT_HASH,
+        ImageIdentityKind.SIF_DIGEST,
+    }
 )
+"""SIF_DIGEST is strict-acceptable only when its ``built_from`` is set —
+checked by :meth:`ImageIdentity.is_strict_acceptable`."""
 
 
 @dataclass(frozen=True)
@@ -44,6 +54,14 @@ class ImageIdentity:
     note: Optional[str] = None
     dockerfile_path: Optional[str] = None
     context_root: Optional[str] = None
+    built_from: Optional[str] = None
+    """Back-pointer for derived identities. Used by SIF_DIGEST to record
+    the source OCI digest so a SIF run and an OCI run can be proven to
+    come from the same image (STRATEGY M2)."""
+    built_by: Optional[str] = None
+    """One of ``"ci"``, ``"apptainer-pull-runtime"``, ``"author-supplied"``,
+    or ``None``. Documentation only; not part of the strict-acceptability
+    check (the built_from invariant covers that)."""
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, ImageIdentityKind):
@@ -56,7 +74,14 @@ class ImageIdentity:
 
     @property
     def is_strict_acceptable(self) -> bool:
-        """True iff this identity variant is acceptable under ``--strict``."""
+        """True iff this identity variant is acceptable under ``--strict``.
+
+        ``SIF_DIGEST`` is strict-acceptable only when its ``built_from``
+        is set; an SIF whose source OCI is unknown is no more reproducible
+        than an ``unverified_local``.
+        """
+        if self.kind is ImageIdentityKind.SIF_DIGEST:
+            return bool(self.built_from)
         return self.kind in _STRICT_KINDS
 
     def to_dict(self) -> Dict[str, Any]:
@@ -67,6 +92,10 @@ class ImageIdentity:
             out["dockerfile_path"] = self.dockerfile_path
         if self.context_root is not None:
             out["context_root"] = self.context_root
+        if self.built_from is not None:
+            out["built_from"] = self.built_from
+        if self.built_by is not None:
+            out["built_by"] = self.built_by
         return out
 
     @classmethod
@@ -77,6 +106,8 @@ class ImageIdentity:
             note=data.get("note"),
             dockerfile_path=data.get("dockerfile_path"),
             context_root=data.get("context_root"),
+            built_from=data.get("built_from"),
+            built_by=data.get("built_by"),
         )
 
     # Convenience constructors --------------------------------------------------
@@ -113,4 +144,65 @@ class ImageIdentity:
             kind=ImageIdentityKind.UNVERIFIED_LOCAL,
             value=tag_or_id,
             note="not pinnable",
+        )
+
+    @classmethod
+    def sif_digest(
+        cls,
+        sif_digest: str,
+        *,
+        built_from: Optional[str] = None,
+        built_by: Optional[str] = None,
+    ) -> "ImageIdentity":
+        """Apptainer/Singularity SIF identity.
+
+        ``built_from`` is the source OCI digest (``sha256:...``) the SIF
+        was built from; without it, the identity is not strict-acceptable
+        even though the SIF itself is content-addressed.
+
+        ``built_by`` documents how the SIF was produced (``"ci"`` for a
+        pre-built artifact, ``"apptainer-pull-runtime"`` for a runtime
+        ``apptainer pull docker://...``).
+        """
+        return cls(
+            kind=ImageIdentityKind.SIF_DIGEST,
+            value=sif_digest,
+            built_from=built_from,
+            built_by=built_by,
+        )
+
+
+def verify_runtime_identity_matches_source(
+    source: ImageIdentity, runtime: Optional[ImageIdentity]
+) -> None:
+    """Enforce the M2 dual-digest invariant.
+
+    When ``runtime`` is supplied (Apptainer execution), assert:
+
+    * ``runtime.kind == SIF_DIGEST`` — the only legal runtime-derived
+      kind under the current design.
+    * ``runtime.built_from == source.value`` — the SIF must point back
+      to the source OCI digest that the manifest claims as truth.
+
+    Raises ``ValueError`` on violation; callers (PromotionSaga, doctor)
+    surface this as a fail-the-run condition.
+    """
+    if runtime is None:
+        return
+    if runtime.kind is not ImageIdentityKind.SIF_DIGEST:
+        raise ValueError(
+            f"runtime_image_identity must be of kind SIF_DIGEST, got "
+            f"{runtime.kind.value!r}"
+        )
+    if not runtime.built_from:
+        raise ValueError(
+            "runtime_image_identity (SIF) is missing built_from; cannot "
+            "verify it derives from the manifest's image_identity"
+        )
+    if runtime.built_from != source.value:
+        raise ValueError(
+            f"runtime_image_identity.built_from={runtime.built_from!r} does "
+            f"not match image_identity.value={source.value!r}; the SIF "
+            "appears to have been built from a different source than the "
+            "manifest claims"
         )

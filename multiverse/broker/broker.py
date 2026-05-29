@@ -10,8 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
+from ..journal import JournalKind, JournalRecord, JournalWriter
 from .observer import HostMetrics, HostObserver, ResourceRequest
 from .pressure import PressureMode, PressureThresholds
 
@@ -78,7 +79,14 @@ class OomEvent:
 class ReservationLedger:
     """Tracks admitted-but-not-yet-completed requests so the broker can
     subtract them from the live observer before answering the next
-    admission."""
+    admission.
+
+    STRATEGY M3: the ledger is durable. ``ResourceBroker`` writes
+    ``RESERVATION_GRANTED``/``RESERVATION_RELEASED`` records *before* the
+    in-memory dict is mutated; on boot, :func:`reconstruct_ledger_from_journal`
+    rebuilds the dict from those records alone. Docker labels are no
+    longer load-bearing — important under Apptainer which has none.
+    """
 
     by_attempt: Dict[str, ResourceRequest] = field(default_factory=dict)
 
@@ -87,6 +95,9 @@ class ReservationLedger:
 
     def release(self, attempt_id: str) -> None:
         self.by_attempt.pop(attempt_id, None)
+
+    def has(self, attempt_id: str) -> bool:
+        return attempt_id in self.by_attempt
 
     def total_ram(self) -> int:
         return sum(r.ram_bytes for r in self.by_attempt.values())
@@ -106,6 +117,57 @@ class ReservationLedger:
             for r in self.by_attempt.values()
             if r.gpu_index is not None
         }
+
+
+def _request_to_payload(request: ResourceRequest) -> Dict[str, object]:
+    return {
+        "ram_bytes": int(request.ram_bytes),
+        "vram_bytes": int(request.vram_bytes),
+        "gpu_index": request.gpu_index,
+        "disk_bytes_per_path": {
+            str(k): int(v) for k, v in request.disk_bytes_per_path.items()
+        },
+    }
+
+
+def _request_from_payload(payload: Dict[str, object]) -> ResourceRequest:
+    raw_disk = payload.get("disk_bytes_per_path") or {}
+    return ResourceRequest(
+        ram_bytes=int(payload.get("ram_bytes", 0)),
+        vram_bytes=int(payload.get("vram_bytes", 0)),
+        gpu_index=(
+            int(payload["gpu_index"])
+            if payload.get("gpu_index") is not None
+            else None
+        ),
+        disk_bytes_per_path={
+            str(k): int(v) for k, v in dict(raw_disk).items()
+        },
+    )
+
+
+def reconstruct_ledger_from_journal(
+    records: Iterable[JournalRecord],
+) -> ReservationLedger:
+    """Rebuild a :class:`ReservationLedger` from journal records alone.
+
+    Walks the stream in order, applying GRANT/RELEASE per attempt. The
+    final state is the set of reservations that were granted but never
+    released — i.e. the in-flight reservations at the moment the journal
+    was last written.
+    """
+    ledger = ReservationLedger()
+    for record in records:
+        if record.kind is JournalKind.RESERVATION_GRANTED:
+            attempt = record.physical_attempt_id
+            if not attempt:
+                continue
+            ledger.reserve(attempt, _request_from_payload(dict(record.payload)))
+        elif record.kind is JournalKind.RESERVATION_RELEASED:
+            attempt = record.physical_attempt_id
+            if attempt:
+                ledger.release(attempt)
+    return ledger
 
 
 def _now_iso() -> str:
@@ -130,6 +192,21 @@ class ResourceBroker:
     thresholds: PressureThresholds = field(default_factory=PressureThresholds)
     ledger: ReservationLedger = field(default_factory=ReservationLedger)
     serialize_gpu_admissions: bool = False
+    journal: Optional[JournalWriter] = None
+    """STRATEGY M3: when set, ``admit``/``release`` write
+    ``RESERVATION_GRANTED``/``RESERVATION_RELEASED`` records to the
+    journal *before* mutating the in-memory ledger. The journal write is
+    the durable intent; an in-memory ledger that disagrees with the
+    journal after a crash is rebuilt from the journal, not the other way
+    around."""
+    max_inflight_dispatches: Optional[int] = None
+    """STRATEGY M4: when set, the broker switches admission predicate
+    from "live RAM/VRAM/disk satisfies the request" to "live ledger
+    size is below ``max_inflight_dispatches``". The Slurm executor is
+    the typical setter (Slurm allocates resources itself, so the
+    broker's job is to rate-limit ``sbatch`` rather than to compute RAM
+    math). Pressure-mode and GPU-serialization checks are skipped under
+    this policy."""
 
     _last_mode: PressureMode = PressureMode.NORMAL
 
@@ -141,6 +218,10 @@ class ResourceBroker:
         physical_attempt_id: str,
         request: ResourceRequest,
     ) -> AdmissionDecision:
+        if self.max_inflight_dispatches is not None:
+            return self._admit_inflight(
+                physical_attempt_id=physical_attempt_id, request=request
+            )
         metrics = self.observer.observe()
         mode = self._classify(metrics)
         # In pressure / critical we refuse new admissions but never
@@ -205,6 +286,16 @@ class ResourceBroker:
                     metrics_at_decision=metrics,
                 )
 
+        # M3: durable grant before in-memory mutation. If the journal
+        # write fails, the reservation is not granted; the caller sees
+        # the exception and the executor transitions the run to FAILED.
+        if self.journal is not None:
+            self.journal.append(
+                JournalKind.RESERVATION_GRANTED,
+                payload=_request_to_payload(request),
+                physical_attempt_id=physical_attempt_id,
+            )
+            self.journal.commit()
         self.ledger.reserve(physical_attempt_id, request)
         return AdmissionDecision(
             outcome=AdmissionOutcome.ADMITTED,
@@ -212,7 +303,26 @@ class ResourceBroker:
             metrics_at_decision=metrics,
         )
 
-    def release(self, physical_attempt_id: str) -> None:
+    def release(
+        self,
+        physical_attempt_id: str,
+        *,
+        reason: str = "terminal",
+    ) -> None:
+        # M3: only write a release record if the in-memory ledger
+        # believes a reservation is still live. ``release`` is called
+        # unconditionally on the finally-branch of the executor, so we
+        # must not produce orphan release records (or, worse, two
+        # releases for one grant) after the saga already released on
+        # natural exit.
+        had_reservation = self.ledger.has(physical_attempt_id)
+        if had_reservation and self.journal is not None:
+            self.journal.append(
+                JournalKind.RESERVATION_RELEASED,
+                payload={"reason": reason},
+                physical_attempt_id=physical_attempt_id,
+            )
+            self.journal.commit()
         self.ledger.release(physical_attempt_id)
 
     # ---- continuous observation ----
@@ -268,6 +378,45 @@ class ResourceBroker:
         return self._classify(self.observer.observe())
 
     # ---- internals ----
+
+    def _admit_inflight(
+        self,
+        *,
+        physical_attempt_id: str,
+        request: ResourceRequest,
+    ) -> AdmissionDecision:
+        """STRATEGY M4 admission predicate for scheduler-managed
+        backends (currently Slurm). The broker enforces a dispatch
+        budget; resources are someone else's problem.
+        """
+        # ``metrics`` is recorded so admission decisions remain
+        # auditable, but it is not consulted for the predicate.
+        metrics = self.observer.observe()
+        inflight = len(self.ledger.by_attempt)
+        budget = int(self.max_inflight_dispatches or 0)
+        if inflight >= budget:
+            return AdmissionDecision(
+                outcome=AdmissionOutcome.REJECTED_INSUFFICIENT,
+                physical_attempt_id=physical_attempt_id,
+                detail=(
+                    f"max_inflight={budget} reached; "
+                    f"{inflight} dispatches in flight"
+                ),
+                metrics_at_decision=metrics,
+            )
+        if self.journal is not None:
+            self.journal.append(
+                JournalKind.RESERVATION_GRANTED,
+                payload=_request_to_payload(request),
+                physical_attempt_id=physical_attempt_id,
+            )
+            self.journal.commit()
+        self.ledger.reserve(physical_attempt_id, request)
+        return AdmissionDecision(
+            outcome=AdmissionOutcome.ADMITTED,
+            physical_attempt_id=physical_attempt_id,
+            metrics_at_decision=metrics,
+        )
 
     def _classify(self, metrics: HostMetrics) -> PressureMode:
         if metrics.ram_total_bytes:

@@ -67,6 +67,7 @@ class JournalWriter:
         layout: JournalLayout,
         *,
         boot_id: str,
+        user_id: Optional[str] = None,
         starting_seq: Optional[int] = None,
         segment_max_bytes: int = DEFAULT_SEGMENT_MAX_BYTES,
         inline_blob_threshold: int = INLINE_BLOB_SPILL_THRESHOLD,
@@ -74,6 +75,7 @@ class JournalWriter:
     ) -> None:
         self._layout = layout.ensure()
         self._boot_id = boot_id
+        self._user_id = user_id
         self._segment_max_bytes = int(segment_max_bytes)
         self._inline_blob_threshold = int(inline_blob_threshold)
         self._fsync_enabled = bool(fsync_enabled)
@@ -119,6 +121,10 @@ class JournalWriter:
     def next_seq(self) -> int:
         return self._next_seq
 
+    @property
+    def user_id(self) -> Optional[str]:
+        return self._user_id
+
     def append(
         self,
         kind: JournalKind,
@@ -149,6 +155,7 @@ class JournalWriter:
             logical_run_id=logical_run_id,
             prev_state=prev_state,
             next_state=next_state,
+            user_id=self._user_id,
         )
         line = record.to_line()
 

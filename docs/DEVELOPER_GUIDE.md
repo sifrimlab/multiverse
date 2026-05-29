@@ -6,14 +6,14 @@ This page is for maintainers and contributors. It collects the practical knowled
 
 ```bash
 make install            # uv sync --group dev (no ML libraries)
-make init               # create mvexp_state.db
+make init               # create mvexp_state.db + asset_registry.db
 make register-models    # populate the models table
 make services-up        # MLflow + Optuna for integration work
-# Optional, for full ML stack development:
+# Optional, for in-process model wrapper development:
 uv sync --group dev --group ml-legacy
 ```
 
-The two dependency groups are intentional. `dev` is enough for orchestrator, GUI, and registry work and installs in seconds. `ml-legacy` pulls scvi-tools, scanpy, muon, Mowgli, Cobolt, and torch and is needed only when working on the local (non-Docker) runner path or on the in-process model wrappers under `multiverse/models/`.
+The two dependency groups are intentional. `dev` is enough for orchestrator, GUI, registry, and Slurm path work and installs in seconds. `ml-legacy` pulls scvi-tools, scanpy, muon, Mowgli, Cobolt, and torch and is needed only when working on the in-process model wrappers under `multiverse/models/`.
 
 ## Test Suite
 
@@ -43,14 +43,18 @@ Notable unit tests:
 | `test_planner.py` | Run plan generation from a manifest. |
 | `test_manifest_gate.py` | Pre-flight validation. |
 | `test_mvd_docker_executor.py` | mvd-backed Docker execution state flow. |
+| `test_mvd_slurm_executor.py` | Slurm executor state flow and dual-digest manifest. |
 | `test_docker_supervisor.py` | Container labels, leases, RealDockerEngine adapter, and cancellation. |
 | `test_promotion_saga.py` | Promotion, validation, and quarantine behavior. |
-| `test_local_runner.py` | The Python fallback path. |
+| `test_accept_degraded.py` | M2 fail-closed guard: `unverified_local` images are rejected by default in both Docker and Slurm executors. |
+| `test_user_id_propagation.py` | `user_id` threaded through journal records → artifact manifest. |
+| `test_reservation_timeline_rebuild.py` | `rebuild_index` populates `reservation_events` from journal. |
+| `test_sqlite_writer_isolation.py` | Sole-writer CI gate: no raw SQL mutations outside the designated writer modules. |
+| `test_recovery_no_destruction.py` | `rebuild_index` classifies incomplete promotions as `RECOVERY_PENDING` without deleting data. |
 | `test_tuner.py` | Optuna sampling and objective wiring. |
 | `test_models_base.py` | `ModelFactory` lifecycle. |
 | `test_worker_io.py` | `mvr-worker` SDK I/O helpers. |
-| `test_event_stream.py` | JSON event emission to the GUI. |
-| `test_metrics_config.py`, `test_run_metrics.py` | Metric gating and on-disk format. |
+| `test_metrics_config.py` | Metric gating and on-disk format. |
 | `test_validator.py` | Omics / batch / cell-type validation. |
 | `test_ingestion.py` | Dataset and model registration. |
 
@@ -65,6 +69,9 @@ These contracts are the ones to respect when refactoring:
 | Container runtime | `/input/data.h5mu`, `/output/job_spec.json`, `/output/`; see [Model Container Contract](MODEL_CONTAINER_CONTRACT.md). |
 | Evaluation | Embedding row order matches `obs`; metrics are gated by `determine_valid_metrics()`. |
 | Reporting | Artifact bundles are authoritative; MLflow is a projection. |
+| Image identity | The Docker executor defaults open (`accept_degraded=True`) because locally-built images are the normal research workflow. Pass `--strict` to require a registry digest. The Slurm executor defaults closed (`accept_degraded=False`) because HPC runs are expected to have provenance; pass `--accept-degraded` to override. |
+| Sole-writer invariant | Raw SQL mutations (`INSERT`, `UPDATE`, `DELETE`, `CREATE TABLE`) must only appear in `index/`, `index_projection`, `asset_registry`, `registry_db`, or `models_ingest`. The `test_sqlite_writer_isolation.py` CI gate enforces this; do not bypass it. |
+| Asset registry split | Dataset/model catalog rows live in `asset_registry.db` (written by `asset_registry.py`). The run index lives in `mvexp_state.db` (written by `index/`). Do not merge them back. |
 
 ## Code Layout
 

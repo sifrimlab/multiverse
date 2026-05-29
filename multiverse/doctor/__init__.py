@@ -8,6 +8,12 @@ Health probes (R9) write only inside hidden namespaces (``__mvd_health_probe__``
 with TTL cleanup driven by ``mvd-health-sweeper``.
 """
 
+from .projection_probe import probe_projection_consistency
+from .reservation_probe import (
+    DEFAULT_STALE_AFTER_SECONDS,
+    StuckReservation,
+    probe_reservation_ledger,
+)
 from .health_probes import (
     HEALTH_PROBE_NAMESPACES,
     HEALTH_PROBE_TTL_SECONDS,
@@ -54,6 +60,10 @@ __all__ = [
     "StorageProbeResult",
     "StorageReport",
     "SUPPORTED",
+    "DEFAULT_STALE_AFTER_SECONDS",
+    "StuckReservation",
+    "probe_projection_consistency",
+    "probe_reservation_ledger",
     "run_storage_probes",
     "sweep_expired_health_probes",
 ]

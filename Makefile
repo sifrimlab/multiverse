@@ -1,5 +1,9 @@
 # Makefile for the Multi-verse project
 
+# Keep state in the project directory for local development.
+# MVEXP_STATE_DIR can be overridden from the environment to point elsewhere.
+export MVEXP_STATE_DIR ?= $(CURDIR)
+
 # --- Dependency Management ---
 
 .PHONY: install

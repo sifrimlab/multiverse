@@ -17,7 +17,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import tempfile
 import time
+from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
@@ -137,6 +140,127 @@ def _build_shell_image(client, tmp_path: Path, *, base_image: str, command: str)
     return tag
 
 
+# ---------------------------------------------------------------------------
+# OOM fixture (STRATEGY M0)
+# ---------------------------------------------------------------------------
+
+# Cache the OOM image under a fixed tag so repeated test runs do not
+# rebuild it. The image is invalidated automatically if its Dockerfile
+# changes, because we tag it with a content-derived suffix.
+_OOM_FIXTURE_TAG_BASE = "mvexp-oom-fixture"
+
+
+# Candidate bases for the OOM fixture, in preference order.
+# ``mambaorg/micromamba`` is excluded: it ships a custom shell wrapper
+# that breaks plain ``RUN mkdir`` builds.
+_OOM_FIXTURE_BASE_CANDIDATES = (
+    "busybox:latest",
+    "alpine:latest",
+    "multiverse-pca:1.0.0",
+)
+
+
+# A pure-shell allocator that doubles a shell variable until the
+# container's cgroup memory limit kills it. This avoids:
+#   * Python's startup-memory dominating the limit;
+#   * libc-vs-musl divergence on memory accounting;
+#   * the wait-for-Python-to-start race that made the prior fixture
+#     non-deterministic on multiverse-pca:1.0.0.
+# It also writes a heartbeat to /output so a non-OOM exit (e.g. the
+# process being killed by something other than the memory limit)
+# leaves a forensic signal behind.
+_OOM_FIXTURE_COMMAND = (
+    "set +e; "
+    "echo started > /output/oom-heartbeat; "
+    "x=A; while :; do x=$x$x; done"
+)
+
+
+def _oom_fixture_dockerfile(base: str) -> str:
+    return "\n".join(
+        [
+            f"FROM {base}",
+            "RUN mkdir -p /input /output",
+            f"CMD [\"sh\", \"-c\", {json.dumps(_OOM_FIXTURE_COMMAND)}]",
+            "",
+        ]
+    )
+
+
+def _ensure_oom_fixture_image(client) -> str:
+    """Return a tag for the deterministic OOM fixture image, building
+    it locally if needed.
+
+    Honours the no-implicit-network-pull contract: the function picks
+    the first locally-available base from the candidate list (or the
+    explicit ``MVD_REAL_DOCKER_OOM_BASE_IMAGE`` override) and builds the
+    fixture against it. If no candidate is locally available, the test
+    skips with a clear instruction.
+
+    The Dockerfile bytes feed the tag suffix so any future change to
+    the allocator body forces a rebuild — no stale image silently
+    masks a regression.
+    """
+    explicit = os.environ.get("MVD_REAL_DOCKER_OOM_IMAGE")
+    if explicit:
+        try:
+            client.images.get(explicit)
+            return explicit
+        except Exception as exc:
+            pytest.skip(f"MVD_REAL_DOCKER_OOM_IMAGE is not available locally: {exc}")
+
+    override = os.environ.get("MVD_REAL_DOCKER_OOM_BASE_IMAGE")
+    candidates = (override,) if override else _OOM_FIXTURE_BASE_CANDIDATES
+
+    base: str | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            client.images.get(candidate)
+            base = candidate
+            break
+        except Exception:
+            continue
+    if base is None:
+        pytest.skip(
+            "no OOM-fixture base image available locally; pre-load one of "
+            f"{candidates!r} or set MVD_REAL_DOCKER_OOM_BASE_IMAGE"
+        )
+
+    dockerfile = _oom_fixture_dockerfile(base)
+    digest = sha256(dockerfile.encode("utf-8")).hexdigest()[:12]
+    tag = f"{_OOM_FIXTURE_TAG_BASE}:{digest}"
+    try:
+        client.images.get(tag)
+        return tag
+    except Exception:
+        pass
+
+    with tempfile.TemporaryDirectory(prefix="mvexp-oom-fixture-") as workdir:
+        context = Path(workdir)
+        (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
+        # Shell out to ``docker build`` rather than ``client.images.build``:
+        # the Python SDK uses the legacy build endpoint which fails on
+        # network/LDAP-mapped UIDs ("failed to Lchown /Dockerfile") on
+        # some hosts, while the CLI uses BuildKit and works.
+        try:
+            result = subprocess.run(
+                ["docker", "build", "--pull=false", "-t", tag, str(context)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            pytest.skip(f"OOM fixture build failed: {exc}")
+        if result.returncode != 0:
+            pytest.skip(
+                f"OOM fixture build failed (rc={result.returncode}): "
+                f"{result.stderr.strip()[-400:]}"
+            )
+    return tag
+
+
 def _dataset_file(tmp_path: Path, *, n_obs: int = 4) -> Path:
     dataset = tmp_path / "fixture.h5mu"
     with h5py.File(dataset, "w") as f:
@@ -178,6 +302,7 @@ def _kernel_with_real_docker(
         state_root=state_root,
         poll_interval_seconds=poll_interval_seconds,
         max_poll_iterations=max_poll_iterations,
+        accept_degraded=True,  # integration tests use local images without digests
     )
     return Kernel(
         KernelConfig(state_root=state_root, mvd_version="0.1.0-real-it"),
@@ -420,27 +545,20 @@ def test_real_mvd_crash_after_promotion_stage_rebuilds_recovery_pending(
 
 @pytest.mark.integration
 def test_real_mvd_oom_like_exit_classification(tmp_path: Path) -> None:
-    explicit_image = os.environ.get("MVD_REAL_DOCKER_OOM_IMAGE")
-    remove_image = False
-    if explicit_image:
-        client = _docker_client()
-        try:
-            client.images.get(explicit_image)
-        except Exception as exc:
-            pytest.skip(f"OOM image is not available locally: {exc}")
-        image = explicit_image
-    else:
-        client, base_image, python_path = _docker_client_and_python_base_image()
-        image = base_image
-        remove_image = False
-    oom_command = (
-        f"{python_path if not explicit_image else 'python'} -c "
-        + json.dumps(
-            "chunks=[]\n"
-            "while True:\n"
-            "    chunks.append(bytearray(16 * 1024 * 1024))\n"
-        )
-    )
+    """STRATEGY M0: a deterministic OOM fixture must classify as
+    ``OOM_KILLED``. The fixture is built locally (or reused from a
+    prior run) and uses a pure-shell allocator so neither Python
+    startup overhead nor libc-vs-musl divergence can mask the trigger.
+
+    The test fails — does not skip — on a non-OOMKilled exit. That is
+    the M0 acceptance criterion. If a developer's Docker daemon is
+    configured in a way that suppresses OOMKilled reporting, the
+    failure is the signal: M0 evidence has to be reproducible, and a
+    silently-skipped fixture is what we are explicitly moving away
+    from.
+    """
+    client = _docker_client()
+    image = _ensure_oom_fixture_image(client)
 
     state_root = tmp_path / "state"
     store = StoreLayout(root=state_root / "store").ensure()
@@ -455,26 +573,19 @@ def test_real_mvd_oom_like_exit_classification(tmp_path: Path) -> None:
                 dataset=dataset,
                 n_obs=4,
                 mem_limit="64m",
-                entrypoint="sh",
-                command=["-c", oom_command],
             ),
         )
         await kernel._execution_tasks[attempt]  # type: ignore[attr-defined]
         snapshot = await kernel.query_run(physical_attempt_id=attempt)
-        assert snapshot["primary_state"] == PrimaryState.FAILED.value
-        if "OOM" not in str(snapshot["failure_reason"]):
-            pytest.skip(
-                "local Docker/image combination did not report OOMKilled; "
-                f"observed {snapshot['failure_reason']!r}"
-            )
+        assert snapshot["primary_state"] == PrimaryState.FAILED.value, snapshot
+        assert "OOM" in str(snapshot["failure_reason"] or ""), (
+            "deterministic OOM fixture did not classify as OOM_KILLED; "
+            f"observed {snapshot['failure_reason']!r}. Inspect the "
+            "container logs and Docker daemon cgroup driver."
+        )
         await kernel.shutdown()
 
     try:
         asyncio.run(_scenario())
     finally:
         _cleanup_real_it_containers(client)
-        if remove_image:
-            try:
-                client.images.remove(image=image, force=True)
-            except Exception:
-                pass

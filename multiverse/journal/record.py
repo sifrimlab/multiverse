@@ -26,6 +26,8 @@ class JournalKind(str, Enum):
 
     JOB_INTENT = "JOB_INTENT"                  # user submitted a run
     ADMITTED = "ADMITTED"                      # resource broker admitted
+    RESERVATION_GRANTED = "RESERVATION_GRANTED"  # M3: durable ledger grant
+    RESERVATION_RELEASED = "RESERVATION_RELEASED"  # M3: durable ledger release
     CONTAINER_LAUNCH = "CONTAINER_LAUNCH"      # docker container created
     STATE_TRANSITION = "STATE_TRANSITION"      # generic primary-state move
     PROMOTE_PREPARE = "PROMOTE_PREPARE"        # promotion saga step 1
@@ -63,6 +65,9 @@ class JournalRecord:
     logical_run_id: Optional[str] = None
     prev_state: Optional[str] = None
     next_state: Optional[str] = None
+    user_id: Optional[str] = None
+    """Resolved owner of the run. Absent from pre-G2 records (reads as None).
+    Stamped by JournalWriter on every record when a user_id is configured."""
 
     # ---- serialization ----
 
@@ -83,6 +88,8 @@ class JournalRecord:
             out["prev_state"] = self.prev_state
         if self.next_state is not None:
             out["next_state"] = self.next_state
+        if self.user_id is not None:
+            out["user_id"] = self.user_id
         return out
 
     def to_line(self) -> bytes:
@@ -116,6 +123,7 @@ class JournalRecord:
                 logical_run_id=data.get("logical_run_id"),
                 prev_state=data.get("prev_state"),
                 next_state=data.get("next_state"),
+                user_id=data.get("user_id"),
             )
         except (KeyError, ValueError, TypeError) as exc:
             raise ValueError(f"malformed journal record: {exc}") from exc

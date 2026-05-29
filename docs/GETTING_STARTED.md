@@ -17,7 +17,7 @@ Install dependencies, initialize the registry, optionally start observability se
 ```bash
 make bootstrap      # uv sync --group dev + init registry + register built-in models
 make services-up    # optional: MLflow on :5000, Optuna Dashboard on :8080
-make setup          # optional: GUI/local-runner extras such as Streamlit and Scanpy
+make setup          # optional: GUI and ML model wrapper extras (Streamlit, Scanpy, scvi-tools)
 make gui            # Streamlit on :8501
 ```
 
@@ -186,6 +186,7 @@ sc.pl.umap(adata, color=["batch", "cell_type"])
 |---|---|---|
 | Dataset does not appear in Configure | Registry has not refreshed. | Registry → **Refresh Registry**. |
 | Job is `FAILED` | Docker launch, container execution, or output validation failed. | Inspect the run failure reason and preserved logs. |
+| `executor crashed: unverified_local` | Running with `--strict` but image has no registry digest. | Remove `--strict`. The default run allows locally-built images. |
 | Metric is missing | `batch_key` or `cell_type_key` does not support that metric. | Confirm columns exist in your `obs`; re-register if you fix them. |
 | `database is locked` | Concurrent registry writes or an interrupted process. | Retry. If Results looks stale, run `uv run multiverse rebuild-index --state-root store/artifacts/run_output --store-root store/artifacts/run_output/store`. |
 

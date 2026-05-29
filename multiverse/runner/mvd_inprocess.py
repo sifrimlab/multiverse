@@ -135,27 +135,33 @@ class InProcessMvdController:
         if self._kernel is not None:
             return
         boot = BootContext.new(mvd_version="0.1.0-mvd")
+        # Locally-built Docker images are the normal case in the GUI; default open.
+        config = KernelConfig(state_root=self.state_root, accept_degraded=True)
         layout = JournalLayout.at(self.state_root / "journal").ensure()
-        journal = JournalWriter(layout, boot_id=boot.boot_id)
+        journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
         store = StoreLayout(root=self.state_root / "store").ensure()
         supervisor = DockerSupervisor(
             engine=_build_engine(),
             journal=journal,
             mvd_version="0.1.0-mvd",
         )
+        broker = ResourceBroker(observer=_observer(), journal=journal)
         executor = MvdDockerExecutor(
             journal=journal,
             boot=boot,
             store=store,
             supervisor=supervisor,
-            broker=ResourceBroker(observer=_observer()),
+            broker=broker,
             state_root=self.state_root,
+            accept_degraded=config.accept_degraded,
+            user_id=config.user_id,
         )
         kernel = Kernel(
-            KernelConfig(state_root=self.state_root),
+            config,
             executor=executor,
             journal=journal,
             boot=boot,
+            broker=broker,
         )
         kernel.replay_from_journal()
         self._kernel = kernel

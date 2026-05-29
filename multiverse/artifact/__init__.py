@@ -21,7 +21,11 @@ from .ids import (
     compute_params_hash,
     new_physical_attempt_id,
 )
-from .image_identity import ImageIdentity, ImageIdentityKind
+from .image_identity import (
+    ImageIdentity,
+    ImageIdentityKind,
+    verify_runtime_identity_matches_source,
+)
 from .manifest import (
     ARTIFACT_MANIFEST_FILENAME,
     ARTIFACT_MANIFEST_SHA256_FILENAME,
@@ -97,6 +101,7 @@ __all__ = [
     "sha256_file",
     "timestamp_now_struct",
     "validate_output_bundle",
+    "verify_runtime_identity_matches_source",
     "write_bundle",
     "write_manifest",
     "write_run_attempt_manifest",

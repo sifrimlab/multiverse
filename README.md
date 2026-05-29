@@ -52,7 +52,7 @@ Set up the platform from a source checkout:
 ```bash
 make bootstrap      # install dev deps, initialize the registry, register built-in models
 make services-up    # optional: MLflow on :5000 and Optuna Dashboard on :8080
-make setup          # optional: install GUI/local-runner extras
+make setup          # optional: install GUI and ML model wrapper extras
 make gui            # launch Streamlit on :8501
 ```
 
@@ -61,6 +61,19 @@ Then open the GUI at `http://localhost:8501`. For a headless run, generate or ed
 ```bash
 uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output
 ```
+
+On HPC clusters with Slurm and Apptainer, use the Slurm path instead of Docker:
+
+```bash
+uv run multiverse slurm-submit \
+  --model-slug pca \
+  --image-sif /scratch/images/multiverse-pca-1.0.0.sif \
+  --image-digest sha256:<oci-digest> \
+  --params-json '{"n_components": 20}' \
+  --output store/artifacts/run_output
+```
+
+See [Runner & Orchestration](docs/RUNNER.md) for the full Slurm workflow including dual-digest artifact manifests.
 
 In the GUI:
 
@@ -194,10 +207,11 @@ The docs follow Diátaxis:
 |---|---|---|
 | Tutorial | [Getting Started](docs/GETTING_STARTED.md) | First complete run from notebook object to results. |
 | How-To | [Data Preparation](docs/DATA_PREPARATION.md) | Practical recipes for making data acceptable to mvexp. |
-| How-To | [Migrate from v1 to v2](docs/HOWTO_MIGRATE_V1_to_V2.md) | Move from the old manual workflow to the GUI and registry. |
+| How-To | [Runner & Orchestration](docs/RUNNER.md) | Docker and Slurm execution paths, `--accept-degraded`, asset registry migration. |
 | Reference | [Models Glossary](docs/reference/MODELS_GLOSSARY.md) | Built-in model assumptions and hyperparameters. |
 | Reference | [Evaluation Metrics](docs/reference/EVALUATION_METRICS.md) | Bio-conservation and batch-correction metric definitions. |
-| Explanation | [Architecture](docs/ARCHITECTURE.md) | How the platform works internally. |
+| Explanation | [Architecture](docs/ARCHITECTURE.md) | How the platform works internally, including the dual-SQLite split and sole-writer invariant. |
+| Explanation | [Developer Guide](docs/DEVELOPER_GUIDE.md) | Codebase conventions, test suite, and core boundaries. |
 
 ## Cookbook Preview
 

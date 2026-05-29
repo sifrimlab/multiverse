@@ -154,6 +154,8 @@ class ProducedBy:
     mvd_version: str
     git_commit: Optional[str] = None
     degraded_capabilities: List[str] = field(default_factory=list)
+    user_id: Optional[str] = None
+    """Resolved owner of the run (G2). Absent from pre-G2 manifests."""
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"mvd_version": self.mvd_version}
@@ -161,6 +163,8 @@ class ProducedBy:
             out["git_commit"] = self.git_commit
         if self.degraded_capabilities:
             out["degraded_capabilities"] = list(self.degraded_capabilities)
+        if self.user_id is not None:
+            out["user_id"] = self.user_id
         return out
 
     @classmethod
@@ -169,6 +173,7 @@ class ProducedBy:
             mvd_version=str(data["mvd_version"]),
             git_commit=data.get("git_commit"),
             degraded_capabilities=list(data.get("degraded_capabilities") or []),
+            user_id=data.get("user_id"),
         )
 
 
@@ -232,6 +237,12 @@ class ArtifactManifest:
     state_transitions: List[StateTransition] = field(default_factory=list)
     owner_token: Optional[str] = None
     resource_observations: Optional[ResourceObservations] = None
+    runtime_image_identity: Optional[ImageIdentity] = None
+    """Set when the run executed via a derived image format (e.g. an
+    Apptainer SIF built from an OCI source). ``image_identity`` remains
+    the source-of-truth digest; ``runtime_image_identity`` records what
+    actually ran. The two are linked by ``built_from``, verified at
+    promotion (STRATEGY M2 dual-digest)."""
     schema_version: str = ARTIFACT_MANIFEST_SCHEMA_VERSION
 
     # ---- serialization ----
@@ -255,6 +266,8 @@ class ArtifactManifest:
             out["owner_token"] = self.owner_token
         if self.resource_observations is not None:
             out["resource_observations"] = self.resource_observations.to_dict()
+        if self.runtime_image_identity is not None:
+            out["runtime_image_identity"] = self.runtime_image_identity.to_dict()
         return out
 
     @classmethod
@@ -283,6 +296,11 @@ class ArtifactManifest:
                     for s in data.get("state_transitions", [])
                 ],
                 owner_token=data.get("owner_token"),
+                runtime_image_identity=(
+                    ImageIdentity.from_dict(data["runtime_image_identity"])
+                    if data.get("runtime_image_identity") is not None
+                    else None
+                ),
                 resource_observations=(
                     ResourceObservations.from_dict(data["resource_observations"])
                     if data.get("resource_observations") is not None

@@ -28,7 +28,7 @@ import asyncio
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..artifact import (
     ArtifactManifest,
@@ -42,6 +42,7 @@ from ..artifact import (
     compute_manifest_hash,
     compute_params_hash,
     produced_at_now,
+    verify_runtime_identity_matches_source,
 )
 from ..broker import (
     ResourceBroker,
@@ -93,6 +94,15 @@ class MvdDockerExecutor:
     """Tests pass a callable that synthesizes container outputs into the
     workspace right after launch. Production leaves this None."""
 
+    accept_degraded: bool = False
+    """Mirror of ``KernelConfig.accept_degraded``. When False (default),
+    ``execute`` refuses to launch a run whose image identity is not
+    strict-acceptable, matching the M2 default-fail-closed guarantee."""
+
+    user_id: Optional[str] = None
+    """Owner of the runs produced by this executor (G2). Stamped into the
+    artifact manifest's ProducedBy and onto every journal record."""
+
     name: str = "mvd-docker"
 
     # ------------------------------------------------------------------
@@ -141,6 +151,19 @@ class MvdDockerExecutor:
             )
             if record.cancel_requested:
                 await self._cancel_terminate(record, kernel, reason="pre-launch cancel")
+                return
+
+            # ---- 1a. STRICT-IMAGE GUARD (G1) ----
+            if not self.accept_degraded and not identity.is_strict_acceptable:
+                await kernel.transition(
+                    record.physical_attempt_id,
+                    to_state=PrimaryState.FAILED,
+                    reason=(
+                        f"refused to launch with non-strict-acceptable image "
+                        f"identity {identity.kind.value!r}; set accept_degraded=True "
+                        "to override"
+                    ),
+                )
                 return
 
             # ---- 2. WORKSPACE ----
@@ -214,7 +237,24 @@ class MvdDockerExecutor:
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.PROMOTING
             )
-            manifest = self._compose_manifest(spec, identity, logical_run_id, record)
+            runtime_identity = self._compose_runtime_identity(
+                source=identity, container_id=launch.container_id
+            )
+            try:
+                manifest = self._compose_manifest(
+                    spec,
+                    identity,
+                    logical_run_id,
+                    record,
+                    runtime_identity=runtime_identity,
+                )
+            except ValueError as exc:
+                await kernel.transition(
+                    record.physical_attempt_id,
+                    to_state=PrimaryState.FAILED,
+                    reason=f"dual-digest invariant violation: {exc}",
+                )
+                return
             target_artifact_dir = self.store.artifacts / spec.artifact_dir_name
             saga = PromotionSaga(
                 journal=self.journal,
@@ -343,7 +383,13 @@ class MvdDockerExecutor:
         identity: ImageIdentity,
         logical_run_id: str,
         record: RunRecord,
+        runtime_identity: Optional[ImageIdentity] = None,
     ) -> ArtifactManifest:
+        # Dual-digest invariant (STRATEGY M2). When the engine reported a
+        # runtime SIF, the SIF's built_from MUST equal image_identity.value.
+        # Raises ValueError on mismatch; the caller catches and FAILs the
+        # run rather than promoting a non-comparable artifact.
+        verify_runtime_identity_matches_source(identity, runtime_identity)
         return ArtifactManifest(
             logical_run_id=logical_run_id,
             physical_attempt_id=record.physical_attempt_id,
@@ -354,10 +400,47 @@ class MvdDockerExecutor:
             mv_contract_version=spec.contract_version,
             produced_at=ProducedAt.from_dict(produced_at_now(self.boot)),
             produced_by=ProducedBy(
-                mvd_version=self.mvd_version, git_commit=self.git_commit
+                mvd_version=self.mvd_version,
+                git_commit=self.git_commit,
+                user_id=self.user_id,
             ),
             artifacts=[],
             owner_token=record.physical_attempt_id,
+            runtime_image_identity=runtime_identity,
+        )
+
+    def _compose_runtime_identity(
+        self,
+        *,
+        source: ImageIdentity,
+        container_id: str,
+    ) -> Optional[ImageIdentity]:
+        """Ask the engine whether it produced a runtime-derived identity
+        (e.g. an Apptainer SIF) for the just-launched container. Returns
+        ``None`` for engines that run the source image directly (Docker).
+        """
+        engine = getattr(self.supervisor, "engine", None)
+        if engine is None:
+            return None
+        sif_lookup = getattr(engine, "sif_digest_for", None)
+        if not callable(sif_lookup):
+            return None
+        sif = sif_lookup(container_id)
+        if not sif:
+            return None
+        # Use the source digest as built_from when the source is itself a
+        # content-addressed identity; otherwise built_from stays None and
+        # `is_strict_acceptable` will reject the result under strict mode.
+        built_from: Optional[str] = None
+        if source.kind.value in {"registry_digest", "build_context_hash"}:
+            built_from = source.value
+        built_by = (
+            "apptainer-pull-runtime"
+            if getattr(engine, "name", "").startswith("apptainer")
+            else None
+        )
+        return ImageIdentity.sif_digest(
+            sif, built_from=built_from, built_by=built_by
         )
 
 

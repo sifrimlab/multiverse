@@ -6,33 +6,6 @@ import pytest
 import numpy as np
 
 
-# ── job_spec propagation ──────────────────────────────────────────────────────
-
-def test_write_job_spec_includes_metrics_field(tmp_path):
-    from multiverse.runner.docker_runner import _write_job_spec
-
-    job = {
-        "dataset_id": 1,
-        "dataset_name": "ds",
-        "model_name_orig": "pca",
-        "metrics": {"model_metrics": ["total_variance"]},
-    }
-    path = _write_job_spec(str(tmp_path), job=job, seed=42)
-    with open(path) as f:
-        spec = json.load(f)
-    assert "metrics" in spec
-    assert spec["metrics"] == {"model_metrics": ["total_variance"]}
-
-
-def test_write_job_spec_metrics_defaults_to_empty_dict(tmp_path):
-    from multiverse.runner.docker_runner import _write_job_spec
-
-    job = {"dataset_id": 1, "dataset_name": "ds", "model_name_orig": "pca"}
-    path = _write_job_spec(str(tmp_path), job=job, seed=42)
-    with open(path) as f:
-        spec = json.load(f)
-    assert spec["metrics"] == {}
-
 
 def test_build_model_config_returns_metrics():
     from multiverse.models.runtime_io import build_model_config

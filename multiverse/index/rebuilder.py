@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..artifact import (
     ARTIFACT_MANIFEST_FILENAME,
@@ -141,6 +141,7 @@ def rebuild_index(
                 "submitted_wall_iso": attempt_facts.submitted_wall_iso,
                 "last_seq": attempt_facts.last_seq,
                 "options": attempt_facts.options,
+                "user_id": attempt_facts.user_id,
             }
         )
         for plugin, status in attempt_facts.projections.items():
@@ -148,6 +149,16 @@ def rebuild_index(
                 physical_attempt_id=attempt,
                 plugin=plugin,
                 status=status,
+            )
+        for ev in attempt_facts.reservation_events:
+            index.upsert_reservation_event(
+                physical_attempt_id=attempt,
+                seq=ev["seq"],
+                kind=ev["kind"],
+                wall_iso=ev["wall_iso"],
+                ram_bytes=ev.get("ram_bytes"),
+                gpu_index=ev.get("gpu_index"),
+                release_reason=ev.get("release_reason"),
             )
 
     result.total_runs = len(result.classifications)
@@ -177,13 +188,36 @@ class _AttemptFacts:
     last_seq: int = 0
     options: Dict[str, Any] = field(default_factory=dict)
     projections: Dict[str, str] = field(default_factory=dict)
+    user_id: Optional[str] = None
+    reservation_events: List[Dict[str, Any]] = field(default_factory=list)
 
     def consume(self, record) -> None:
         self.last_seq = max(self.last_seq, record.seq)
         if record.logical_run_id and not self.logical_run_id:
             self.logical_run_id = record.logical_run_id
+        # Capture user_id from any record that carries it (G2).
+        if record.user_id and not self.user_id:
+            self.user_id = record.user_id
 
-        if record.kind is JournalKind.JOB_INTENT:
+        if record.kind is JournalKind.RESERVATION_GRANTED:
+            self.reservation_events.append({
+                "seq": record.seq,
+                "kind": "granted",
+                "wall_iso": record.wall_iso,
+                "ram_bytes": record.payload.get("ram_bytes"),
+                "gpu_index": record.payload.get("gpu_index"),
+                "release_reason": None,
+            })
+        elif record.kind is JournalKind.RESERVATION_RELEASED:
+            self.reservation_events.append({
+                "seq": record.seq,
+                "kind": "released",
+                "wall_iso": record.wall_iso,
+                "ram_bytes": None,
+                "gpu_index": None,
+                "release_reason": record.payload.get("reason"),
+            })
+        elif record.kind is JournalKind.JOB_INTENT:
             self.manifest_path = record.payload.get("manifest_path")
             self.options = dict(record.payload.get("options") or {})
             self.submitted_wall_iso = record.wall_iso

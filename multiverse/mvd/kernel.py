@@ -10,15 +10,18 @@ filesystem; they do not share writable state with the kernel.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
+
+from ..state_paths import resolve_user_id
 
 from ..artifact import (
     BootContext,
     compute_params_hash,
     new_physical_attempt_id,
 )
+from ..broker import ResourceBroker, reconstruct_ledger_from_journal
 from ..journal import JournalKind, JournalLayout, JournalReader, JournalWriter
 from .api import KERNEL_VERBS, KernelAPI
 from .events import EventKind, KernelEvent
@@ -44,6 +47,12 @@ class KernelConfig:
     """If True, the kernel refuses new ``submit_run`` calls until
     ``resume()`` is invoked. Used by ``mvd-rebuild-index`` (Milestone 8)
     as the paused-kernel maintenance lock (R1)."""
+    user_id: str = field(default_factory=resolve_user_id)
+    """Owner of the runs this kernel produces. Informational under the
+    current single-user product boundary (STRATEGY M1); reserved so that
+    multi-user-future does not require retrofitting tenancy into journal
+    records, broker keys, and projection plugin paths. Override via
+    ``$MVEXP_USER_ID`` or pass explicitly."""
 
 
 class Kernel:  # implements KernelAPI
@@ -56,6 +65,7 @@ class Kernel:  # implements KernelAPI
         executor: Optional[RunExecutor] = None,
         journal: Optional[JournalWriter] = None,
         boot: Optional[BootContext] = None,
+        broker: Optional[ResourceBroker] = None,
     ) -> None:
         self._config = config
         self._boot = boot or BootContext.new(
@@ -66,6 +76,12 @@ class Kernel:  # implements KernelAPI
         layout = JournalLayout.at(config.state_root / "journal").ensure()
         self._journal = journal or JournalWriter(layout, boot_id=self._boot.boot_id)
         self._executor: RunExecutor = executor or NullRunExecutor()
+        # STRATEGY M3: if a broker is provided, ``replay_from_journal`` will
+        # reconstruct its reservation ledger from the journal. The kernel
+        # also synthesizes ``RESERVATION_RELEASED`` records for any
+        # reservations stranded by a crash (granted, but the run has since
+        # reached a terminal state — see :meth:`replay_from_journal`).
+        self._broker: Optional[ResourceBroker] = broker
 
         self._registry = RunRegistry()
         self._idempotency_index: Dict[str, str] = {}
@@ -90,7 +106,8 @@ class Kernel:  # implements KernelAPI
         reader = JournalReader(JournalLayout.at(self._config.state_root / "journal"))
         self._registry = RunRegistry()
         self._idempotency_index.clear()
-        for record in reader.replay().records:
+        all_records = list(reader.replay().records)
+        for record in all_records:
             attempt = record.physical_attempt_id
             if record.kind is JournalKind.JOB_INTENT and attempt:
                 run_record = new_run_record(
@@ -149,6 +166,23 @@ class Kernel:  # implements KernelAPI
                 status = record.payload.get("status")
                 if plugin and status:
                     run_record.projections[plugin] = status
+
+        # STRATEGY M3: reconstruct the broker's reservation ledger from
+        # the journal. Any reservation that is granted but whose run is
+        # now in a terminal state was stranded by a crash — synthesize a
+        # RESERVATION_RELEASED so the ledger never lies about live
+        # reservations. The release is durable: future replays see the
+        # ledger as empty.
+        if self._broker is not None:
+            ledger = reconstruct_ledger_from_journal(all_records)
+            self._broker.ledger = ledger
+            for attempt in list(ledger.by_attempt):
+                if not self._registry.has(attempt):
+                    self._broker.release(attempt, reason="crash_recovery_unknown_run")
+                    continue
+                state = self._registry.get(attempt).primary_state
+                if state.is_terminal:
+                    self._broker.release(attempt, reason="crash_recovery")
 
     async def shutdown(self) -> None:
         for task in self._execution_tasks.values():

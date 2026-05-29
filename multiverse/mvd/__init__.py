@@ -21,6 +21,7 @@ contains no Docker, scvi-tools, or model-specific code.
 from .api import KernelAPI, KERNEL_VERBS
 from .docker_executor import MvdDockerExecutor, build_executor_options
 from .events import KernelEvent, EventKind
+from .slurm_executor import MvdSlurmExecutor, build_slurm_executor_options
 from .executor import (
     NullRunExecutor,
     RunExecutor,
@@ -43,6 +44,7 @@ __all__ = [
     "KernelConfig",
     "KernelEvent",
     "MvdDockerExecutor",
+    "MvdSlurmExecutor",
     "NullRunExecutor",
     "PROJECTION_STATUSES",
     "PrimaryState",
@@ -53,4 +55,5 @@ __all__ = [
     "SyntheticRunExecutor",
     "assert_valid_transition",
     "build_executor_options",
+    "build_slurm_executor_options",
 ]

@@ -19,7 +19,7 @@ from rich.console import Console
 # The production path goes through mvd; docker_runner.py is unsupported legacy code.
 from ..logging_utils import get_logger, setup_logging
 from ..ingestion import register_from_manifest, resolve_manifest_path, preprocess_dataset
-from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR, recover_orphaned_runs
+from ..registry_db import init_db, get_db_connection, ARTIFACTS_DIR
 from ..models_ingest import (
     resolve_model_manifest_path,
     load_model_manifest,
@@ -206,27 +206,13 @@ def _read_batch_count(path: str, batch_key: str) -> int:
 
 
 def _record_validation_failure(job: Dict[str, Any], reason: str) -> None:
-    conn = get_db_connection()
-    try:
-        conn.execute(
-            """
-            INSERT INTO runs
-            (dataset_id, model_slug, model_version, model_name, status, output_path, failure_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                job.get("dataset_id"),
-                job.get("model_slug", job.get("model_name", "")),
-                job.get("model_version", "0.0.0"),
-                job.get("model_name", job.get("model_slug", "")),
-                "FAILED",
-                job.get("output_path", ""),
-                f"VALIDATION_ERROR:{reason}",
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    # Legacy runs-table write removed in G6; log only.
+    logger.warning(
+        "Validation failure for %s/%s: %s",
+        job.get("dataset_name", "?"),
+        job.get("model_slug", job.get("model_name", "?")),
+        reason,
+    )
 
 
 def validate_pending_jobs(
@@ -726,13 +712,8 @@ async def run_workflow_async(args: argparse.Namespace):
             logger.warning("Docker client unavailable during recovery: %s", exc)
             emit_event("error", kind="docker_client_unavailable", message=str(exc))
 
-        def _collect_reattach(container, run_id, output_path):
-            labels = ((getattr(container, "attrs", {}) or {}).get("Config", {}) or {}).get("Labels", {}) or {}
-            workspace_dir = labels.get("multiverse.run.workspace_dir") or output_path
-            final_artifact_dir = labels.get("multiverse.run.final_artifact_dir") or output_path
-            reattach_specs.append((container, int(run_id), str(workspace_dir), str(final_artifact_dir)))
-
-        recover_orphaned_runs(docker_client=docker_client, reattach_callback=_collect_reattach)
+        # recover_orphaned_runs removed in G6 (legacy docker_runner path).
+        # MVD-era recovery is handled by Kernel.replay_from_journal + rebuild-index.
 
         conn = get_db_connection()
         manifest_data: Dict[str, Any] = {}
@@ -933,53 +914,15 @@ async def run_workflow_async(args: argparse.Namespace):
                 pass
 
 
-async def run_workflow_local_async(args: argparse.Namespace) -> None:
-    """Local (no-Docker) workflow: validates manifest then runs container/run.py in-process."""
-    from .local_runner import run_jobs_locally
+async def run_workflow_local_async(_args: argparse.Namespace) -> None:
+    """Local (no-Docker) workflow — removed in G6.
 
-    os.makedirs(args.output, exist_ok=True)
-    setup_logging(args.output)
-
-    conn = get_db_connection()
-    try:
-        if hasattr(args, "manifest") and args.manifest:
-            parsed_manifest = require_parsed_manifest(args.manifest, conn)
-            pending_jobs = parsed_manifest.plan
-        else:
-            pending_jobs = generate_execution_plan(conn)
-    except ManifestValidationError as exc:
-        conn.close()
-        console.print("[bold red]Manifest validation failed:[/]")
-        for err in exc.parsed.errors:
-            console.print(f"  [red]-[/] {err['field']}: {err['message']} ({err['code']})")
-        raise SystemExit(2) from exc
-
-    validated_jobs, pre_flight_warnings = validate_pending_jobs(pending_jobs, record_failures=True)
-    runnable_jobs = [j for j in validated_jobs if not j.get("_skipped")]
-    conn.close()
-
-    if not runnable_jobs:
-        logger.info("All jobs were skipped after pre-flight validation.")
-        _print_run_summary(validated_jobs, {}, pre_flight_warnings)
-        return
-
-    tasks_status = {
-        f"{j.get('dataset_name')}_{j.get('model_slug')}": "Pending"
-        for j in runnable_jobs
-    }
-
-    def update_status(name: str, status: str) -> None:
-        tasks_status[name] = status
-
-    console.print(f"[bold]Local run:[/bold] {len(runnable_jobs)} job(s), no Docker")
-    with Live(generate_status_table(tasks_status), refresh_per_second=4) as live:
-        def _cb(name: str, status: str) -> None:
-            update_status(name, status)
-            live.update(generate_status_table(tasks_status))
-
-        result_summary = await run_jobs_locally(runnable_jobs, args.seed, status_callback=_cb)
-
-    _print_run_summary(validated_jobs, result_summary, pre_flight_warnings)
+    The canonical path is ``multiverse run`` → ``mvd_entrypoint``.
+    """
+    raise SystemExit(
+        "The legacy local-runner path was removed. "
+        "Use 'multiverse run' with the mvd entrypoint instead."
+    )
 
 
 def execute_run(args: argparse.Namespace):
@@ -1073,9 +1016,10 @@ def main():
             action="store_true",
             default=False,
             help=(
-                "Publication mode. Requires a strict-acceptable image "
-                "identity (registry digest or build-context hash) and "
-                "upgrades validator warnings to refusals."
+                "Publication mode. Requires a strict-acceptable image identity "
+                "(registry digest or build-context hash). Rejects locally-built "
+                "images that have no registry provenance. Use this when preparing "
+                "a benchmark for publication."
             ),
         )
         p.add_argument(
@@ -1123,6 +1067,21 @@ def main():
     preproc_parser.add_argument("--manifest", required=False, help="Explicit path to dataset.yaml")
 
     subparsers.add_parser("init-db", help="Initialize the registry database")
+
+    migrate_ar_parser = subparsers.add_parser(
+        "migrate-asset-registry",
+        help="Copy datasets/models from legacy mvexp_state.db → asset_registry.db",
+    )
+    migrate_ar_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report row counts without writing",
+    )
+    migrate_ar_parser.add_argument(
+        "--state-root",
+        default=None,
+        help="Override state root (default: MVEXP_STATE_DIR or package default)",
+    )
 
     model_reg_parser = subparsers.add_parser(
         "register-model", help="Register a model from model.yaml"
@@ -1191,6 +1150,25 @@ def main():
         )
         print(result["message"])
         print(f"Model slug '{result['slug']}' registered at version {result['version']}.")
+    elif args.command == "migrate-asset-registry":
+        from pathlib import Path as _Path
+        from ..asset_registry import migrate_from_legacy_db
+        from ..registry_db import DB_NAME as _DB_NAME
+        state_root = _Path(args.state_root) if args.state_root else None
+        legacy_db = _Path(_DB_NAME)
+        if not legacy_db.is_file():
+            print(f"Legacy DB not found at {legacy_db}; nothing to migrate.")
+            raise SystemExit(0)
+        try:
+            counts = migrate_from_legacy_db(legacy_db, state_root=state_root, dry_run=args.dry_run)
+        except RuntimeError as exc:
+            print(f"Migration refused: {exc}")
+            raise SystemExit(1) from exc
+        tag = "[dry-run] " if args.dry_run else ""
+        print(
+            f"{tag}Migrated {counts['datasets']} dataset(s) and "
+            f"{counts['models']} model(s) to asset_registry.db"
+        )
     elif args.command == "models":
         if args.models_command == "register":
             model_manifest = resolve_model_manifest_path(

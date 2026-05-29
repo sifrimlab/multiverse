@@ -1,0 +1,109 @@
+"""sbatch script generation (STRATEGY M4).
+
+A run dispatched via the Slurm executor is one ``sbatch`` invocation per
+attempt. The script body wraps a single ``apptainer exec`` call against
+a pre-built SIF (preferred) or a runtime-pulled SIF.
+
+We *do not* invent a job-script DSL. The template takes a small set of
+named knobs (partition, account, qos, time/mem/cpus, plus a free-form
+``extra_directives`` escape hatch for the site-specific incantations
+every cluster has). Users who need more bend the template, not us.
+"""
+
+from __future__ import annotations
+
+import shlex
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, List, Optional
+
+
+@dataclass(frozen=True)
+class SlurmJobSpec:
+    """Inputs the executor hands to a :class:`SlurmEngine`.
+
+    ``image_sif`` is the path to the SIF that the apptainer step will
+    execute. ``oci_digest`` (and the SIF's own digest, recorded later by
+    the manifest's runtime_image_identity) is what enforces the M2
+    dual-digest invariant.
+    """
+
+    job_name: str
+    image_sif: Path
+    workspace: Path
+    dataset_path: Path
+    command: List[str] = field(default_factory=list)
+    env: Dict[str, str] = field(default_factory=dict)
+    partition: Optional[str] = None
+    account: Optional[str] = None
+    qos: Optional[str] = None
+    time_minutes: Optional[int] = None
+    mem_gb: Optional[int] = None
+    cpus_per_task: int = 1
+    gpus: Optional[int] = None
+    extra_directives: List[str] = field(default_factory=list)
+    """Raw ``#SBATCH`` lines appended after the structured directives.
+    Each entry must include the leading ``--`` (e.g. ``--gres=gpu:1``)
+    and *not* the ``#SBATCH `` prefix."""
+
+    output_log: Optional[Path] = None
+    error_log: Optional[Path] = None
+    apptainer_bin: str = "apptainer"
+
+
+def render_sbatch_script(spec: SlurmJobSpec) -> str:
+    """Return the literal text of the sbatch script for ``spec``.
+
+    The script is deterministic given the spec — golden-file tests pin
+    its shape so subtle drift surfaces as a test diff rather than a
+    silent change in scheduler behaviour.
+    """
+    lines: List[str] = ["#!/bin/bash"]
+    lines.append(f"#SBATCH --job-name={shlex.quote(spec.job_name)}")
+    if spec.partition:
+        lines.append(f"#SBATCH --partition={spec.partition}")
+    if spec.account:
+        lines.append(f"#SBATCH --account={spec.account}")
+    if spec.qos:
+        lines.append(f"#SBATCH --qos={spec.qos}")
+    if spec.time_minutes is not None:
+        lines.append(f"#SBATCH --time={int(spec.time_minutes)}")
+    if spec.mem_gb is not None:
+        lines.append(f"#SBATCH --mem={int(spec.mem_gb)}G")
+    lines.append(f"#SBATCH --cpus-per-task={int(spec.cpus_per_task)}")
+    if spec.gpus is not None and spec.gpus > 0:
+        lines.append(f"#SBATCH --gres=gpu:{int(spec.gpus)}")
+    if spec.output_log is not None:
+        lines.append(f"#SBATCH --output={shlex.quote(str(spec.output_log))}")
+    if spec.error_log is not None:
+        lines.append(f"#SBATCH --error={shlex.quote(str(spec.error_log))}")
+    for directive in spec.extra_directives:
+        cleaned = directive.strip()
+        if not cleaned:
+            continue
+        if cleaned.startswith("#SBATCH"):
+            lines.append(cleaned)
+        else:
+            lines.append(f"#SBATCH {cleaned}")
+
+    lines.append("")
+    lines.append("set -euo pipefail")
+    for key, value in sorted(spec.env.items()):
+        lines.append(f"export {key}={shlex.quote(value)}")
+    lines.append("")
+
+    # Apptainer invocation: bind the dataset (RO) and workspace (RW)
+    # into the container, then run the user command. The container will
+    # write its outputs back into the bound workspace, which the
+    # promotion saga reads after sacct reports COMPLETED.
+    bind_args = [
+        f"--bind {shlex.quote(str(spec.dataset_path))}:/input/data.h5mu:ro",
+        f"--bind {shlex.quote(str(spec.workspace))}:/output:rw",
+    ]
+    command = " ".join(shlex.quote(part) for part in spec.command)
+    lines.append(
+        f"{spec.apptainer_bin} exec {' '.join(bind_args)} "
+        f"{shlex.quote(str(spec.image_sif))} {command}".rstrip()
+    )
+    lines.append("")
+    return "\n".join(lines)
