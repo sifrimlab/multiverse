@@ -10,7 +10,7 @@ A good mvexp model behaves like this:
 2. It is reported `Compatible` only against datasets that supply its required omics.
 3. Its hyperparameters appear as typed controls on the **Configure** tab, derived from its JSON schema.
 4. It runs under the container contract documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
-5. It writes the required artifacts (`embeddings.h5`, `metrics.json`, `umap.png`, `model.log`).
+5. It writes the required artifacts (`embeddings.h5`, `metrics.json`, `umap.png`, `run.log`).
 6. Its results are comparable to other models in the Results tab and in MLflow.
 
 ## Tutorial: Hello World Model
@@ -144,3 +144,105 @@ Researchers should not need to know how your model is launched. Put all user-fac
 ## Citation Note
 
 If the model corresponds to a published method, cite that method and mvexp. Archive `model.yaml`, the hyperparameter schema, image tag/version, `run_manifest.yaml`, and provenance artifacts.
+
+## Building for HPC (Apptainer/Singularity)
+
+HPC clusters typically ban Docker but support [Apptainer](https://apptainer.org/) (formerly Singularity). Multiverse supports both runtimes; this section covers the HPC authoring path.
+
+### Singularity.def structure
+
+Create `store/models/<slug>/container/Singularity.def` alongside your `Dockerfile`:
+
+```singularity
+Bootstrap: docker
+From: mambaorg/micromamba:1.5.1
+
+%files
+    store/models/<slug>/container/environment.yml /opt/environment.yml
+    sdk/ /opt/sdk/
+
+%post
+    micromamba install -y -n base -f /opt/environment.yml
+    micromamba clean --all --yes
+    pip install /opt/sdk/mvr-worker/ --no-deps
+
+%runscript
+    exec python /opt/sdk/mvr-worker/run.py "$@"
+```
+
+The `%runscript` **must** invoke the same entry point as the `Dockerfile`'s `CMD` so the container contract (`/input/data.h5mu`, `/output/job_spec.json`, `/output/`) is identical across backends.
+
+Register the def file path in `model.yaml`:
+
+```yaml
+apptainer:
+  build_from: def_file
+  def_file: store/models/<slug>/container/Singularity.def
+  gpu_required: false  # set to true for GPU models
+```
+
+### Building the SIF
+
+**On a workstation with Docker + Apptainer:**
+
+```bash
+make build-sif slug=<slug>
+# or with docker-daemon method explicitly:
+multiverse build-sif --slug <slug> --method docker-daemon
+```
+
+**On an HPC login node (no Docker):**
+
+```bash
+multiverse build-sif --slug <slug> --method def-file
+```
+
+Transfer the resulting `.sif` file to the cluster if built locally.
+
+### Testing the SIF locally
+
+```bash
+apptainer exec \
+  --bind <data_path>:/input:ro \
+  --bind <workspace>:/output \
+  <slug>.sif python /opt/sdk/mvr-worker/run.py
+```
+
+### Registering the SIF path
+
+After building, register the SIF path so `multiverse run --backend slurm` can resolve it automatically:
+
+```bash
+multiverse register-model --manifest store/models/<slug>/model.yaml --set-sif-path /path/to/<slug>-<version>.sif
+```
+
+### Running on Slurm
+
+Pre-check your HPC environment:
+
+```bash
+multiverse doctor --deep-slurm
+```
+
+Then run via manifest:
+
+```bash
+multiverse run --manifest run_manifest.yaml --backend slurm --output /path/to/output
+```
+
+> **Note:** SIFs built by `multiverse build-sif` — whether from `--method
+> def-file` or `--method docker-daemon` against a locally-built image — have no
+> trustworthy registry provenance and are tagged `unverified_local`. Slurm runs
+> with these SIFs require `--accept-degraded` (or `accept_degraded: true` in the
+> kernel config). Strict acceptability comes only from a real registry digest
+> source (an explicitly supplied/persisted `image_digest`), not from the fact
+> that Apptainer built a SIF from Docker's local daemon. Persisting a registry
+> digest for registry-sourced images is a separate, not-yet-implemented feature.
+
+### Provenance note
+
+| Build method | Image identity | accept-degraded required? |
+|---|---|---|
+| `docker-daemon` (local image) | `unverified_local` | **Yes** |
+| `def-file` | `unverified_local` | **Yes** |
+| supplied registry digest (`image_digest` in manifest) | `registry_digest` (strict) | No |

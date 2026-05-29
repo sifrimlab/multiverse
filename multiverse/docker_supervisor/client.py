@@ -73,6 +73,9 @@ class ContainerEngine(Protocol):
     def inspect(self, container_id: str) -> ContainerInfo:
         ...
 
+    def logs(self, container_id: str) -> bytes:
+        ...
+
     def stop(self, container_id: str, *, timeout: int) -> None:
         ...
 
@@ -218,6 +221,25 @@ class RealDockerEngine:
                 f"Docker inspect failed for {container_id}: {type(exc).__name__}: {exc}"
             ) from exc
 
+    def logs(self, container_id: str) -> bytes:
+        """Return the container's combined stdout/stderr as raw bytes.
+
+        Best-effort host-side capture: callers persist this to
+        ``container.log`` so a run that never reached the worker SDK (early
+        crash, OOM, non-SDK image) still leaves debuggable evidence.
+        """
+        from .errors import ContainerEngineError, NoSuchContainerError
+
+        try:
+            container = self._client().containers.get(container_id)
+            return container.logs(stdout=True, stderr=True) or b""
+        except Exception as exc:
+            if _is_not_found(exc):
+                raise NoSuchContainerError(f"no such container: {container_id}") from exc
+            raise ContainerEngineError(
+                f"Docker logs failed for {container_id}: {type(exc).__name__}: {exc}"
+            ) from exc
+
     def stop(self, container_id: str, *, timeout: int) -> None:
         from .errors import ContainerEngineError, NoSuchContainerError
 
@@ -317,6 +339,7 @@ class _InMemoryContainer:
     stops: int = 0
     kills: int = 0
     removed: bool = False
+    log_output: bytes = b""
 
     def to_info(self) -> ContainerInfo:
         return ContainerInfo(
@@ -397,6 +420,14 @@ class InMemoryContainerEngine:
             raise NoSuchContainerError(f"no such container: {container_id}")
         return c.to_info()
 
+    def logs(self, container_id: str) -> bytes:
+        c = self.containers.get(container_id)
+        if c is None or c.removed:
+            from .errors import NoSuchContainerError
+
+            raise NoSuchContainerError(f"no such container: {container_id}")
+        return c.log_output
+
     def stop(self, container_id: str, *, timeout: int) -> None:
         c = self._require(container_id)
         c.stops += 1
@@ -432,6 +463,11 @@ class InMemoryContainerEngine:
         c.exit_code = exit_code
         c.oom_killed = oom_killed
         c.finished_at = time.time()
+
+    def simulate_logs(self, container_id: str, output: bytes) -> None:
+        """Seed the stdout/stderr bytes returned by :meth:`logs`."""
+        c = self._require(container_id)
+        c.log_output = output
 
     def simulate_docker_rm(self, container_id: str) -> None:
         """Model the user (or ``docker system prune``) removing the

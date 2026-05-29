@@ -57,3 +57,4 @@ site/
 .pytest_cache/
 
 STRATEGY.md
+!store/models/**/Singularity.def

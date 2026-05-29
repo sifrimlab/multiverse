@@ -177,6 +177,10 @@ register-model:
 		exit 1; \
 	fi
 
+.PHONY: build-sif
+build-sif:
+	uv run multiverse build-sif --slug $(slug)
+
 .PHONY: register-models
 register-models:
 	@echo "Registering all built-in models..."

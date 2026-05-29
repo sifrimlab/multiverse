@@ -10,3 +10,7 @@ hyperparameters_schema: schemas/models/multivi.hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/multivi/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/multivi/container/Singularity.def
+  gpu_required: true

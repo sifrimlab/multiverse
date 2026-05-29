@@ -42,6 +42,19 @@ from ..mvd import (
 from ..promotion import StoreLayout
 
 
+def _state_root_for_output(output_root: Path) -> Path:
+    return output_root / ".mvd-state"
+
+
+def _store_for_output(
+    *, state_root: Path, artifact_root: Path | None = None
+) -> StoreLayout:
+    kwargs: Dict[str, Path] = {}
+    if artifact_root is not None:
+        kwargs["artifacts_root"] = artifact_root
+    return StoreLayout(root=state_root / "store", **kwargs).ensure()
+
+
 def run_via_mvd(args: argparse.Namespace) -> int:
     """Drive the CLI's planned jobs through the mvd kernel.
 
@@ -52,23 +65,40 @@ def run_via_mvd(args: argparse.Namespace) -> int:
     if not output:
         print("--output is required for mvd-backed runs", file=sys.stderr)
         return 2
-    state_root = Path(output).expanduser().resolve()
+    artifact_root = Path(output).expanduser().resolve()
+    state_root = _state_root_for_output(artifact_root)
+    artifact_root.mkdir(parents=True, exist_ok=True)
     state_root.mkdir(parents=True, exist_ok=True)
+
+    # Session-level CLI log. Per-run logs live next to each run's artifacts
+    # (run.log / container.log / orchestrator.log); this top-level file
+    # captures CLI/plan-resolution events for the whole invocation.
+    from ..logging_utils import setup_logging
+
+    setup_logging(str(state_root))
 
     # Plan resolution: re-use the legacy parser so existing manifests
     # keep working, but never call into ``docker_runner`` afterwards.
     from .cli import (
         ManifestValidationError,
+        build_missing_images,
         generate_execution_plan,
         require_parsed_manifest,
     )
     from ..registry_db import get_db_connection
 
+    # Auto-build missing images by default; --no-build opts out. When building,
+    # skip the manifest's image-availability probe so a missing image does not
+    # fail validation before we get a chance to build it.
+    autobuild = not getattr(args, "no_build", False)
+
     conn = get_db_connection()
     try:
         if getattr(args, "manifest", None):
             try:
-                parsed = require_parsed_manifest(args.manifest, conn)
+                parsed = require_parsed_manifest(
+                    args.manifest, conn, backend_override="docker", check_images=not autobuild
+                )
             except ManifestValidationError as exc:
                 print("Manifest validation failed:", file=sys.stderr)
                 for err in exc.parsed.errors:
@@ -82,6 +112,14 @@ def run_via_mvd(args: argparse.Namespace) -> int:
         else:
             manifest_text = ""
             pending_jobs = generate_execution_plan(conn)
+
+        if pending_jobs and autobuild:
+            failures = build_missing_images(pending_jobs, conn)
+            if failures:
+                print("Auto-build of model images failed:", file=sys.stderr)
+                for slug, msg in failures:
+                    print(f"  - {slug}: {msg}", file=sys.stderr)
+                return 2
     finally:
         conn.close()
 
@@ -95,6 +133,7 @@ def run_via_mvd(args: argparse.Namespace) -> int:
     return asyncio.run(
         _drive_jobs(
             state_root=state_root,
+            artifact_root=artifact_root,
             pending_jobs=pending_jobs,
             manifest_text=manifest_text,
             seed=getattr(args, "seed", None),
@@ -109,13 +148,14 @@ async def _drive_jobs(
     pending_jobs: List[Dict[str, Any]],
     manifest_text: str,
     seed: int | None,
+    artifact_root: Path | None = None,
     accept_degraded: bool = False,
 ) -> int:
     boot = BootContext.new(mvd_version="0.1.0-mvd")
     config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
     layout = JournalLayout.at(state_root / "journal").ensure()
     journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
-    store = StoreLayout(root=state_root / "store").ensure()
+    store = _store_for_output(state_root=state_root, artifact_root=artifact_root)
 
     # Lazy-import the real Docker engine adapter only when we actually
     # need it. ``mvd_entrypoint`` itself stays import-clean.
@@ -186,6 +226,198 @@ async def _drive_jobs(
     return 0 if n_fail == 0 else 1
 
 
+
+
+def run_via_slurm(args: argparse.Namespace) -> int:
+    """Drive the CLI's planned jobs through the mvd Slurm kernel."""
+    output = getattr(args, "output", None)
+    if not output:
+        print("--output is required for Slurm-backed runs", file=sys.stderr)
+        return 2
+    artifact_root = Path(output).expanduser().resolve()
+    state_root = _state_root_for_output(artifact_root)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    state_root.mkdir(parents=True, exist_ok=True)
+
+    from ..logging_utils import setup_logging
+
+    setup_logging(str(state_root))
+
+    from .cli import (
+        ManifestValidationError,
+        generate_execution_plan,
+        require_parsed_manifest,
+    )
+    from ..registry_db import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        if getattr(args, "manifest", None):
+            try:
+                # Force the Slurm backend so manifest validation resolves SIFs
+                # and skips Docker image probing even when the manifest omits
+                # globals.backend.
+                parsed = require_parsed_manifest(args.manifest, conn, backend_override="slurm")
+            except ManifestValidationError as exc:
+                print("Manifest validation failed:", file=sys.stderr)
+                for err in exc.parsed.errors:
+                    print(
+                        f"  - {err['field']}: {err['message']} ({err['code']})",
+                        file=sys.stderr,
+                    )
+                return 2
+            manifest_text = Path(args.manifest).read_text(encoding="utf-8")
+            pending_jobs = parsed.plan
+        else:
+            manifest_text = ""
+            pending_jobs = generate_execution_plan(conn)
+    finally:
+        conn.close()
+
+    if not pending_jobs:
+        print("No pending jobs to execute.", file=sys.stderr)
+        return 0
+
+    accept_degraded = getattr(args, "accept_degraded", False)
+    return asyncio.run(
+        _drive_jobs_slurm(
+            state_root=state_root,
+            artifact_root=artifact_root,
+            pending_jobs=pending_jobs,
+            manifest_text=manifest_text,
+            seed=getattr(args, "seed", None),
+            accept_degraded=accept_degraded,
+        )
+    )
+
+
+async def _drive_jobs_slurm(
+    *,
+    state_root: Path,
+    pending_jobs: List[Dict[str, Any]],
+    manifest_text: str,
+    seed: int | None,
+    artifact_root: Path | None = None,
+    accept_degraded: bool = False,
+) -> int:
+    from ..artifact import BootContext, compute_manifest_hash
+    from ..broker import HostMetrics, InMemoryHostObserver, ResourceBroker
+    from ..journal import JournalLayout, JournalWriter
+    from ..mvd import Kernel, KernelConfig, PrimaryState
+    from ..mvd.slurm_executor import MvdSlurmExecutor
+    from ..slurm.engine import RealSlurmEngine
+
+    boot = BootContext.new(mvd_version="0.1.0-mvd")
+    config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
+    layout = JournalLayout.at(state_root / "journal").ensure()
+    journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
+    store = _store_for_output(state_root=state_root, artifact_root=artifact_root)
+
+    engine = RealSlurmEngine()
+    broker = ResourceBroker(observer=_observer(), journal=journal)
+    executor = MvdSlurmExecutor(
+        journal=journal,
+        boot=boot,
+        store=store,
+        engine=engine,
+        broker=broker,
+        state_root=state_root,
+        accept_degraded=accept_degraded,
+        user_id=config.user_id,
+    )
+    kernel = Kernel(
+        config,
+        executor=executor,
+        journal=journal,
+        boot=boot,
+        broker=broker,
+    )
+
+    manifest_hash = compute_manifest_hash(manifest_text or "")
+    attempt_ids: List[str] = []
+    job_names: List[str] = []
+    for job in pending_jobs:
+        if job.get("_skipped"):
+            continue
+        options = _options_for_slurm_job(job, manifest_hash=manifest_hash, seed=seed)
+        attempt = await kernel.submit_run(
+            manifest_path=str(getattr(job, "manifest_path", "") or ""),
+            options=options,
+        )
+        attempt_ids.append(attempt)
+        job_names.append(_job_name(job))
+
+    n_success = 0
+    n_fail = 0
+    for attempt, name in zip(attempt_ids, job_names):
+        task = kernel._execution_tasks.get(attempt)
+        if task is not None:
+            try:
+                await task
+            except Exception as exc:
+                print(f"[!!] {name}: executor raised {exc}", file=sys.stderr)
+        snap = await kernel.query_run(physical_attempt_id=attempt)
+        _project_snapshot_to_index(state_root, snap)
+        if snap["primary_state"] == PrimaryState.ARTIFACT_SUCCESS.value:
+            n_success += 1
+            print(f"[ok] {name}: ARTIFACT_SUCCESS at {snap['artifact_dir']}")
+        else:
+            n_fail += 1
+            print(
+                f"[!!] {name}: {snap['primary_state']} — {snap.get('failure_reason')}",
+                file=sys.stderr,
+            )
+
+    await kernel.shutdown()
+    print(f"slurm run complete: {n_success} succeeded, {n_fail} failed", file=sys.stderr)
+    return 0 if n_fail == 0 else 1
+
+
+def _options_for_slurm_job(job: Dict[str, Any], *, manifest_hash: str, seed: int | None = None) -> Dict[str, Any]:
+    """Build ``Kernel.submit_run`` options for a Slurm job dict.
+
+    The Slurm executor reads its knobs from the nested ``options["slurm"]``
+    block, so we use :func:`build_slurm_executor_options` (which produces that
+    shape) rather than the flat Docker option builder.
+    """
+    from ..mvd.slurm_executor import build_slurm_executor_options
+
+    slurm_cfg = dict(job.get("_slurm", {}) or {})
+
+    def _opt_int(key: str):
+        val = slurm_cfg.get(key)
+        return int(val) if val is not None else None
+
+    options = build_slurm_executor_options(
+        model_slug=str(job.get("model_slug") or job.get("model_name") or "model"),
+        image_sif=str(job.get("image_sif") or ""),
+        dataset_slug=str(job.get("dataset_slug") or job.get("dataset_name") or "dataset"),
+        dataset_path=str(job.get("dataset_path") or ""),
+        dataset_n_obs=int(job.get("dataset_n_obs") or job.get("n_obs") or 0),
+        params=dict(job.get("model_params") or {}),
+        image_digest=job.get("image_digest"),
+        model_version=str(job.get("model_version") or "0.0.0"),
+        dataset_n_vars=job.get("dataset_n_vars") or job.get("n_vars"),
+        validators=str(job.get("validators") or "basic"),
+        artifact_dir_name=(
+            str(job.get("artifact_dir_name")) if job.get("artifact_dir_name") else
+            os.path.basename(str(job.get("output_path") or "")) or None
+        ),
+        seed=seed,
+        partition=slurm_cfg.get("partition"),
+        account=slurm_cfg.get("account"),
+        qos=slurm_cfg.get("qos"),
+        time_minutes=_opt_int("time_minutes"),
+        mem_gb=_opt_int("mem_gb"),
+        cpus_per_task=int(slurm_cfg.get("cpus_per_task", 1)),
+        gpus=_opt_int("gpus"),
+        extra_directives=slurm_cfg.get("extra_directives"),
+    )
+    options["manifest_hash"] = manifest_hash
+    # $SLURM_TMPDIR staging flags live in the nested slurm block too.
+    options["slurm"]["use_tmpdir"] = bool(slurm_cfg.get("use_tmpdir", False))
+    options["slurm"]["use_tmpdir_sif"] = bool(slurm_cfg.get("use_tmpdir_sif", False))
+    return options
 
 
 def _project_snapshot_to_index(state_root: Path, snap: Dict[str, Any]) -> None:

@@ -154,8 +154,24 @@ The artifact layout is:
   embeddings.h5
   metrics.json        # optional
   umap.png            # optional
-  container.log       # optional
+  run.log             # model SDK log (mvr_worker)
+  container.log       # host-captured container stdout/stderr
+  orchestrator.log    # host-side run reasoning (state transitions, failures)
 ```
+
+### Where logs live
+
+Each run carries up to three logs, surfaced together under **Logs** in the Results tab:
+
+| File | Written by | Use it to debug |
+|---|---|---|
+| `run.log` | The model container via `mvr_worker` | Model-internal progress, metrics, warnings. |
+| `container.log` | The host (captured container stdout/stderr) | Crashes, tracebacks, OOMs, or non-SDK images that never wrote `run.log`. |
+| `orchestrator.log` | The host executor | Admission, launch, exit code, promotion outcome, and the exact failure reason. |
+
+Successful runs are promoted to `store/artifacts/<artifact-id>/`. Runs that fail before promotion keep their logs in the run's workspace at `<output-dir>/store/workspaces/<attempt-id>/`, and cancelled runs under `<output-dir>/store/cancelled/<date>/<attempt-id>/`. Session-wide CLI events are written to `<output-dir>/multiverse.log`, and kernel state-machine events to `<output-dir>/journal/current.log`.
+
+Set `MVEXP_LOG_LEVEL=DEBUG` (a level name or numeric value) before launching to raise verbosity across the host logs and the in-container `run.log`.
 
 For cross-run comparison and metric histories, open the **Analysis** tab or visit MLflow at `http://localhost:5000` directly.
 
@@ -185,7 +201,7 @@ sc.pl.umap(adata, color=["batch", "cell_type"])
 | Symptom | Likely cause | What to do |
 |---|---|---|
 | Dataset does not appear in Configure | Registry has not refreshed. | Registry → **Refresh Registry**. |
-| Job is `FAILED` | Docker launch, container execution, or output validation failed. | Inspect the run failure reason and preserved logs. |
+| Job is `FAILED` | Docker launch, container execution, or output validation failed. | Open `orchestrator.log` for the failure reason, then `container.log` for the container traceback. For failed runs these stay under `store/workspaces/<attempt-id>/`. |
 | `executor crashed: unverified_local` | Running with `--strict` but image has no registry digest. | Remove `--strict`. The default run allows locally-built images. |
 | Metric is missing | `batch_key` or `cell_type_key` does not support that metric. | Confirm columns exist in your `obs`; re-register if you fix them. |
 | `database is locked` | Concurrent registry writes or an interrupted process. | Retry. If Results looks stale, run `uv run multiverse rebuild-index --state-root store/artifacts/run_output --store-root store/artifacts/run_output/store`. |
@@ -197,7 +213,7 @@ For a publication, keep these artifacts with the analysis:
 - `run_manifest.yaml`: datasets, models, parameters, seed, metric selection.
 - `job_spec.json`: exact per-job runtime instruction passed to the model container.
 - `metrics.json`: model metrics and training histories where available.
-- `container.log`: execution log.
+- `run.log` / `container.log`: model and host-captured execution logs.
 - `provenance.json`: additional provenance when present.
 
 A Methods paragraph can state:

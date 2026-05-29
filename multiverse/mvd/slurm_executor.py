@@ -27,9 +27,13 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+
+from ..logging_utils import resolve_log_level
 
 from ..artifact import (
     ArtifactManifest,
@@ -131,6 +135,8 @@ class MvdSlurmExecutor:
             return
 
         submission = None
+        run_logger: Optional[logging.Logger] = None
+        orch_handler: Optional[logging.Handler] = None
         try:
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.ADMITTED
@@ -156,6 +162,19 @@ class MvdSlurmExecutor:
             workspace.mkdir(parents=True, exist_ok=True)
             workspace.chmod(0o777)
             record.workspace_dir = str(workspace)
+            run_logger, orch_handler = self._open_run_logger(
+                workspace, record.physical_attempt_id
+            )
+            run_logger.info(
+                "admitted attempt=%s logical_run_id=%s model=%s image_sif=%s "
+                "image_identity=%s dataset=%s",
+                record.physical_attempt_id,
+                logical_run_id,
+                spec.model_slug,
+                spec.image_sif,
+                identity.kind.value,
+                spec.dataset_slug,
+            )
 
             job_spec = SlurmJobSpec(
                 job_name=f"mvd-{record.physical_attempt_id[:8]}",
@@ -174,6 +193,8 @@ class MvdSlurmExecutor:
                 extra_directives=spec.extra_directives,
                 output_log=workspace / "slurm.out",
                 error_log=workspace / "slurm.err",
+                use_tmpdir=spec.use_tmpdir,
+                use_tmpdir_sif=spec.use_tmpdir_sif,
             )
 
             try:
@@ -182,6 +203,7 @@ class MvdSlurmExecutor:
                     script_dir=self.state_root / self.job_script_dir_name,
                 )
             except SlurmEngineError as exc:
+                run_logger.error("sbatch failed: %s", exc)
                 await kernel.transition(
                     record.physical_attempt_id,
                     to_state=PrimaryState.FAILED,
@@ -190,6 +212,12 @@ class MvdSlurmExecutor:
                 return
 
             self._record_dispatch(record.physical_attempt_id, submission.job_id)
+            run_logger.info(
+                "submitted slurm job_id=%s (stdout=%s stderr=%s)",
+                submission.job_id,
+                job_spec.output_log,
+                job_spec.error_log,
+            )
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.RUNNING
             )
@@ -201,6 +229,7 @@ class MvdSlurmExecutor:
                 return  # cancelled or timed-out polling
 
             if terminal.state is not SlurmJobState.COMPLETED:
+                run_logger.error("run failed: %s", _failure_reason(terminal))
                 await kernel.transition(
                     record.physical_attempt_id,
                     to_state=PrimaryState.FAILED,
@@ -208,6 +237,7 @@ class MvdSlurmExecutor:
                 )
                 return
 
+            run_logger.info("slurm job completed")
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.TRAINING_SUCCEEDED
             )
@@ -251,6 +281,10 @@ class MvdSlurmExecutor:
             result = saga.run()
             if result.outcome is PromotionOutcome.PROMOTED:
                 record.artifact_dir = str(result.artifact_dir)
+                run_logger.info(
+                    "promoted to artifact_dir=%s (ARTIFACT_SUCCESS)",
+                    result.artifact_dir,
+                )
                 await kernel.transition(
                     record.physical_attempt_id,
                     to_state=PrimaryState.ARTIFACT_SUCCESS,
@@ -263,6 +297,10 @@ class MvdSlurmExecutor:
                 )
                 return
             if result.outcome is PromotionOutcome.QUARANTINED:
+                run_logger.error(
+                    "promotion quarantined: %s",
+                    result.failure_reason or "promotion quarantined",
+                )
                 await kernel.transition(
                     record.physical_attempt_id,
                     to_state=PrimaryState.PROMOTION_FAILED,
@@ -274,17 +312,63 @@ class MvdSlurmExecutor:
                     reason="quarantined; user adoption required",
                 )
                 return
+            run_logger.error(
+                "promotion failed: %s",
+                result.failure_reason or "promotion pre-prepare failure",
+            )
             await kernel.transition(
                 record.physical_attempt_id,
                 to_state=PrimaryState.FAILED,
                 reason=result.failure_reason or "promotion pre-prepare failure",
             )
         finally:
+            self._close_run_logger(orch_handler)
             self.broker.release(record.physical_attempt_id, reason="terminal")
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    def _open_run_logger(
+        self, workspace: Path, attempt_id: str
+    ) -> "tuple[logging.Logger, logging.Handler]":
+        """Open a per-attempt host-side log at ``workspace/orchestrator.log``.
+
+        Mirrors :meth:`MvdDockerExecutor._open_run_logger`. The handler is
+        attached to a dedicated, non-propagating logger keyed on the attempt
+        id; level honours ``$MVEXP_LOG_LEVEL``.
+        """
+        level = resolve_log_level()
+        handler = logging.FileHandler(
+            workspace / "orchestrator.log", mode="a", encoding="utf-8"
+        )
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        )
+        run_logger = logging.getLogger(f"multiverse.mvd.run.{attempt_id}")
+        run_logger.setLevel(level)
+        run_logger.propagate = False
+        for stale in run_logger.handlers[:]:
+            run_logger.removeHandler(stale)
+            try:
+                stale.close()
+            except Exception:
+                pass
+        run_logger.addHandler(handler)
+        return run_logger, handler
+
+    @staticmethod
+    def _close_run_logger(handler: Optional[logging.Handler]) -> None:
+        if handler is None:
+            return
+        for logger in logging.Logger.manager.loggerDict.values():
+            if isinstance(logger, logging.Logger) and handler in logger.handlers:
+                logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
 
     async def _poll_until_terminal(
         self,
@@ -445,6 +529,8 @@ class _SlurmJobSpec:
     cpus_per_task: int = 1
     gpus: Optional[int] = None
     extra_directives: List[str] = field(default_factory=list)
+    use_tmpdir: bool = False
+    use_tmpdir_sif: bool = False
 
     @classmethod
     def from_options(
@@ -547,6 +633,8 @@ class _SlurmJobSpec:
                 else None
             ),
             extra_directives=extra_directives,
+            use_tmpdir=bool(slurm_block.get("use_tmpdir", False)),
+            use_tmpdir_sif=bool(slurm_block.get("use_tmpdir_sif", False)),
         )
 
     @property
@@ -556,6 +644,9 @@ class _SlurmJobSpec:
             "MVR_OUTPUT_DIR": "/output",
             "MVR_JOB_SPEC_PATH": "/output/job_spec.json",
         }
+        host_level = os.environ.get("MVEXP_LOG_LEVEL")
+        if host_level:
+            base["MVEXP_LOG_LEVEL"] = str(host_level)
         base.update(self.env_extra)
         return base
 

@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import asyncio
@@ -10,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from rich.live import Live
 from rich.table import Table
 from rich.console import Console
@@ -54,6 +55,7 @@ class ParsedManifest:
     data: Dict[str, Any] = field(default_factory=dict)
     plan: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[Dict[str, str]] = field(default_factory=list)
+    backend: str = "docker"
 
     @property
     def ok(self) -> bool:
@@ -344,8 +346,147 @@ def _docker_image_status(image: str) -> tuple[bool, str | None]:
     except Exception as exc:
         return False, f"Docker image {image!r} is not available locally: {exc}"
 
-def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
-    """Parse, validate, and dry-run a run manifest against the live registry."""
+
+def build_missing_images(plan: List[Dict[str, Any]], db_conn, *, force: bool = False) -> List[Tuple[str, str]]:
+    """Build Docker images for planned jobs that are missing locally.
+
+    For each unique model in ``plan`` whose Docker image is not present in the
+    local daemon (or always, when ``force`` is True), load the model manifest
+    from the registry and build the image via :func:`build_local_model`.
+
+    Returns a list of ``(model_slug, error_message)`` for builds that failed;
+    an empty list means every required image is now present. Models with no
+    build section (remote-only images) are skipped, not treated as failures.
+    """
+    seen: set[str] = set()
+    failures: List[Tuple[str, str]] = []
+    cursor = db_conn.cursor()
+    for job in plan:
+        if job.get("_skipped"):
+            continue
+        slug = str(job.get("model_slug") or job.get("model_name") or "")
+        version = str(job.get("model_version") or "")
+        image = str(job.get("model_image") or "")
+        key = f"{slug}@{version}"
+        if not image or key in seen:
+            continue
+        seen.add(key)
+
+        if not force:
+            ok, _ = _docker_image_status(image)
+            if ok:
+                continue  # already present
+
+        cursor.execute(
+            "SELECT manifest_path FROM models WHERE slug = ? AND version = ? LIMIT 1",
+            (slug, version),
+        )
+        row = cursor.fetchone()
+        manifest_path = row[0] if row else None
+        if not manifest_path:
+            failures.append((slug, f"no manifest_path registered for {key}; cannot build"))
+            continue
+        try:
+            manifest = load_model_manifest(str(manifest_path))
+            logger.info("Auto-building missing image %s for model %s", image, slug)
+            build_local_model(manifest)
+        except Exception as exc:  # noqa: BLE001 — surface any build failure to the caller
+            failures.append((slug, f"build failed for {key}: {exc}"))
+    return failures
+
+
+def _models_metadata_conn(db_conn):
+    """Return a connection whose ``models`` table exposes sif_path/gpu_required.
+
+    SIF path and GPU metadata live in ``asset_registry.db`` (canonical per G6),
+    a different database from the run-index (``registry_db``) connection that
+    ``parse_manifest`` is given. If the supplied connection already has those
+    columns (unit tests pass a unified in-memory DB), reuse it; otherwise open
+    the canonical asset_registry connection and signal the caller to close it.
+
+    Returns ``(connection, owned)`` where ``owned`` is True when the caller is
+    responsible for closing the returned connection.
+    """
+    try:
+        cols = {row[1] for row in db_conn.execute("PRAGMA table_info(models)").fetchall()}
+        if {"sif_path", "gpu_required"} <= cols:
+            return db_conn, False
+    except Exception:
+        pass
+    from ..asset_registry import get_asset_registry_connection, init_asset_registry
+
+    # Ensure the schema exists before querying — get_asset_registry_connection
+    # opens (and creates an empty file for) a missing DB but does not create
+    # the tables, so a first-ever Slurm run would otherwise hit
+    # "no such table: models". init_asset_registry is idempotent.
+    init_asset_registry()
+    return get_asset_registry_connection(), True
+
+_SLURM_INT_FIELDS = ("gpus", "time_minutes", "mem_gb", "cpus_per_task")
+
+
+def _coerce_slurm_int(val):
+    """Return ``val`` as an int, or None if it is not a whole-number value.
+
+    ``bool`` is rejected (``True``/``False`` are almost certainly a mistake in
+    a numeric Slurm field), as are non-integral floats and unparseable strings.
+    """
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(f):  # reject NaN / inf before int() would raise
+        return None
+    return int(f) if f == int(f) else None
+
+
+def _validate_slurm_numeric(merged_slurm: Dict[str, Any], field_prefix: str) -> List[Dict[str, str]]:
+    """Validate and normalize the integer-typed fields of a merged slurm block.
+
+    Returns a list of manifest errors so a bad value (e.g. ``gpus: abc``)
+    surfaces as a manifest validation error rather than crashing later when the
+    executor option builder calls ``int(...)``. Valid fields are normalized in
+    place to real ``int`` values, so a quoted whole-number float like
+    ``gpus: "1.0"`` does not later crash a downstream ``int("1.0")``.
+    """
+    errors: List[Dict[str, str]] = []
+    for key in _SLURM_INT_FIELDS:
+        val = merged_slurm.get(key)
+        if val is None:
+            continue
+        coerced = _coerce_slurm_int(val)
+        if coerced is None:
+            errors.append(_manifest_error(
+                f"{field_prefix}.slurm.{key}",
+                f"slurm.{key} must be a whole number, got {val!r}",
+                "invalid_slurm_field",
+            ))
+        else:
+            merged_slurm[key] = coerced
+    return errors
+
+
+def parse_manifest(
+    manifest_path: str,
+    db_conn,
+    *,
+    backend_override: Optional[str] = None,
+    check_images: bool = True,
+) -> ParsedManifest:
+    """Parse, validate, and dry-run a run manifest against the live registry.
+
+    ``backend_override`` (e.g. from a CLI ``--backend slurm`` flag) takes
+    precedence over ``globals.backend`` so the CLI override is real rather than
+    router-level only.
+
+    ``check_images`` (default True) controls the Docker image-availability
+    probe. Set it False when the caller intends to build missing images itself
+    (auto-build): a missing image then is not a fatal manifest error.
+    """
     path = Path(manifest_path).expanduser().resolve()
     parsed = ParsedManifest(path=path)
 
@@ -367,17 +508,58 @@ def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
         return parsed
     parsed.data = loaded
 
+    # Extract manifest globals (backend, slurm settings)
+    globals_dict = loaded.get("globals", {}) or {}
+    if not isinstance(globals_dict, dict):
+        parsed.errors.append(_manifest_error(
+            "globals",
+            f"globals must be a mapping, got {type(globals_dict).__name__}",
+            "schema_error",
+        ))
+        return parsed
+    # CLI --backend overrides the manifest's globals.backend.
+    backend = backend_override or globals_dict.get("backend", "docker")
+    if backend not in ("docker", "slurm"):
+        parsed.errors.append(_manifest_error(
+            "globals.backend",
+            f"unknown backend {backend!r}; must be 'docker' or 'slurm'",
+            "invalid_backend",
+        ))
+        return parsed
+    slurm_globals = globals_dict.get("slurm", {}) or {}
+    if not isinstance(slurm_globals, dict):
+        parsed.errors.append(_manifest_error(
+            "globals.slurm",
+            f"globals.slurm must be a mapping, got {type(slurm_globals).__name__}",
+            "invalid_slurm_block",
+        ))
+        return parsed
+    parsed.data["_backend"] = backend
+    parsed.data["_slurm_globals"] = slurm_globals
+    parsed.backend = backend
+
     jobs = loaded.get("jobs")
     if not isinstance(jobs, list) or not jobs:
         parsed.errors.append(_manifest_error("jobs", "manifest must contain at least one job", "schema_error"))
         return parsed
 
+    # --- Pass 1: slug / registration checks (no Docker I/O) ---
     cursor = db_conn.cursor()
+    # Collect (model_name, docker_image) pairs for the image check in pass 2.
+    registered_images: list[tuple[str, str]] = []
     for idx, job in enumerate(jobs):
         field_prefix = f"jobs[{idx}]"
         if not isinstance(job, dict):
             parsed.errors.append(_manifest_error(field_prefix, "job must be a mapping", "schema_error"))
             continue
+
+        job_slurm = job.get("slurm")
+        if job_slurm is not None and not isinstance(job_slurm, dict):
+            parsed.errors.append(_manifest_error(
+                f"{field_prefix}.slurm",
+                f"job slurm must be a mapping, got {type(job_slurm).__name__}",
+                "invalid_slurm_block",
+            ))
 
         dataset_key = job.get("dataset_slug") or job.get("dataset_id")
         if not dataset_key:
@@ -413,27 +595,151 @@ def parse_manifest(manifest_path: str, db_conn) -> ParsedManifest:
             elif row[0] != "ACTIVE":
                 parsed.errors.append(_manifest_error(f"{field_prefix}.models", f"model '{model_name}' is {row[0]}, not ACTIVE", "model_not_active"))
             else:
-                ok, reason = _docker_image_status(str(row[1] or ""))
-                if not ok:
-                    parsed.errors.append(
-                        _manifest_error(
-                            f"{field_prefix}.models",
-                            f"model '{model_name}' cannot run: {reason}",
-                            "model_image_missing",
-                        )
-                    )
+                registered_images.append((model_name, str(row[1] or "")))
 
     if parsed.errors:
         return parsed
 
+    # --- Pass 2: dry-run plan (filter already-succeeded runs) ---
+    # Check emptiness before paying for Docker image probes — there is nothing
+    # to run if every job in the manifest already has a SUCCESS record.
     parsed.plan = generate_execution_plan_from_manifest(db_conn, parsed.data)
     if not parsed.plan:
         parsed.errors.append(_manifest_error("jobs", "manifest dry-run produced no runnable jobs", "empty_plan"))
+        return parsed
+
+    # --- Slurm-specific Pass: SIF resolution + GPU cross-validation ---
+    # Resolution is keyed off the *plan* jobs (not the raw manifest jobs) so
+    # the registry-resolved ``model_version`` is used — a manifest rarely
+    # repeats the version, and defaulting to "0.0.0" would miss the registered
+    # row. SIF/GPU metadata lives in asset_registry.db, which is a different
+    # database from the run-index connection threaded in here.
+    if backend == "slurm":
+        from ..asset_registry import get_model_gpu_flag, get_model_sif_path
+
+        # Per-(dataset, model) overrides from the raw manifest jobs: explicit
+        # image_sif / image_digest plus the merged (globals + job) slurm block.
+        overrides: Dict[tuple, Dict[str, Any]] = {}
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            ds_key = str(job.get("dataset_slug") or job.get("dataset_id") or "")
+            merged_slurm = {**slurm_globals, **(dict(job.get("slurm", {}) or {}))}
+            if isinstance(job.get("models"), list):
+                models_to_run = list(job.get("models", []))
+            elif job.get("model_name"):
+                models_to_run = [job.get("model_name")]
+            else:
+                models_to_run = []
+            for model_name in models_to_run:
+                overrides[(ds_key, str(model_name).strip().lower())] = {
+                    "image_sif": job.get("image_sif"),
+                    "image_digest": job.get("image_digest"),
+                    "slurm": merged_slurm,
+                }
+
+        models_conn, _ar_owned = _models_metadata_conn(db_conn)
+        try:
+            for plan_job in parsed.plan:
+                if plan_job.get("_skipped"):
+                    continue
+                ds_slug = str(plan_job.get("dataset_slug") or "")
+                m_slug = str(plan_job.get("model_slug") or plan_job.get("model_name") or "")
+                m_version = str(plan_job.get("model_version") or "")
+                ov = overrides.get((ds_slug, m_slug), {})
+                merged_slurm = ov.get("slurm") or dict(slurm_globals)
+
+                # Validate numeric slurm fields up front so a bad value becomes
+                # a manifest error rather than crashing int() below / in the
+                # executor option builder.
+                numeric_errs = _validate_slurm_numeric(merged_slurm, f"jobs.{ds_slug}.{m_slug}")
+                if numeric_errs:
+                    parsed.errors.extend(numeric_errs)
+                    continue
+
+                # SIF resolution: explicit manifest path > registry sif_path.
+                sif_path = ov.get("image_sif") or get_model_sif_path(
+                    models_conn, m_slug, m_version
+                )
+                if not sif_path:
+                    parsed.errors.append(_manifest_error(
+                        f"jobs.{ds_slug}.{m_slug}.image_sif",
+                        f"no SIF path for model '{m_slug}' (version {m_version}); register "
+                        "one with `multiverse register-model --set-sif-path` or set "
+                        "`image_sif` in the manifest.",
+                        "missing_sif_path",
+                    ))
+                else:
+                    plan_job["image_sif"] = sif_path
+
+                # image_digest is optional; without it the run is unverified_local.
+                if ov.get("image_digest"):
+                    plan_job["image_digest"] = ov["image_digest"]
+
+                # GPU cross-validation (hard error, no silent stripping).
+                gpus_val = merged_slurm.get("gpus")
+                gpus = int(gpus_val) if gpus_val is not None else 0
+                gpu_required = get_model_gpu_flag(models_conn, m_slug, m_version)
+                if not gpu_required and gpus > 0:
+                    parsed.errors.append(_manifest_error(
+                        f"jobs.{ds_slug}.{m_slug}.slurm.gpus",
+                        f"model '{m_slug}' declares gpu_required: false but the manifest "
+                        f"requests gpus: {gpus}; remove the 'gpus' key or set "
+                        "gpu_required: true in model.yaml.",
+                        "gpu_conflict",
+                    ))
+                elif gpu_required and gpus == 0:
+                    print(
+                        f"WARNING: model '{m_slug}' declares gpu_required: true but no gpus "
+                        "are requested in the manifest slurm config.",
+                        file=sys.stderr,
+                    )
+
+                plan_job["_slurm"] = merged_slurm
+        finally:
+            if _ar_owned:
+                models_conn.close()
+
+    # --- Pass 3: Docker image availability (only for Docker-backed jobs that will run) ---
+    # Skip for Slurm backend — images are SIF files, not local Docker images.
+    # Skip entirely when check_images is False — the caller will build missing
+    # images (auto-build), so a missing image is not a fatal manifest error.
+    # Only probe images for models that are actually in the plan: a job deduped
+    # out (already succeeded with these params) must not require its image to be
+    # present locally, or an unrelated already-done model would block the launch.
+    if backend != "slurm" and check_images:
+        planned_images: Dict[str, str] = {}
+        for plan_job in parsed.plan:
+            if plan_job.get("_skipped"):
+                continue
+            name = str(plan_job.get("model_name") or plan_job.get("model_slug") or "")
+            image = str(plan_job.get("model_image") or "")
+            if image:
+                planned_images[name] = image
+        for model_name, docker_image in planned_images.items():
+            ok, reason = _docker_image_status(docker_image)
+            if not ok:
+                parsed.errors.append(
+                    _manifest_error(
+                        "jobs",
+                        f"model '{model_name}' cannot run: {reason}",
+                        "model_image_missing",
+                    )
+                )
+
     return parsed
 
 
-def require_parsed_manifest(manifest_path: str, db_conn) -> ParsedManifest:
-    parsed = parse_manifest(manifest_path, db_conn)
+def require_parsed_manifest(
+    manifest_path: str,
+    db_conn,
+    *,
+    backend_override: Optional[str] = None,
+    check_images: bool = True,
+) -> ParsedManifest:
+    parsed = parse_manifest(
+        manifest_path, db_conn, backend_override=backend_override, check_images=check_images
+    )
     if not parsed.ok:
         raise ManifestValidationError(parsed)
     return parsed
@@ -486,13 +792,28 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
 
             m_image, m_slug, m_version = model_row
 
-            job_metrics = job.get("metrics", {})
-            merged_metrics = {**global_metrics, **job_metrics}
-
             model_params = job.get("model_params", {}) or {}
             params_hash = hashlib.sha256(
                 json.dumps(model_params, sort_keys=True).encode()
             ).hexdigest()[:12]
+
+            # Skip a job only if the *exact same* configuration already
+            # succeeded — i.e. same dataset, model, version AND params_hash.
+            # Keying on params_hash is essential: a new experiment that reuses a
+            # dataset+model pair with different hyperparameters must still run,
+            # rather than being silently dropped as a duplicate of an unrelated
+            # prior run. Legacy SUCCESS rows with a NULL params_hash do not
+            # match a concrete hash, so they never block a new submission.
+            cursor.execute(
+                "SELECT 1 FROM runs WHERE dataset_id = ? AND model_slug = ? "
+                "AND model_version = ? AND params_hash = ? AND status = 'SUCCESS' LIMIT 1",
+                (d_id, m_slug, m_version, params_hash),
+            )
+            if cursor.fetchone() is not None:
+                continue
+
+            job_metrics = job.get("metrics", {})
+            merged_metrics = {**global_metrics, **job_metrics}
 
             experiment_name = str(
                 manifest_data.get("globals", {}).get("experiment_name")
@@ -564,13 +885,6 @@ def generate_execution_plan(conn) -> List[Dict]:
     for d_id, d_name, d_path, d_omics_json, d_batch_key, d_cell_type_key in datasets:
         d_omics = set(json.loads(d_omics_json))
         dataset_n_obs = _read_obs_count(d_path)
-        if dataset_n_obs <= 0:
-            logger.warning(
-                "Dataset '%s' has no readable obs count at %s. Skipping registry sweep jobs.",
-                d_name,
-                d_path,
-            )
-            continue
 
         for m_slug, m_version, m_image, m_omics_json in models:
             m_omics = set(json.loads(m_omics_json))
@@ -954,10 +1268,33 @@ def execute_run(args: argparse.Namespace):
             raise SystemExit(130)
         return
 
-    # Production/default path: every Docker-backed run goes through mvd.
-    from .mvd_entrypoint import run_via_mvd
+    # Production/default path: route based on backend.
+    # --backend flag takes precedence; otherwise use manifest globals; fall back to docker.
+    cli_backend = getattr(args, "backend", None)
+    if cli_backend is not None:
+        effective_backend = cli_backend
+    else:
+        # Try to read from manifest if available
+        effective_backend = "docker"
+        if getattr(args, "manifest", None):
+            try:
+                from .cli import parse_manifest
+                from ..registry_db import get_db_connection as _get_conn
+                _conn = _get_conn()
+                try:
+                    _parsed = parse_manifest(args.manifest, _conn)
+                    effective_backend = _parsed.backend or "docker"
+                finally:
+                    _conn.close()
+            except Exception:
+                pass
 
-    raise SystemExit(run_via_mvd(args))
+    if effective_backend == "slurm":
+        from .mvd_entrypoint import run_via_slurm
+        raise SystemExit(run_via_slurm(args))
+    else:
+        from .mvd_entrypoint import run_via_mvd
+        raise SystemExit(run_via_mvd(args))
 
 
 def main():
@@ -1023,6 +1360,30 @@ def main():
             ),
         )
         p.add_argument(
+            "--no-build",
+            dest="no_build",
+            action="store_true",
+            default=False,
+            help=(
+                "Docker backend: do not auto-build missing model images before "
+                "running. By default, an image that is not present locally is "
+                "built from its model.yaml build context. With this flag, a "
+                "missing image is a hard error instead."
+            ),
+        )
+        p.add_argument(
+            "--accept-degraded",
+            dest="accept_degraded",
+            action="store_true",
+            default=False,
+            help=(
+                "Slurm backend: allow a SIF with no registry provenance "
+                "(image identity 'unverified_local'), e.g. one built from a "
+                "Singularity.def. Required because the Slurm executor defaults "
+                "to strict image identity."
+            ),
+        )
+        p.add_argument(
             "--validators",
             choices=["basic", "strict", "developer"],
             default=None,
@@ -1034,6 +1395,12 @@ def main():
             action="store_true",
             default=False,
             help="Simple-mode: do not pull images, use only local copies.",
+        )
+        p.add_argument(
+            "--backend",
+            choices=["docker", "slurm"],
+            default=None,
+            help="Execution backend (default: reads from manifest globals, falls back to docker).",
         )
 
     import sys
@@ -1093,6 +1460,11 @@ def main():
         action="store_true",
         help="Build local Docker image after registration",
     )
+    model_reg_parser.add_argument(
+        "--set-sif-path",
+        default=None,
+        help="After registration, update sif_path for this model in asset_registry.",
+    )
 
     models_parser = subparsers.add_parser("models", help="Model registry/build commands")
     models_subparsers = models_parser.add_subparsers(dest="models_command", help="Models commands")
@@ -1150,6 +1522,13 @@ def main():
         )
         print(result["message"])
         print(f"Model slug '{result['slug']}' registered at version {result['version']}.")
+        if getattr(args, "set_sif_path", None):
+            from ..asset_registry import set_model_sif_path
+            updated = set_model_sif_path(result["slug"], result["version"], args.set_sif_path)
+            if updated:
+                print(f"sif_path updated to '{args.set_sif_path}' for {result['slug']}@{result['version']}.")
+            else:
+                print(f"Warning: no row found to update sif_path for {result['slug']}@{result['version']}.")
     elif args.command == "migrate-asset-registry":
         from pathlib import Path as _Path
         from ..asset_registry import migrate_from_legacy_db

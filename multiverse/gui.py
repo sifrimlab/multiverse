@@ -1061,10 +1061,20 @@ def _gui_status_for_mvd_state(state: str) -> str:
 
 
 def _mvd_controller_for_session():
+    cached = st.session_state.get("_mvd_controller")
+    if cached is not None:
+        return cached
     output_dir = Path(st.session_state.get("_mvd_output_dir", "store/artifacts/run_output"))
+    output_dir = output_dir.expanduser().resolve()
+    from multiverse.runner.mvd_entrypoint import _state_root_for_output
     from multiverse.runner.mvd_inprocess import get_controller
 
-    return get_controller(state_root=output_dir)
+    controller = get_controller(
+        state_root=_state_root_for_output(output_dir),
+        artifact_root=output_dir,
+    )
+    st.session_state["_mvd_controller"] = controller
+    return controller
 
 
 def _append_run_log(line: str) -> None:
@@ -1088,15 +1098,20 @@ def _launch_mvd_runs(
         output_path = (repo_root / output_path).resolve()
     output_path.mkdir(parents=True, exist_ok=True)
 
+    from multiverse.runner.mvd_entrypoint import _state_root_for_output
     from multiverse.runner.mvd_inprocess import get_controller
 
-    controller = get_controller(state_root=output_path)
+    controller = get_controller(
+        state_root=_state_root_for_output(output_path),
+        artifact_root=output_path,
+    )
     submitted = controller.submit_manifest(
         manifest_path=manifest_file,
         pending_jobs=pending_jobs,
         manifest_text=manifest_text,
         seed=seed,
     )
+    st.session_state["_mvd_controller"] = controller
     if not submitted:
         raise RuntimeError("manifest produced no runnable mvd submissions")
 
@@ -1118,8 +1133,20 @@ def _refresh_mvd_snapshots() -> list[dict]:
     if not submissions:
         return []
     attempt_ids = [s["attempt_id"] for s in submissions]
-    controller = _mvd_controller_for_session()
-    snapshots = controller.query_many(attempt_ids)
+    try:
+        controller = _mvd_controller_for_session()
+        snapshots = controller.query_many(attempt_ids)
+    except Exception as exc:
+        from multiverse.journal import JournalLocked
+
+        if not isinstance(exc, JournalLocked):
+            raise
+        from multiverse.runner.mvd_inprocess import snapshots_from_journal
+
+        snapshots = snapshots_from_journal(
+            state_root=_mvd_state_root_for_results(),
+            attempt_ids=attempt_ids,
+        )
     st.session_state["_mvd_snapshots"] = snapshots
 
     names_by_id = {s["attempt_id"]: s["job_name"] for s in submissions}
@@ -1167,7 +1194,20 @@ def _run_monitor_fragment() -> None:
             }
         )
 
-    st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    st.dataframe(
+        pd.DataFrame(rows),
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Status": st.column_config.TextColumn(
+                help="High-level pipeline stage: Done, Running, Failed, or Cancelled."
+            ),
+            "State": st.column_config.TextColumn(
+                help="Raw internal MVD state code driving the Status label "
+                     "(e.g. ARTIFACT_SUCCESS, EVALUATING, PROMOTION_FAILED)."
+            ),
+        },
+    )
 
     log_lines: list[str] = st.session_state.get("_run_log_lines", [])
     log_text = "\n".join(log_lines[-_LOG_DISPLAY_TAIL:]) or "(no events yet)"
@@ -1355,6 +1395,15 @@ def _render_execute_tab() -> None:
         "Random Seed", min_value=0, value=int(st.session_state.get("shared_seed", 42)), step=1, key="shared_seed"
     )
 
+    force_rebuild = st.checkbox(
+        "Force rebuild container before launch",
+        key="force_rebuild_container",
+        help=(
+            "Rebuilds the container for each model before submitting jobs. "
+            "Use after editing model scripts. Slurm → rebuilds SIF; Docker → rebuilds image."
+        ),
+    )
+
     if not planned_jobs:
         st.warning("No jobs planned. Go to the Configure tab first.")
         if st.button("Go to Configure →", key="shortcut_execute_jobs"):
@@ -1378,15 +1427,62 @@ def _render_execute_tab() -> None:
         else:
             from multiverse.runner.cli import parse_manifest
 
+            backend = "docker"
             conn = get_db_connection()
             try:
-                parsed_manifest = parse_manifest(str(manifest_file), conn)
+                # Skip the image-availability probe here: for the Docker backend
+                # we auto-build any missing image just below, so a missing image
+                # must not fail validation first.
+                parsed_manifest = parse_manifest(str(manifest_file), conn, check_images=False)
+                backend = parsed_manifest.data.get("globals", {}).get("backend", "docker")
             finally:
                 conn.close()
             if not parsed_manifest.ok:
                 track("error_shown", component="execute_preflight", error_kind="manifest_validation")
                 render_manifest_errors(parsed_manifest.errors)
                 return
+
+            if backend == "slurm":
+                st.info("🖥️ Slurm backend active — jobs will be submitted via sbatch")
+
+            # Determine which planned models need a build:
+            #  - force_rebuild: rebuild every planned model;
+            #  - otherwise (Docker): build only models whose image is missing.
+            planned_slugs = sorted({
+                str(j.get("model_slug") or j.get("model_name") or "")
+                for j in parsed_manifest.plan
+                if j.get("model_slug") or j.get("model_name")
+            })
+            if force_rebuild:
+                slugs_to_build = planned_slugs
+            elif backend != "slurm":
+                from multiverse.runner.cli import _docker_image_status
+                slugs_to_build = []
+                for j in parsed_manifest.plan:
+                    slug = str(j.get("model_slug") or j.get("model_name") or "")
+                    image = str(j.get("model_image") or "")
+                    if slug and image:
+                        ok, _ = _docker_image_status(image)
+                        if not ok and slug not in slugs_to_build:
+                            slugs_to_build.append(slug)
+            else:
+                slugs_to_build = []
+
+            for slug in slugs_to_build:
+                if backend == "slurm":
+                    cmd = [sys.executable, "-m", "multiverse.cli_entrypoints",
+                           "build-sif", "--slug", slug, "--force"]
+                    label = f"Rebuilding SIF: {slug}"
+                else:
+                    manifest_p = f"store/models/{slug}/model.yaml"
+                    cmd = [sys.executable, "-m", "multiverse.runner.cli",
+                           "register-model", "--manifest", manifest_p, "--build"]
+                    verb = "Rebuilding" if force_rebuild else "Building missing"
+                    label = f"{verb} Docker image: {slug}"
+                ok = _stream_subprocess(cmd, label)
+                if not ok:
+                    st.error(f"Container build failed for model `{slug}`. Launch aborted.")
+                    return
 
             track("run_launched", n_jobs=len(parsed_manifest.plan), manifest_path=str(manifest_file))
             try:
@@ -1478,7 +1574,7 @@ def _fetch_runs(
         conn.close()
 
 
-def _mvd_state_root_for_results() -> Path:
+def _mvd_output_root_for_results() -> Path:
     from multiverse.state_paths import resolve_state_root
 
     output_dir = (
@@ -1490,7 +1586,13 @@ def _mvd_state_root_for_results() -> Path:
         if not root.is_absolute():
             root = (resolve_state_root() / root).resolve()
         return root
-    return resolve_state_root()
+    return resolve_state_root() / "store" / "artifacts" / "run_output"
+
+
+def _mvd_state_root_for_results() -> Path:
+    from multiverse.runner.mvd_entrypoint import _state_root_for_output
+
+    return _state_root_for_output(_mvd_output_root_for_results())
 
 
 def _mvd_snapshot_to_results_row(snap: dict, *, source: str) -> dict:
@@ -1528,9 +1630,23 @@ def _fetch_mvd_runs(status_filter: str | None = None) -> list[dict]:
     try:
         from multiverse.runner.mvd_inprocess import get_controller
 
-        snapshots = get_controller(state_root=_mvd_state_root_for_results()).list_runs(
-            state=status_filter
-        )
+        artifact_root = _mvd_output_root_for_results()
+        try:
+            snapshots = get_controller(
+                state_root=_mvd_state_root_for_results(),
+                artifact_root=artifact_root,
+            ).list_runs(state=status_filter)
+        except Exception as exc:
+            from multiverse.journal import JournalLocked
+
+            if not isinstance(exc, JournalLocked):
+                raise
+            from multiverse.runner.mvd_inprocess import snapshots_from_journal
+
+            snapshots = snapshots_from_journal(
+                state_root=_mvd_state_root_for_results(),
+                state=status_filter,
+            )
     except Exception:
         return []
 
@@ -1777,9 +1893,30 @@ def _render_results_tab() -> None:
     st.subheader("Artifacts")
     render_artifact_tree(artifact_dir)
 
-    log_file = artifact_dir / "container.log"
-    with st.expander("Container Log", expanded=False):
-        render_log_viewer(log_file)
+    st.subheader("Logs")
+    # Resolve per-run logs by priority. mvd writes run.log (model SDK),
+    # container.log (host-captured stdout/stderr), and orchestrator.log
+    # (host-side run reasoning); legacy/simple runs may carry model.log.
+    log_labels = [
+        ("run.log", "Run Log (model)"),
+        ("container.log", "Container Log (stdout/stderr)"),
+        ("orchestrator.log", "Orchestrator Log (host)"),
+        ("model.log", "Model Log"),
+    ]
+    present_logs = [
+        (name, label, artifact_dir / name)
+        for name, label in log_labels
+        if (artifact_dir / name).is_file()
+    ]
+    if not present_logs:
+        st.info(
+            "No log files found in artifact directory "
+            "(looked for run.log, container.log, orchestrator.log, model.log)."
+        )
+    else:
+        for idx, (_name, label, path) in enumerate(present_logs):
+            with st.expander(label, expanded=(idx == 0)):
+                render_log_viewer(path)
 
     st.subheader("Provenance")
     st.caption(f"Artifact directory: `{artifact_dir}`")

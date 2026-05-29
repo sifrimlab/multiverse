@@ -60,6 +60,7 @@ class _FakeContainer:
     mem_limit: Optional[str] = None
     name: Optional[str] = None
     removed: bool = False
+    log_output: bytes = b""
 
     def to_info(self) -> ContainerInfo:
         return ContainerInfo(
@@ -128,6 +129,12 @@ class InMemoryApptainerEngine:
         if c is None or c.removed:
             raise NoSuchContainerError(f"no such container: {container_id}")
         return c.to_info()
+
+    def logs(self, container_id: str) -> bytes:
+        c = self.containers.get(container_id)
+        if c is None or c.removed:
+            raise NoSuchContainerError(f"no such container: {container_id}")
+        return c.log_output
 
     def stop(self, container_id: str, *, timeout: int) -> None:
         c = self._require(container_id)

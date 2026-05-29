@@ -100,19 +100,24 @@ def _ensure_dataset_columns(cursor: sqlite3.Cursor) -> None:
 
 def _migrate_models_table(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
+    # ``docker_image`` is nullable: an Apptainer-only model (registered with a
+    # SIF and no Docker image) stores NULL here. The dual-runtime model
+    # (Docker + SIF) stores both.
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS models (
             slug TEXT NOT NULL,
             version TEXT NOT NULL,
             name TEXT,
-            docker_image TEXT NOT NULL,
+            docker_image TEXT,
             image_digest TEXT,
             supported_omics TEXT NOT NULL,
             manifest_path TEXT NOT NULL,
             manifest_hash TEXT NOT NULL,
             hyperparameters_schema TEXT,
             status TEXT NOT NULL DEFAULT 'ACTIVE',
+            sif_path TEXT,
+            gpu_required INTEGER DEFAULT 0,
             PRIMARY KEY (slug, version)
         )
         """
@@ -164,6 +169,50 @@ def _migrate_models_table(conn: sqlite3.Connection) -> None:
                 ),
             )
         cursor.execute("DROP TABLE models_legacy")
+    # Idempotent new-column migrations (DBs created before H1).
+    try:
+        cursor.execute("ALTER TABLE models ADD COLUMN sif_path TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    try:
+        cursor.execute("ALTER TABLE models ADD COLUMN gpu_required INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+    # Relax a legacy ``docker_image NOT NULL`` constraint so Apptainer-only
+    # models can store NULL. SQLite cannot drop a column constraint in place,
+    # so rebuild the table when the old constraint is still present.
+    cursor.execute("PRAGMA table_info(models)")
+    docker_col = next((r for r in cursor.fetchall() if r[1] == "docker_image"), None)
+    if docker_col is not None and docker_col[3] == 1:  # notnull flag set
+        cursor.execute("ALTER TABLE models RENAME TO models_nn_old")
+        cursor.execute(
+            """
+            CREATE TABLE models (
+                slug TEXT NOT NULL,
+                version TEXT NOT NULL,
+                name TEXT,
+                docker_image TEXT,
+                image_digest TEXT,
+                supported_omics TEXT NOT NULL,
+                manifest_path TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                hyperparameters_schema TEXT,
+                status TEXT NOT NULL DEFAULT 'ACTIVE',
+                sif_path TEXT,
+                gpu_required INTEGER DEFAULT 0,
+                PRIMARY KEY (slug, version)
+            )
+            """
+        )
+        cursor.execute(
+            "INSERT INTO models (slug, version, name, docker_image, image_digest, "
+            "supported_omics, manifest_path, manifest_hash, hyperparameters_schema, "
+            "status, sif_path, gpu_required) "
+            "SELECT slug, version, name, docker_image, image_digest, supported_omics, "
+            "manifest_path, manifest_hash, hyperparameters_schema, status, sif_path, "
+            "gpu_required FROM models_nn_old"
+        )
+        cursor.execute("DROP TABLE models_nn_old")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_models_slug ON models(slug)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_models_status ON models(status)")
 
@@ -424,16 +473,71 @@ def migrate_from_legacy_db(
     return copied
 
 
+def get_model_sif_path(
+    conn: sqlite3.Connection,
+    slug: str,
+    version: str,
+) -> Optional[str]:
+    """Return sif_path for the given model slug+version, or None."""
+    conn.row_factory = None
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT sif_path FROM models WHERE slug = ? AND version = ? LIMIT 1",
+        (slug, version),
+    )
+    row = cursor.fetchone()
+    return row[0] if row and row[0] else None
+
+
+def get_model_gpu_flag(
+    conn: sqlite3.Connection,
+    slug: str,
+    version: str,
+) -> bool:
+    """Return gpu_required flag for the given model slug+version."""
+    conn.row_factory = None
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT gpu_required FROM models WHERE slug = ? AND version = ? LIMIT 1",
+        (slug, version),
+    )
+    row = cursor.fetchone()
+    return bool(row[0]) if row else False
+
+
+def set_model_sif_path(
+    slug: str,
+    version: str,
+    sif_path: str,
+    *,
+    state_root: Optional[Path] = None,
+) -> bool:
+    """Update sif_path for an existing model row. Returns True if a row was updated."""
+    conn = get_asset_registry_connection(state_root)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE models SET sif_path = ? WHERE slug = ? AND version = ?",
+        (sif_path, slug, version),
+    )
+    changed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return changed
+
+
 __all__ = [
     "ASSET_REGISTRY_FILENAME",
     "get_asset_registry_connection",
     "get_all_datasets",
     "get_all_models",
     "get_dataset_by_slug",
+    "get_model_gpu_flag",
+    "get_model_sif_path",
     "init_asset_registry",
     "insert_dataset",
     "mark_dataset_removed",
     "mark_model_inactive",
     "migrate_from_legacy_db",
+    "set_model_sif_path",
     "upsert_dataset_from_manifest",
 ]

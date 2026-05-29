@@ -263,7 +263,7 @@ Before writing the paper, keep a copy of the files that make the run reproducibl
 - `run_manifest.yaml`;
 - each successful run's `job_spec.json`;
 - `metrics.json`;
-- `container.log`;
+- `run.log` and `container.log`;
 - `provenance.json` or other provenance artifacts when present in the run directory.
 
 In the Methods section, report:

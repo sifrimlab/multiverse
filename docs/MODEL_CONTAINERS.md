@@ -18,7 +18,7 @@ flowchart LR
     D --> E
     E --> F[/output/embeddings.h5/]
     E --> G[/output/metrics.json/]
-    E --> H[/output/umap.png + model.log/]
+    E --> H[/output/umap.png + run.log/]
 ```
 
 Each container reads `/input/data.h5mu` plus `/output/job_spec.json`, then writes its outputs under `/output/`. No host path appears in model code, so the same image runs unchanged on a laptop, an HPC node, and a CI runner.

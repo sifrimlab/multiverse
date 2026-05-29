@@ -11,9 +11,11 @@ This reference defines the I/O contract that every model container must honour t
 | `/output/embeddings.h5` | write | yes | HDF5 file containing exactly one top-level dataset named `latent`. |
 | `/output/metrics.json` | write | yes | JSON object with model-level metrics and (optionally) training history. |
 | `/output/umap.png` | write | yes | UMAP scatter of the latent space rendered by the container. |
-| `/output/model.log` | write | yes | Structured log (the `mvr_worker.setup_container_logging` helper writes this for you). |
+| `/output/run.log` | write | yes | Structured log (the `mvr_worker.setup_container_logging` helper writes this for you). Honours `$MVEXP_LOG_LEVEL`. |
 
 Model code must read no other host paths and write to no other host paths.
+
+In addition to `run.log`, the orchestrator captures the container's raw stdout/stderr to `container.log` and its own per-run reasoning to `orchestrator.log` in the same output directory. The container must not write those two files itself.
 
 ## `job_spec.json` Schema
 
@@ -86,7 +88,7 @@ from mvr_worker import (
     save_embeddings,         # writes /output/embeddings.h5 with the latent matrix
     save_umap,               # writes /output/umap.png
     anndata_concatenate,     # multimodal feature concatenation
-    setup_container_logging, # configures /output/model.log
+    setup_container_logging, # configures /output/run.log
     get_logger,              # named logger
     EpochLogger,             # context manager streaming epoch metrics to MLflow + JSONL
     resolve_device,          # CPU/CUDA selection

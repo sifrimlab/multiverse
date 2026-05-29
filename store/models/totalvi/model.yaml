@@ -10,3 +10,7 @@ hyperparameters_schema: schemas/models/totalvi.hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/totalvi/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/totalvi/container/Singularity.def
+  gpu_required: true

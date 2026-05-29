@@ -62,7 +62,9 @@ Every successful run is promoted to an artifact directory similar to:
   metrics.json        # optional
   metrics.jsonl       # optional
   umap.png            # optional
-  container.log       # optional
+  run.log             # model SDK log (mvr_worker)
+  container.log       # host-captured container stdout/stderr
+  orchestrator.log    # host-side run reasoning
 ```
 
 | File | Why it matters |
@@ -74,7 +76,9 @@ Every successful run is promoted to an artifact directory similar to:
 | `metrics.json` | Model-level diagnostics and final metric histories where available. |
 | `metrics.jsonl` | One JSON row per epoch (step, timestamp, metrics) when the model uses `EpochLogger`. Survives crashes. |
 | `umap.png` | Quick visual check of the learned representation. |
-| `container.log` | Human-readable execution log for troubleshooting and peer review. |
+| `run.log` | Model SDK log written inside the container. |
+| `container.log` | Host-captured container stdout/stderr; survives early crashes and OOMs. |
+| `orchestrator.log` | Host-side per-run log: admission, launch, exit classification, promotion outcome, failure reason. |
 | `provenance.json` | Run provenance when present; include it with supplementary materials. |
 
 ## Explanation: The Container Boundary

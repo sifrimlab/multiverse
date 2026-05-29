@@ -49,6 +49,8 @@ class SlurmJobSpec:
     output_log: Optional[Path] = None
     error_log: Optional[Path] = None
     apptainer_bin: str = "apptainer"
+    use_tmpdir: bool = False
+    use_tmpdir_sif: bool = False
 
 
 def render_sbatch_script(spec: SlurmJobSpec) -> str:
@@ -92,18 +94,52 @@ def render_sbatch_script(spec: SlurmJobSpec) -> str:
         lines.append(f"export {key}={shlex.quote(value)}")
     lines.append("")
 
-    # Apptainer invocation: bind the dataset (RO) and workspace (RW)
-    # into the container, then run the user command. The container will
-    # write its outputs back into the bound workspace, which the
-    # promotion saga reads after sacct reports COMPLETED.
+    # When staging is enabled, copy the large inputs to node-local scratch
+    # ($SLURM_TMPDIR) before execution to avoid hammering the shared
+    # filesystem, and run the container against the local copies. The
+    # container's /output is bound to a scratch directory; results are copied
+    # back into the workspace as the final step so the promotion saga (which
+    # reads the workspace after sacct reports COMPLETED) sees them.
+    if spec.use_tmpdir:
+        lines.append('cp ' + shlex.quote(str(spec.dataset_path)) + ' "$SLURM_TMPDIR/data.h5mu"')
+        if spec.use_tmpdir_sif:
+            lines.append('cp ' + shlex.quote(str(spec.image_sif)) + ' "$SLURM_TMPDIR/image.sif"')
+        lines.append('mkdir -p "$SLURM_TMPDIR/output"')
+        lines.append("")
+
+    # Apptainer invocation: bind the dataset (RO) and an output dir (RW) into
+    # the container, then run the user command.
+    if spec.use_tmpdir:
+        dataset_bind_src = '"$SLURM_TMPDIR/data.h5mu"'
+        output_bind_src = '"$SLURM_TMPDIR/output"'
+    else:
+        dataset_bind_src = shlex.quote(str(spec.dataset_path))
+        output_bind_src = shlex.quote(str(spec.workspace))
+
+    if spec.use_tmpdir_sif:
+        sif_path = '"$SLURM_TMPDIR/image.sif"'
+    else:
+        sif_path = shlex.quote(str(spec.image_sif))
+
     bind_args = [
-        f"--bind {shlex.quote(str(spec.dataset_path))}:/input/data.h5mu:ro",
-        f"--bind {shlex.quote(str(spec.workspace))}:/output:rw",
+        f"--bind {dataset_bind_src}:/input/data.h5mu:ro",
+        f"--bind {output_bind_src}:/output:rw",
     ]
     command = " ".join(shlex.quote(part) for part in spec.command)
     lines.append(
         f"{spec.apptainer_bin} exec {' '.join(bind_args)} "
-        f"{shlex.quote(str(spec.image_sif))} {command}".rstrip()
+        f"{sif_path} {command}".rstrip()
     )
+
+    if spec.use_tmpdir:
+        # Copy scratch outputs into the workspace. The trailing "/." copies the
+        # directory *contents* so files land directly under the workspace,
+        # matching where the non-staged path writes them. set -euo pipefail
+        # (emitted above) makes a partial copy fail the job rather than promote
+        # an incomplete bundle.
+        workspace_q = shlex.quote(str(spec.workspace))
+        lines.append(f"mkdir -p {workspace_q}")
+        lines.append(f'cp -r "$SLURM_TMPDIR/output/." {workspace_q}/')
+
     lines.append("")
     return "\n".join(lines)

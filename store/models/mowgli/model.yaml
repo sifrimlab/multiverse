@@ -10,3 +10,7 @@ hyperparameters_schema: schemas/models/mowgli.hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/mowgli/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/mowgli/container/Singularity.def
+  gpu_required: false

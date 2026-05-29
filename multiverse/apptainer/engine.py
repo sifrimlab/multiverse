@@ -240,6 +240,25 @@ class RealApptainerEngine:
         self._reap_if_exited(rec)
         return self._info(rec)
 
+    def logs(self, container_id: str) -> bytes:
+        """Return the captured stdout/stderr for ``container_id``.
+
+        The engine redirects each container's output to a per-container log
+        file at launch, so the bytes are read straight off disk.
+        """
+        rec = self._sidecar.get(container_id)
+        if rec is None or rec.removed:
+            from ..docker_supervisor.errors import NoSuchContainerError
+
+            raise NoSuchContainerError(f"no such container: {container_id}")
+        log_file = getattr(rec, "log_file", None)
+        if not log_file:
+            return b""
+        try:
+            return Path(log_file).read_bytes()
+        except OSError:
+            return b""
+
     def stop(self, container_id: str, *, timeout: int) -> None:
         rec = self._require(container_id)
         if rec.pid is None or not _pid_alive(rec.pid):

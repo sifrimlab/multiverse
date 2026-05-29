@@ -10,3 +10,7 @@ hyperparameters_schema: schemas/models/cobolt.hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/cobolt/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/cobolt/container/Singularity.def
+  gpu_required: true

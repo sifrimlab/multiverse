@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 
@@ -20,7 +21,7 @@ def _make_conn():
     cursor.execute(
         "CREATE TABLE runs ("
         "run_id INTEGER PRIMARY KEY, dataset_id INTEGER, model_slug TEXT, "
-        "model_version TEXT, status TEXT, output_path TEXT)"
+        "model_version TEXT, status TEXT, output_path TEXT, params_hash TEXT)"
     )
     cursor.execute(
         "INSERT INTO datasets (id, name, slug, path, omics_available, batch_key, cell_type_key, status) "
@@ -56,9 +57,16 @@ def test_stale_dataset_slug_blocks_launch(tmp_path):
 
 def test_empty_plan_blocks_launch(tmp_path):
     conn = _make_conn()
+    # Dedup is params-aware: the prior SUCCESS must carry the same params_hash
+    # as the (empty-params) manifest job for the job to be skipped, leaving the
+    # plan empty.
+    empty_params_hash = hashlib.sha256(
+        json.dumps({}, sort_keys=True).encode()
+    ).hexdigest()[:12]
     conn.execute(
-        "INSERT INTO runs (dataset_id, model_slug, model_version, status, output_path) VALUES (?, ?, ?, ?, ?)",
-        (1, "pca", "1.0.0", "SUCCESS", "/artifacts/dataset1/pca"),
+        "INSERT INTO runs (dataset_id, model_slug, model_version, status, output_path, params_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (1, "pca", "1.0.0", "SUCCESS", "/artifacts/dataset1/pca", empty_params_hash),
     )
     conn.commit()
     manifest = tmp_path / "empty.yaml"

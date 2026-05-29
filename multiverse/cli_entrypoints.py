@@ -20,7 +20,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from .doctor.report import SectionStatus
+    from .doctor.storage_probes import StorageReport
 
 from .state_paths import resolve_state_root
 
@@ -201,7 +205,7 @@ def doctor_main(argv: Optional[List[str]] = None) -> int:
     return 0
 
 
-def _storage_status(report) -> "SectionStatus":
+def _storage_status(report: StorageReport) -> SectionStatus:
     from .doctor import StorageLevel
     from .doctor.report import SectionStatus
 
@@ -815,6 +819,227 @@ def slurm_submit_main(argv: Optional[List[str]] = None) -> int:
     return _asyncio.run(_drive())
 
 
+# ---------------------------------------------------------------------------
+# multiverse build-sif
+# ---------------------------------------------------------------------------
+
+
+def _resolve_def_file(def_file_ref: str, manifest_path: Path):
+    """Resolve a model.yaml ``apptainer.def_file`` to an existing path.
+
+    Built-in manifests store repo-root-relative paths (e.g.
+    ``store/models/pca/container/Singularity.def``), while user-authored ones
+    may use manifest-dir-relative paths (e.g. ``Singularity.def``). Try the
+    plausible bases and return the first that exists, or None.
+    """
+    from pathlib import Path as _Path
+
+    from .registry_db import MODELS_DIR
+
+    ref = _Path(def_file_ref)
+    if ref.is_absolute():
+        return ref if ref.is_file() else None
+
+    repo_root = _Path(MODELS_DIR).parent.parent  # <repo>/store/models -> <repo>
+    candidates = [
+        _Path.cwd() / ref,            # repo-root-relative when run from checkout
+        repo_root / ref,              # repo-root-relative, location-independent
+        manifest_path.parent / ref,   # manifest-dir-relative
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            return cand.resolve()
+    return None
+
+
+def build_sif_main(argv=None):
+    """multiverse build-sif — build an Apptainer SIF from a model's Dockerfile or Singularity.def."""
+    import argparse
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(prog="multiverse build-sif")
+    parser.add_argument("--slug", required=True, help="Model slug (e.g. pca)")
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory to write the .sif file (default: <state-root>/sif/)",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["docker-daemon", "def-file"],
+        default=None,
+        help="Build method: docker-daemon (default when build.dockerfile set) or def-file",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing .sif file",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="Path to model.yaml (overrides slug-based lookup)",
+    )
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=None,
+    )
+    args = parser.parse_args(argv)
+
+    from .models_ingest import load_model_manifest, resolve_model_manifest_path
+    from .asset_registry import set_model_sif_path
+    from .state_paths import resolve_state_root
+
+    state_root = args.state_root or resolve_state_root()
+
+    # Resolve manifest path
+    if args.manifest:
+        manifest_path = args.manifest
+    else:
+        manifest_path = resolve_model_manifest_path(slug=args.slug)
+
+    try:
+        manifest = load_model_manifest(str(manifest_path))
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"error: could not load model manifest: {exc}", file=sys.stderr)
+        return 1
+
+    version = manifest.version
+    sif_filename = f"{args.slug}-{version}.sif"
+
+    output_dir = args.output_dir or (state_root / "sif")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / sif_filename
+
+    # Determine method
+    method = args.method
+    if method is None:
+        if manifest.build and manifest.build.dockerfile:
+            method = "docker-daemon"
+        elif manifest.apptainer and manifest.apptainer.def_file:
+            method = "def-file"
+        else:
+            print("error: cannot determine build method; specify --method docker-daemon or --method def-file", file=sys.stderr)
+            return 1
+
+    # --- Preflight checks ---
+    apptainer_bin = shutil.which("apptainer") or shutil.which("singularity")
+    if apptainer_bin is None:
+        print("error: 'apptainer' (or 'singularity') not found on PATH; install Apptainer first", file=sys.stderr)
+        return 1
+
+    if output_path.exists() and not args.force:
+        print(f"error: output file already exists: {output_path}; use --force to overwrite", file=sys.stderr)
+        return 1
+
+    # --force also passes through to `apptainer build --force` (and removes any
+    # stale output first) so the overwrite actually happens — bypassing the
+    # preflight check alone is not enough, since Apptainer refuses an existing
+    # target by default.
+    build_prefix = [apptainer_bin, "build"]
+    if args.force:
+        build_prefix.append("--force")
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"error: could not remove existing output {output_path}: {exc}", file=sys.stderr)
+            return 1
+
+    if method == "docker-daemon":
+        if manifest.runtime is None:
+            print("error: --method docker-daemon requires 'runtime.image' in model.yaml", file=sys.stderr)
+            return 1
+        image_ref = manifest.runtime.image
+        # Check Docker image exists locally
+        check = subprocess.run(
+            ["docker", "image", "inspect", image_ref],
+            capture_output=True,
+            text=True,
+        )
+        if check.returncode != 0:
+            print(f"error: Docker image '{image_ref}' not found locally; build it first with 'make build-{args.slug}'", file=sys.stderr)
+            return 1
+        build_cmd = [*build_prefix, str(output_path), f"docker-daemon://{image_ref}"]
+
+    elif method == "def-file":
+        if manifest.apptainer is None or not manifest.apptainer.def_file:
+            print("error: --method def-file requires 'apptainer.def_file' in model.yaml", file=sys.stderr)
+            return 1
+        def_file = _resolve_def_file(manifest.apptainer.def_file, Path(manifest_path))
+        if def_file is None:
+            print(
+                "error: Singularity.def not found for "
+                f"'{manifest.apptainer.def_file}' (tried manifest dir, repo root, and cwd)",
+                file=sys.stderr,
+            )
+            return 1
+        build_cmd = [*build_prefix, str(output_path), str(def_file)]
+    else:
+        print(f"error: unknown method {method!r}", file=sys.stderr)
+        return 1
+
+    print(f"Building SIF: {' '.join(str(c) for c in build_cmd)}")
+
+    # --- Stream apptainer build output ---
+    proc = subprocess.Popen(
+        build_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    for line in proc.stdout:
+        print(line, end="", flush=True)
+    proc.wait()
+
+    if proc.returncode != 0:
+        print(f"error: apptainer build exited with code {proc.returncode}", file=sys.stderr)
+        return proc.returncode
+
+    print(f"SIF built: {output_path}")
+
+    # --- Record sif_path in asset_registry ---
+    # The SIF is only useful to `multiverse run --backend slurm` if the model
+    # row carries its path. If the model is not yet registered, register it
+    # from the manifest first (idempotent) so the update lands on a real row
+    # rather than silently no-op'ing.
+    updated = set_model_sif_path(args.slug, version, str(output_path), state_root=state_root)
+    if not updated:
+        from .models_ingest import register_model_from_manifest
+
+        print(
+            f"model '{args.slug}' version '{version}' not yet registered; "
+            "registering from manifest before recording sif_path.",
+            file=sys.stderr,
+        )
+        try:
+            register_model_from_manifest(str(manifest_path), state_root=state_root)
+        except Exception as exc:
+            print(
+                f"error: could not register model '{args.slug}' to record the SIF path: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        updated = set_model_sif_path(args.slug, version, str(output_path), state_root=state_root)
+
+    if updated:
+        print(f"Recorded sif_path in asset registry: {output_path}")
+    else:
+        print(
+            f"error: failed to record sif_path for model '{args.slug}' version '{version}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    return 0
+
+
 COMMANDS = {
     "doctor": doctor_main,
     "rebuild-index": rebuild_index_main,
@@ -822,6 +1047,7 @@ COMMANDS = {
     "mlflow-sync": mlflow_sync_main,
     "migrate-state-dir": migrate_state_dir_main,
     "slurm-submit": slurm_submit_main,
+    "build-sif": build_sif_main,
 }
 
 RUNNER_COMMANDS = {
@@ -887,7 +1113,8 @@ def _print_usage() -> None:
         "  gc              dry-run by default; --apply to delete (Tier-2 gates)\n"
         "  mlflow-sync     push an artifact bundle into MLflow\n"
         "  migrate-state-dir  move a pre-M1 state directory to the resolver location\n"
-        "  slurm-submit    submit one job through MvdSlurmExecutor (M4)",
+        "  slurm-submit    submit one job through MvdSlurmExecutor (M4)\n"
+        "  build-sif       build an Apptainer SIF from a model's Dockerfile or Singularity.def",
         file=sys.stderr,
     )
 

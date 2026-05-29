@@ -94,7 +94,11 @@ uv run multiverse rebuild-index \
 | `embeddings.h5` | Required latent matrix at HDF5 dataset `latent`. |
 | `metrics.json` | Optional model diagnostics and metric summaries. |
 | `umap.png` | Optional visualization. |
-| `container.log` | Captured model output when available. |
+| `run.log` | Model SDK log written inside the container by `mvr_worker`. |
+| `container.log` | Host-captured container stdout/stderr; present even when the container crashed before writing `run.log`. |
+| `orchestrator.log` | Host-side per-run log: admission, launch, exit classification, promotion outcome, and failure reason. |
+
+Logs for a run that fails before promotion remain in its workspace at `<state-root>/store/workspaces/<attempt-id>/`. Set `MVEXP_LOG_LEVEL=DEBUG` to raise verbosity across the host logs and the in-container `run.log`.
 
 The full I/O contract is documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
 

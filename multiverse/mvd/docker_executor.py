@@ -26,9 +26,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
+
+from ..logging_utils import resolve_log_level
 
 from ..artifact import (
     ArtifactManifest,
@@ -145,6 +149,8 @@ class MvdDockerExecutor:
                 reason=f"broker refused admission: {admission.detail}",
             )
             return
+        run_logger: Optional[logging.Logger] = None
+        orch_handler: Optional[logging.Handler] = None
         try:
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.ADMITTED
@@ -175,6 +181,19 @@ class MvdDockerExecutor:
             # the host user.
             workspace.chmod(0o777)
             record.workspace_dir = str(workspace)
+            run_logger, orch_handler = self._open_run_logger(
+                workspace, record.physical_attempt_id
+            )
+            run_logger.info(
+                "admitted attempt=%s logical_run_id=%s model=%s image=%s "
+                "image_identity=%s dataset=%s",
+                record.physical_attempt_id,
+                logical_run_id,
+                spec.model_slug,
+                spec.model_image,
+                identity.kind.value,
+                spec.dataset_slug,
+            )
             self._write_job_spec(spec, workspace)
 
             # ---- 3. CONTAINER LAUNCH ----
@@ -192,6 +211,11 @@ class MvdDockerExecutor:
                 name=f"mvd-{record.physical_attempt_id[:8]}",
                 entrypoint=spec.container_entrypoint,
             )
+            run_logger.info(
+                "container launched id=%s name=mvd-%s",
+                launch.container_id,
+                record.physical_attempt_id[:8],
+            )
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.RUNNING
             )
@@ -204,6 +228,9 @@ class MvdDockerExecutor:
             exit_info = await self._wait_for_exit(launch.lease, record, kernel)
             if exit_info is _CANCELLED:
                 return
+            # Capture the container's stdout/stderr before any cleanup so a
+            # failed or non-SDK run still leaves host-side evidence.
+            self._capture_container_log(launch.container_id, workspace, run_logger)
             oom = bool(exit_info.get("oom_killed", False))
             exit_code = int(exit_info.get("exit_code", 0))
             self.broker.classify_exit(
@@ -217,6 +244,7 @@ class MvdDockerExecutor:
                     if oom
                     else f"container exited {exit_code}"
                 )
+                run_logger.error("run failed: %s", reason)
                 await kernel.transition(
                     record.physical_attempt_id,
                     to_state=PrimaryState.FAILED,
@@ -224,6 +252,7 @@ class MvdDockerExecutor:
                 )
                 return
 
+            run_logger.info("container exited cleanly (exit_code=0)")
             await kernel.transition(
                 record.physical_attempt_id, to_state=PrimaryState.TRAINING_SUCCEEDED
             )
@@ -273,6 +302,10 @@ class MvdDockerExecutor:
             result = saga.run()
             if result.outcome is PromotionOutcome.PROMOTED:
                 record.artifact_dir = str(result.artifact_dir)
+                run_logger.info(
+                    "promoted to artifact_dir=%s (ARTIFACT_SUCCESS)",
+                    result.artifact_dir,
+                )
                 await kernel.transition(
                     record.physical_attempt_id, to_state=PrimaryState.ARTIFACT_SUCCESS
                 )
@@ -285,6 +318,10 @@ class MvdDockerExecutor:
                 )
                 return
             if result.outcome is PromotionOutcome.QUARANTINED:
+                run_logger.error(
+                    "promotion quarantined: %s",
+                    result.failure_reason or "promotion quarantined",
+                )
                 await kernel.transition(
                     record.physical_attempt_id,
                     to_state=PrimaryState.PROMOTION_FAILED,
@@ -296,17 +333,94 @@ class MvdDockerExecutor:
                     reason="quarantined; user adoption required",
                 )
                 return
+            run_logger.error(
+                "promotion failed: %s",
+                result.failure_reason or "promotion pre-prepare failure",
+            )
             await kernel.transition(
                 record.physical_attempt_id,
                 to_state=PrimaryState.FAILED,
                 reason=result.failure_reason or "promotion pre-prepare failure",
             )
         finally:
+            self._close_run_logger(orch_handler)
             self.broker.release(record.physical_attempt_id)
 
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    def _open_run_logger(
+        self, workspace: Path, attempt_id: str
+    ) -> "tuple[logging.Logger, logging.Handler]":
+        """Open a per-attempt host-side log at ``workspace/orchestrator.log``.
+
+        The handler is attached to a dedicated, non-propagating logger keyed
+        on the attempt id so concurrent runs never bleed into each other's
+        files. The level honours ``$MVEXP_LOG_LEVEL``.
+        """
+        level = resolve_log_level()
+        handler = logging.FileHandler(
+            workspace / "orchestrator.log", mode="a", encoding="utf-8"
+        )
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        )
+        run_logger = logging.getLogger(f"multiverse.mvd.run.{attempt_id}")
+        run_logger.setLevel(level)
+        run_logger.propagate = False
+        # Replace any stale handler from a reattached attempt of the same id.
+        for stale in run_logger.handlers[:]:
+            run_logger.removeHandler(stale)
+            try:
+                stale.close()
+            except Exception:
+                pass
+        run_logger.addHandler(handler)
+        return run_logger, handler
+
+    @staticmethod
+    def _close_run_logger(handler: Optional[logging.Handler]) -> None:
+        if handler is None:
+            return
+        logging.getLogger().removeHandler(handler)
+        for logger in logging.Logger.manager.loggerDict.values():
+            if isinstance(logger, logging.Logger) and handler in logger.handlers:
+                logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
+
+    def _capture_container_log(
+        self,
+        container_id: str,
+        workspace: Path,
+        run_logger: Optional[logging.Logger] = None,
+    ) -> None:
+        """Best-effort host capture of container stdout/stderr.
+
+        Never raises: a logging failure must not fail an otherwise-successful
+        run. Engines that do not implement ``logs`` are silently skipped.
+        """
+        engine = getattr(self.supervisor, "engine", None)
+        logs_fn = getattr(engine, "logs", None)
+        if not callable(logs_fn):
+            return
+        try:
+            raw = logs_fn(container_id) or b""
+        except Exception as exc:
+            if run_logger is not None:
+                run_logger.warning("could not capture container logs: %s", exc)
+            return
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8", errors="replace")
+        try:
+            (workspace / "container.log").write_bytes(raw)
+        except OSError as exc:
+            if run_logger is not None:
+                run_logger.warning("could not write container.log: %s", exc)
 
     async def _wait_for_exit(self, lease, record: RunRecord, kernel) -> Any:
         """Poll the supervisor until the container exits or cancellation
@@ -567,6 +681,11 @@ class _ExecutorJobSpec:
             "MVR_OUTPUT_DIR": "/output",
             "MVR_JOB_SPEC_PATH": "/output/job_spec.json",
         }
+        # Forward the host log level so the worker SDK (run.log) matches the
+        # orchestrator's verbosity without a separate knob.
+        host_level = os.environ.get("MVEXP_LOG_LEVEL")
+        if host_level:
+            base["MVEXP_LOG_LEVEL"] = str(host_level)
         base.update(self.env_extra)
         return base
 

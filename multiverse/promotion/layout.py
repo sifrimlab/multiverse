@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 ARTIFACTS_SUBDIR = "artifacts"
@@ -22,26 +23,31 @@ class StoreLayout:
     """
 
     root: Path
+    artifacts_root: Optional[Path] = None
+    workspaces_root: Optional[Path] = None
+    quarantine_root: Optional[Path] = None
+    cancelled_root: Optional[Path] = None
+    failed_root: Optional[Path] = None
 
     @property
     def artifacts(self) -> Path:
-        return self.root / ARTIFACTS_SUBDIR
+        return self.artifacts_root or self.root / ARTIFACTS_SUBDIR
 
     @property
     def workspaces(self) -> Path:
-        return self.root / WORKSPACES_SUBDIR
+        return self.workspaces_root or self.root / WORKSPACES_SUBDIR
 
     @property
     def quarantine(self) -> Path:
-        return self.root / QUARANTINE_SUBDIR
+        return self.quarantine_root or self.root / QUARANTINE_SUBDIR
 
     @property
     def cancelled(self) -> Path:
-        return self.root / CANCELLED_SUBDIR
+        return self.cancelled_root or self.root / CANCELLED_SUBDIR
 
     @property
     def failed(self) -> Path:
-        return self.root / FAILED_SUBDIR
+        return self.failed_root or self.root / FAILED_SUBDIR
 
     def ensure(self) -> "StoreLayout":
         for sub in (

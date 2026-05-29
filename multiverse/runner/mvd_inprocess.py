@@ -19,11 +19,16 @@ from ..artifact import BootContext, compute_manifest_hash
 from ..broker import ResourceBroker
 from ..docker_supervisor import DockerSupervisor
 from ..index.sqlite_index import INDEX_FILENAME, open_index
-from ..journal import JournalLayout, JournalWriter
+from ..journal import JournalKind, JournalLayout, JournalReader, JournalWriter
 from ..logging_utils import get_logger
 from ..mvd import Kernel, KernelConfig, MvdDockerExecutor, PrimaryState
-from ..promotion import StoreLayout
-from .mvd_entrypoint import _build_engine, _job_name, _observer, _options_for_job
+from .mvd_entrypoint import (
+    _build_engine,
+    _job_name,
+    _observer,
+    _options_for_job,
+    _store_for_output,
+)
 
 logger = get_logger(__name__)
 
@@ -55,8 +60,17 @@ class SubmittedRun:
 class InProcessMvdController:
     """Thread-safe synchronous facade around one in-process kernel."""
 
-    def __init__(self, *, state_root: Path) -> None:
+    def __init__(
+        self, *, state_root: Path, artifact_root: Path | None = None
+    ) -> None:
         self.state_root = state_root.expanduser().resolve()
+        self.artifact_root = (
+            artifact_root.expanduser().resolve()
+            if artifact_root is not None
+            else None
+        )
+        if self.artifact_root is not None:
+            self.artifact_root.mkdir(parents=True, exist_ok=True)
         self.state_root.mkdir(parents=True, exist_ok=True)
         self._index_path = self.state_root / INDEX_FILENAME
         self._loop_ready = threading.Event()
@@ -139,7 +153,9 @@ class InProcessMvdController:
         config = KernelConfig(state_root=self.state_root, accept_degraded=True)
         layout = JournalLayout.at(self.state_root / "journal").ensure()
         journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
-        store = StoreLayout(root=self.state_root / "store").ensure()
+        store = _store_for_output(
+            state_root=self.state_root, artifact_root=self.artifact_root
+        )
         supervisor = DockerSupervisor(
             engine=_build_engine(),
             journal=journal,
@@ -353,6 +369,89 @@ class InProcessMvdController:
         return self._kernel
 
 
+def snapshots_from_journal(
+    *,
+    state_root: Path,
+    attempt_ids: Iterable[str] | None = None,
+    state: str | None = None,
+) -> List[Dict[str, Any]]:
+    """Reconstruct run snapshots without acquiring the journal writer lock."""
+    wanted = set(attempt_ids) if attempt_ids is not None else None
+    records: Dict[str, Dict[str, Any]] = {}
+    submitted_order: Dict[str, int] = {}
+    reader = JournalReader(JournalLayout.at(state_root / "journal"))
+    for record in reader.replay().records:
+        attempt = record.physical_attempt_id
+        if not attempt or (wanted is not None and attempt not in wanted):
+            continue
+        if record.kind is JournalKind.JOB_INTENT:
+            records[attempt] = {
+                "physical_attempt_id": attempt,
+                "logical_run_id": record.logical_run_id,
+                "primary_state": "PENDING",
+                "cancel_requested": False,
+                "failure_reason": None,
+                "artifact_dir": None,
+                "workspace_dir": None,
+                "manifest_path": record.payload.get("manifest_path"),
+                "submitted_wall_iso": record.wall_iso,
+                "projections": {
+                    "mlflow": "TRACKING_NOT_CONFIGURED",
+                    "optuna": "TRACKING_NOT_APPLICABLE",
+                },
+                "options": dict(record.payload.get("options") or {}),
+            }
+            submitted_order[attempt] = record.monotonic_ns
+            continue
+        if attempt not in records:
+            continue
+        snap = records[attempt]
+        if record.logical_run_id and not snap.get("logical_run_id"):
+            snap["logical_run_id"] = record.logical_run_id
+        if record.kind is JournalKind.STATE_TRANSITION:
+            next_state = record.payload.get("to_state")
+            if next_state:
+                snap["primary_state"] = str(next_state)
+            reason = record.payload.get("reason")
+            if reason:
+                snap["failure_reason"] = str(reason)
+        elif record.kind is JournalKind.CONTAINER_LAUNCH:
+            labels = record.payload.get("labels") or {}
+            workspace = labels.get("multiverse.workspace")
+            if workspace:
+                snap["workspace_dir"] = str(workspace)
+        elif record.kind is JournalKind.PROMOTE_PREPARE:
+            snap["workspace_dir"] = record.payload.get("workspace_dir")
+            snap["artifact_dir"] = record.payload.get("final_artifact_dir")
+        elif record.kind is JournalKind.PROMOTE_COMMIT_MANIFEST:
+            snap["artifact_dir"] = record.payload.get(
+                "artifact_dir", snap.get("artifact_dir")
+            )
+        elif record.kind is JournalKind.PROMOTION_QUARANTINE:
+            source = record.payload.get("source")
+            if source and not snap.get("failure_reason"):
+                snap["failure_reason"] = f"promotion quarantined: {source}"
+        elif record.kind is JournalKind.CANCEL_REQUESTED:
+            snap["cancel_requested"] = True
+        elif record.kind is JournalKind.CANCELLED:
+            snap["primary_state"] = "CANCELLED"
+            snap["cancel_requested"] = True
+        elif record.kind is JournalKind.PROJECTION_STATUS:
+            plugin = record.payload.get("plugin")
+            projection_state = record.payload.get("status")
+            if plugin and projection_state:
+                snap.setdefault("projections", {})[str(plugin)] = str(
+                    projection_state
+                )
+    out = list(records.values())
+    if state is not None:
+        out = [snap for snap in out if snap.get("primary_state") == state]
+    out.sort(
+        key=lambda snap: submitted_order.get(str(snap["physical_attempt_id"]), 0)
+    )
+    return out
+
+
 def _do_mlflow_sync(
     bundle_dir: Path,
     experiment_name: str,
@@ -523,15 +622,21 @@ def _experiment_name_from_manifest(manifest_text: str) -> Optional[str]:
     return str(name) if name else None
 
 
-_CONTROLLERS: Dict[Path, InProcessMvdController] = {}
+_CONTROLLERS: Dict[tuple[Path, Path | None], InProcessMvdController] = {}
 _CONTROLLERS_LOCK = threading.Lock()
 
 
-def get_controller(*, state_root: Path) -> InProcessMvdController:
+def get_controller(
+    *, state_root: Path, artifact_root: Path | None = None
+) -> InProcessMvdController:
     root = state_root.expanduser().resolve()
+    artifacts = (
+        artifact_root.expanduser().resolve() if artifact_root is not None else None
+    )
+    key = (root, artifacts)
     with _CONTROLLERS_LOCK:
-        controller = _CONTROLLERS.get(root)
+        controller = _CONTROLLERS.get(key)
         if controller is None:
-            controller = InProcessMvdController(state_root=root)
-            _CONTROLLERS[root] = controller
+            controller = InProcessMvdController(state_root=root, artifact_root=artifacts)
+            _CONTROLLERS[key] = controller
         return controller

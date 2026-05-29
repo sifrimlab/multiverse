@@ -445,3 +445,84 @@ def test_docker_executor_does_not_load_docker_sdk() -> None:
     assert result.returncode == 0, (
         f"docker_executor leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 8. Per-run logging: container.log (host-captured) + orchestrator.log
+# ---------------------------------------------------------------------------
+
+
+def test_success_promotes_container_and_orchestrator_logs(
+    state_root: Path, store: StoreLayout, dataset_file: Path
+) -> None:
+    """A successful run carries the host-captured container.log and the
+    orchestrator.log into the promoted artifact dir."""
+    engine = InMemoryContainerEngine()
+
+    def _producer(workspace: Path, _: Mapping[str, Any]) -> None:
+        _good_producer(4)(workspace, {})
+        for c in reversed(list(engine.containers.values())):
+            if c.state.value == "running":
+                engine.simulate_logs(c.container_id, b"hello from stdout\n")
+                engine.simulate_natural_exit(c.container_id, exit_code=0)
+                return
+
+    executor, _, _ = _executor(
+        state_root, store, engine=engine, broker=_broker_with_capacity(), producer=_producer
+    )
+    kernel = _kernel(state_root, executor)
+
+    async def _run() -> None:
+        attempt = await kernel.submit_run(
+            manifest_path="/tmp/m.yaml", options=_opts(dataset_file)
+        )
+        await kernel._execution_tasks[attempt]  # type: ignore[attr-defined]
+        snap = await kernel.query_run(physical_attempt_id=attempt)
+        assert snap["primary_state"] == PrimaryState.ARTIFACT_SUCCESS.value
+        artifact_dir = Path(snap["artifact_dir"])
+        container_log = artifact_dir / "container.log"
+        orchestrator_log = artifact_dir / "orchestrator.log"
+        assert container_log.is_file()
+        assert container_log.read_bytes() == b"hello from stdout\n"
+        assert orchestrator_log.is_file()
+        text = orchestrator_log.read_text(encoding="utf-8")
+        assert "container launched" in text
+        assert "ARTIFACT_SUCCESS" in text
+        await kernel.shutdown()
+
+    asyncio.run(_run())
+
+
+def test_failed_run_keeps_logs_in_workspace(
+    state_root: Path, store: StoreLayout, dataset_file: Path
+) -> None:
+    """A run that exits non-zero is not promoted; its container.log and
+    orchestrator.log remain in the workspace for debugging."""
+    engine = InMemoryContainerEngine()
+
+    def _producer(workspace: Path, _: Mapping[str, Any]) -> None:
+        for c in reversed(list(engine.containers.values())):
+            if c.state.value == "running":
+                engine.simulate_logs(c.container_id, b"boom: traceback\n")
+                engine.simulate_natural_exit(c.container_id, exit_code=2)
+                return
+
+    executor, _, _ = _executor(
+        state_root, store, engine=engine, broker=_broker_with_capacity(), producer=_producer
+    )
+    kernel = _kernel(state_root, executor)
+
+    async def _run() -> None:
+        attempt = await kernel.submit_run(
+            manifest_path="/tmp/m.yaml", options=_opts(dataset_file)
+        )
+        await kernel._execution_tasks[attempt]  # type: ignore[attr-defined]
+        snap = await kernel.query_run(physical_attempt_id=attempt)
+        assert snap["primary_state"] == PrimaryState.FAILED.value
+        workspace = store.workspaces / attempt
+        assert (workspace / "container.log").read_bytes() == b"boom: traceback\n"
+        orch = (workspace / "orchestrator.log").read_text(encoding="utf-8")
+        assert "run failed" in orch
+        await kernel.shutdown()
+
+    asyncio.run(_run())
