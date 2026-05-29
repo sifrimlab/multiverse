@@ -1,14 +1,18 @@
-import argparse
-import os
-import json
+import random
 from typing import Union
 
+import numpy as np
 import scanpy as sc
 import anndata as ad
 from .base import ModelFactory
-from ..config import load_config
-from ..data_utils import load_datasets, dataset_select
-from ..logging_utils import get_logger, setup_logging
+from ..data_utils import anndata_concatenate
+from ..logging_utils import get_logger
+from .runtime_io import (
+    build_model_config,
+    load_input_mudata,
+    load_job_spec,
+    setup_container_logging,
+)
 
 logger = get_logger(__name__)
 
@@ -91,62 +95,48 @@ class PCAModel(ModelFactory):
         Raises:
             IOError: If the metrics file cannot be written.
         """
+        requested = self.config_dict.get("metrics", {}).get("model_metrics")
         metrics = {}
         if hasattr(self, "variance_ratio"):
-            total_variance = sum(self.variance_ratio)
-            logger.info(f"Total Variance Explained: {total_variance}")
-            metrics["total_variance"] = total_variance
+            if requested is None or "total_variance" in requested:
+                total_variance = sum(self.variance_ratio)
+                logger.info(f"Total Variance Explained: {total_variance}")
+                metrics["total_variance"] = total_variance
         else:
             logger.warning("PCA variance ratio not available in the model.")
 
         logger.info(f"Evaluation metrics: {metrics}")
-
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+        self.write_metrics(metrics)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run PCA model")
-    parser.add_argument(
-        "--config_path",
-        type=str,
-        default="/app/config_alldatasets.json",
-        help="Path to the configuration file",
+    setup_container_logging()
+    job_spec = load_job_spec()
+    config = build_model_config(model_name="pca", job_spec=job_spec)
+    seed = config.get("seed") or 42
+    random.seed(seed)
+    np.random.seed(seed)
+    mudata_obj = load_input_mudata()
+    dataset_name = job_spec.get("dataset_name", "dataset")
+    data_concat = anndata_concatenate(
+        list_anndata=[mudata_obj[modality] for modality in mudata_obj.mod.keys()],
+        list_modality=list(mudata_obj.mod.keys()),
     )
-    args = parser.parse_args()
-
-    config = load_config(config_path=args.config_path)
-    os.makedirs(config["output_dir"], exist_ok=True)
-    setup_logging(config["output_dir"])
-
-    # Data information from config file
-    datasets = load_datasets(args.config_path)
-    data_concat = dataset_select(datasets_dict=datasets, data_type="concatenate")
 
     try:
-        for dataset_name, data_dict in data_concat.items():
-            # Instantiate and run model
-            pca_model = PCAModel(
-                dataset=data_dict,
-                dataset_name=dataset_name,
-                config_path=args.config_path,
-            )
-            # Run the model pipeline
-            pca_model.train()
-            pca_model.save_latent()
-            pca_model.umap()
-            pca_model.evaluate_model()
-
-            logger.info(f"PCA model run for {dataset_name} completed successfully.")
+        pca_model = PCAModel(
+            dataset=data_concat,
+            dataset_name=dataset_name,
+            config_path=config,
+        )
+        pca_model.train()
+        pca_model.save_latent()
+        pca_model.umap()
+        pca_model.evaluate_model()
+        logger.info(f"PCA model run for {dataset_name} completed successfully.")
 
     except Exception as e:
         logger.error(f"An error occurred during PCA model run: {e}")
-        # Optionally, re-raise the exception to indicate failure to the container runner
         raise
 
 if __name__ == "__main__":

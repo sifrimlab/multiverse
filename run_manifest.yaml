@@ -1,17 +1,31 @@
+globals:
+  experiment_name: testname1
+  random_seed: 42
+  run_user_params: true
+  run_gridsearch: false
 jobs:
-- dataset_id: Pbmc10k
-  models:
-  - cobolt
-  - mofa
-  - mowgli
-  - multivi
-  - pca
-- dataset_id: teaseq
-  models:
-  - cobolt
-  - mofa
-  - mowgli
-  - multivi
-  - pca
-  - totalvi
-manifest_version: '1.0'
+- dataset_slug: pbmc10k
+  model_name: Cobolt
+  model_params:
+    device: cuda:0
+    latent_dimensions: 2
+    learning_rate: 0.001
+    num_epochs: 10
+    umap_random_state: 42
+    umap_color_type: cell_type
+    random_state: 42
+- dataset_slug: pbmc10k
+  model_name: MOFA
+  model_params:
+    device: cuda:0
+    n_iterations: 10
+    n_factors: 2
+    umap_random_state: 42
+    umap_color_type: cell_type
+- dataset_slug: pbmc10k
+  model_name: PCA
+  model_params:
+    n_components: 2
+    device: cpu
+    umap_random_state: 42
+    umap_color_type: cell_type

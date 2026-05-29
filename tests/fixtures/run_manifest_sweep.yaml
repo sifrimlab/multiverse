@@ -1,0 +1,22 @@
+manifest_version: "1.0"
+jobs:
+  - dataset_id: dummy_dataset
+    models:
+      - pca
+    mode: sweep
+    optimize_metric: total_variance
+    direction: maximize
+    n_trials: 3
+    study_storage: sqlite:///optuna.db
+    search_space:
+      n_components:
+        type: int
+        low: 10
+        high: 100
+      solver:
+        type: categorical
+        choices: [auto, full]
+      learning_rate:
+        type: loguniform
+        low: 0.0001
+        high: 0.1

@@ -1,0 +1,12 @@
+name: MOFA
+version: 1.0.0
+contract_version: 1.0.0
+supported_omics:
+  - rna
+  - atac
+runtime:
+  image: multiverse-mofa:1.0.0
+hyperparameters_schema: schemas/models/mofa.hyperparameters.schema.json
+build:
+  context: ../../..
+  dockerfile: store/models/mofa/container/Dockerfile

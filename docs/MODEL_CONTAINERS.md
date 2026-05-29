@@ -1,34 +1,49 @@
 # Model Containers
 
-This document describes how to build and run the individual model containers for the Multi-verse project.
+mvexp runs every integration model in its own Docker container. The container boundary is what makes the platform reproducible across hosts and what isolates incompatible ML dependency stacks (scvi-tools, MOFA, Mowgli, Cobolt) from each other.
 
-## Building the Images
+This page is a short orientation. The two canonical references are:
 
-Each model has its own Dockerfile in the `docker/` directory. To build the image for a specific model, use the `docker build` command from the root of the repository.
+- [Model Container Contract](MODEL_CONTAINER_CONTRACT.md) — the I/O specification every image must honour.
+- [Adding a Model](ADDING_A_MODEL.md) — how to author and register a new image.
 
-For example, to build the PCA model image:
-```bash
-docker build -f docker/pca.Dockerfile -t multiverse-pca .
+## The Idea in One Diagram
+
+```mermaid
+flowchart LR
+    A[Registered dataset] --> B[Runner]
+    B --> C[/input/data.h5mu/]
+    B --> D[/output/job_spec.json/]
+    C --> E[Model container]
+    D --> E
+    E --> F[/output/embeddings.h5/]
+    E --> G[/output/metrics.json/]
+    E --> H[/output/umap.png + model.log/]
 ```
 
-Similarly, for the other models:
-```bash
-docker build -f docker/multivi.Dockerfile -t multiverse-multivi .
-docker build -f docker/mowgli.Dockerfile -t multiverse-mowgli .
-```
+Each container reads `/input/data.h5mu` plus `/output/job_spec.json`, then writes its outputs under `/output/`. No host path appears in model code, so the same image runs unchanged on a laptop, an HPC node, and a CI runner.
 
-## Running a Container
+## Build Pattern
 
-The model containers are designed to be run by the orchestrator. However, you can also run them manually for testing or debugging.
+All built-in images use a `mambaorg/micromamba` base, install a conda environment from the model's `environment.yml`, then install the `mvr-worker` SDK from the repository's `sdk/mvr-worker/` directory. The build context is the repository root; this is what allows the Dockerfile to `COPY sdk/mvr-worker/ /tmp/mvr-worker/`.
 
-To run a container, you need to mount an input directory (containing `data.h5ad` or `data.h5mu`) and an output directory.
+See [Model Container Contract — Build Pattern](MODEL_CONTAINER_CONTRACT.md#build-pattern) for the canonical template.
 
-Example for the PCA model:
-```bash
-docker run --rm \
-    -v /path/to/your/input:/data/input:ro \
-    -v /path/to/your/output/pca:/data/output:rw \
-    multiverse-pca
-```
+## Built-in Images
 
-The container will read the data from `/data/input`, run the model, and write the results (`embeddings.h5ad`, `metrics.json`, `log.txt`) to `/data/output`.
+| Slug | Image | Modalities | Notes |
+|---|---|---|---|
+| `pca` | `multiverse-pca:1.0.0` | RNA | Linear baseline via Scanpy. |
+| `mofa` | `multiverse-mofa:1.0.0` | Any | MOFA+ multi-factor decomposition. |
+| `multivi` | `multiverse-multivi:1.0.0` | RNA + ATAC | scvi-tools-based VAE. |
+| `totalvi` | `multiverse-totalvi:1.0.0` | RNA + ADT | scvi-tools protein-aware VAE. |
+| `mowgli` | `multiverse-mowgli:1.0.0` | RNA + ATAC | Optimal transport-based factor model. |
+| `cobolt` | `multiverse-cobolt:1.0.0` | RNA + ATAC | VAE from epurdom/cobolt. |
+
+Build any image locally with `make build-<slug>`. Build them all (and the evaluation image) with `make build-all`.
+
+## Why Containerize at All
+
+For a platform engineer the answer is dependency isolation: a single Python environment cannot host scvi-tools, MOFA, Mowgli, and Cobolt without conflicts, and the GPU stacks each library targets are mutually exclusive on a single host install.
+
+For a bioinformatics user the answer is more practical: every benchmark you launch records the exact image tag it ran against, and that tag is part of the run's `job_spec.json` and the MLflow tags. Reproducing a published result is then a question of pulling the recorded image, not of recreating a conda environment from memory.

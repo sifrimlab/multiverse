@@ -1,138 +1,90 @@
 # Developer Guide
 
-This document provides technical details for developers who want to contribute to the Multi-verse project.
+This page is for maintainers and contributors. It collects the practical knowledge needed to work on the codebase without breaking the contracts that the rest of the platform depends on. For the high-level system map, see [Architecture](ARCHITECTURE.md).
 
-## How to Add a New Model
+## Local Development Setup
 
-To integrate a new multimodal integration method, follow these steps:
-
-### 1. Create the Model Wrapper
-Create a new Python file in `multiverse/models/` (e.g., `new_model.py`). Define a class that inherits from `ModelFactory`.
-
-```python
-from .base import ModelFactory
-
-class NewModel(ModelFactory):
-    def __init__(self, dataset, dataset_name, config_path: str, is_gridsearch=False):
-        super().__init__(dataset, dataset_name, model_name="new_model", config_path=config_path, is_gridsearch=is_gridsearch)
-        # Initialize model-specific parameters from self.model_params.get("new_model")
-
-    def train(self):
-        # Implementation of the training process
-        pass
-
-    def evaluate_model(self):
-        # Implementation of model-specific evaluation
-        pass
+```bash
+make install            # uv sync --group dev (no ML libraries)
+make init               # create mvexp_state.db
+make register-models    # populate the models table
+make services-up        # MLflow + Optuna for integration work
+# Optional, for full ML stack development:
+uv sync --group dev --group ml-legacy
 ```
 
-### 2. Update the Model Registry
-Add an entry for your model in `model_registry.json` at the project root. This allows the system to perform dynamic routing.
+The two dependency groups are intentional. `dev` is enough for orchestrator, GUI, and registry work and installs in seconds. `ml-legacy` pulls scvi-tools, scanpy, muon, Mowgli, Cobolt, and torch and is needed only when working on the local (non-Docker) runner path or on the in-process model wrappers under `multiverse/models/`.
 
-```json
-{
-  "name": "new_model",
-  "docker_image": "multiverse-new_model:latest",
-  "supported_omics": ["rna", "atac"]
-}
+## Test Suite
+
+```bash
+make test                              # all tests
+uv run pytest tests/unit                # unit tests only
+uv run pytest tests/integration         # integration (Docker required)
+uv run pytest tests/gui                 # Playwright-driven GUI tests
 ```
 
-### 3. Create a Dockerfile
-Create a corresponding Dockerfile in the `containers/` directory. Ensure it installs all necessary dependencies and sets the entrypoint to run your model script.
-
-### 4. Register in the Workflow
-Add your model class to the `run_models_with_user_params` function in `multiverse/main.py`.
-
-## Master-Worker Execution Flow
-
-Multi-verse uses a Master-Worker architecture to ensure isolation and scalability.
-
-### Master Process (`multiverse.runner.cli`)
-1. **Validation**: Validates the user configuration against the Pydantic schema.
-2. **Registry Lookup**: Loads `model_registry.json` to identify available models and their requirements.
-3. **Omics Detection**: Inspects the input dataset to determine available omics (e.g., RNA, ATAC, ADT).
-4. **Dynamic Routing**: Filters the user's requested models. A model is only executed if all its `supported_omics` are present in the dataset.
-5. **Concurrent Image Preparation**: Pulls or builds the required Docker images in parallel using `asyncio`.
-6. **Parallel Execution**: Spins up a Docker container for each eligible model.
-   - **Isolation**: Each worker runs in its own container.
-   - **Read-Only Mounts**: The input data directory is mounted as read-only (`ro`) to prevent accidental data corruption.
-   - **Shared Output**: Each worker writes its results to a dedicated subdirectory in the output directory.
-
-### Worker Process (Docker Containers)
-Each worker container runs a specific model wrapper. It:
-1. Loads the preprocessed data from `/data/input`.
-2. Executes the `train()` method.
-3. Saves latent embeddings to `/data/outputs/embeddings.h5`.
-4. Generates a UMAP visualization at `/data/outputs/umap.png`.
-5. Calculates model-specific metrics and saves them to `/data/outputs/metrics.json`.
-
-### Result Aggregation
-After all worker containers exit, the Master process:
-1. Checks the exit codes of all containers.
-2. Aggregates the `metrics.json` from successful runs.
-3. Triggers the `Evaluator` to compute comparative `scIB-metrics` (ARI, NMI, etc.) across all successful models.
-4. Generates a final `results.json` in the root output directory.
-
-
-This section is designed to be added to your `README.md`. It explains the "why" and "how" of the new directory structure, making it clear to the rookie bioinformatician exactly where to put their data and why that structure is enforced.
-
-***
-
-## Data Storage & Organization
-
-To ensure the Multi-verse pipeline remains automated, reproducible, and scalable, we enforce a **Dataset-Centric** storage structure. Instead of loose files, every dataset is treated as a self-contained "Package."
-
-### 1. Recommended Directory Structure
-All datasets managed by the Multi-verse system should reside within the `store/datasets/` directory. Each dataset must be organized as follows:
+Test layout:
 
 ```text
-store/datasets/
-├── <dataset_slug>/            # A filesystem-safe name (e.g., pbmc-10k-v3)
-│   ├── dataset.yaml           # Manifest file describing your data
-│   └── data/                  # Standardized data folder
-│       ├── raw.h5ad           # Original raw source file
-│       └── processed.h5mu     # Generated by the preprocessor
+tests/
+  unit/                Pure-Python unit tests, no Docker, no network.
+  integration/         End-to-end runs through the orchestrator.
+  gui/                 Playwright + Streamlit assertions.
+  conftest.py          Shared fixtures.
+  fixtures/            Small synthetic AnnData / MuData inputs.
+  simulate_dashboard.py, verify_gui.py   Manual harnesses.
 ```
 
-### 2. The `dataset.yaml` Manifest
-The `dataset.yaml` file acts as the "Brain" for each dataset. This file allows the system to automatically detect modalities and mapping keys without human intervention.
+Notable unit tests:
 
-**Example `dataset.yaml`:**
-```yaml
-name: "PBMC 10k v3"
-omics: ["rna", "atac"]
-raw_files:
-  rna: "data/raw_rna.h5ad"
-  atac: "data/raw_atac.h5ad"
-metadata_keys:
-  batch: "donor_id"
-  cell_type: "cell_ontology_class"
-```
+| Test | Covers |
+|---|---|
+| `test_planner.py` | Run plan generation from a manifest. |
+| `test_manifest_gate.py` | Pre-flight validation. |
+| `test_docker_runner.py` | Async supervision and promotion. |
+| `test_local_runner.py` | The Python fallback path. |
+| `test_tuner.py` | Optuna sampling and objective wiring. |
+| `test_models_base.py` | `ModelFactory` lifecycle. |
+| `test_worker_io.py` | `mvr-worker` SDK I/O helpers. |
+| `test_event_stream.py` | JSON event emission to the GUI. |
+| `test_metrics_config.py`, `test_run_metrics.py` | Metric gating and on-disk format. |
+| `test_validator.py` | Omics / batch / cell-type validation. |
+| `test_ingestion.py` | Dataset and model registration. |
 
-### 3. Best Practices for Data Management
-To keep your pipeline production-ready, follow these rules:
+## Core Boundaries
 
-*   **Self-Contained:** Every folder in `store/datasets/` should represent exactly one dataset. If you have train/test splits, define them in the `dataset.yaml` or handle them during the pre-processing stage.
-*   **Immutability:** Do **not** modify the `raw.h5ad` file once registered. The pipeline creates a `processed.h5mu` file that serves as the "Source of Truth" for all models.
-*   **Slugified Naming:** Use simple, filesystem-safe names for folders (e.g., `pbmc-10k` instead of `PBMC 10k (Final version)`). Avoid spaces and special characters.
-*   **Standardized Naming:** Inside the `/data` folder, name your raw files clearly (e.g., `rna.h5ad`, `atac.h5ad`, `adt.h5ad`). This allows the system to auto-detect modalities.
+These contracts are the ones to respect when refactoring:
 
-### 4. How to Register a New Dataset
-Instead of manually moving files, use the provided CLI tool to ensure your registry stays in sync with your storage:
+| Boundary | Contract |
+|---|---|
+| Dataset ingestion | `dataset.yaml` plus prepared `.h5ad` / `.h5mu` under `store/datasets/<slug>/`. |
+| Model registration | `model.yaml` plus a JSON Schema for hyperparameters; see [Model Registration](MODEL_REGISTRATION.md). |
+| Container runtime | `/input/data.h5mu`, `/output/job_spec.json`, `/output/`; see [Model Container Contract](MODEL_CONTAINER_CONTRACT.md). |
+| Evaluation | Embedding row order matches `obs`; metrics are gated by `determine_valid_metrics()`. |
+| Reporting | Each run's metrics row in MLflow ties back to the artifact bundle on disk. |
 
-```bash
-# This automatically validates the dataset structure, 
-# copies it into the store, and updates the SQLite Registry.
-make register slug=my-dataset
-```
+## Code Layout
 
-***
+The application package lives under `multiverse/`. The container SDK lives under `sdk/mvr-worker/` and is published into model images at build time. Schemas live under `schemas/`. Container build recipes live under `store/models/<slug>/container/` and observability Dockerfiles live under `docker-env/`.
 
-### Pro-Tip for Migration
-If you have an existing directory of raw data, do not move it manually. Use our migration utility to wrap your existing files into the new structure safely:
+See [Architecture — Repository Layout](ARCHITECTURE.md#repository-layout) for the annotated tree.
 
-```bash
-# This will walk your existing data folder, generate dataset.yaml 
-# files for each sub-folder, and prepare them for registration.
-python -m multiverse.migrate_data --source /mnt/data/my_research/
-```
+## Things to Get Right
+
+1. **Atomicity around promotion.** The runner writes `runs.status = SUCCESS` only after `rename(2)`-ing the workspace into the artifact tree. Reorder these and you create the possibility of an orphaned successful row pointing at a missing directory.
+2. **Determinism.** Every model container must apply the seed from `job_spec.json` before any stochastic call. Tests exercise this; do not regress.
+3. **Concurrency.** SQLite is opened with WAL mode and a 30s busy timeout. Long write transactions in tooling will be felt by the GUI. Keep writes small.
+4. **Metric gating.** `evaluate.determine_valid_metrics()` is what prevents misleading numbers when metadata is missing. New metric families should plug into the same gating function.
+5. **No hidden state.** The registry is the source of truth. Functions that quietly inspect the filesystem to "figure out" what is registered are bugs in waiting.
+
+## Style Notes
+
+- Code targets Python 3.12. Use the standard typing features.
+- Prefer Pydantic models at parsing boundaries (`DatasetManifest`, `ParsedManifest`) over dictionary access.
+- The runner emits machine-readable events on stderr (one JSON object per line). Don't print free-form text alongside them; tests consume the stream.
+- Container code should import only from `mvr_worker` and the model's own dependency stack. Importing from the host `multiverse` package inside a container will fail at runtime.
+
+## Release Practice
+
+Tag versions, update `CHANGELOG.md`, and ensure that the bundled images are tagged with their `model.yaml` versions. Run artifacts already record image tag, model version, and contract version; for a release to remain reproducible, those tags must continue to resolve.

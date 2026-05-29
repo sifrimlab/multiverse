@@ -11,7 +11,6 @@ import errno
 import os
 import re
 import shutil
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -48,6 +47,42 @@ def _slugify_relpath(rel_path: Path, fallback: str) -> str:
     if not parts:
         return slugify_fs_safe(fallback)
     return "-".join(parts)
+
+
+def _normalize_dest_datasets_root(dest: Path) -> Path:
+    """Allow --dest to point to either `store/` or `store/datasets/`."""
+    resolved = dest.resolve()
+    if resolved.name == "datasets":
+        return resolved
+    return resolved / "datasets"
+
+
+def _derive_dataset_slug(source_root: Path, source_dir: Path) -> str:
+    """Infer a stable dataset slug from candidate directory context.
+
+    Examples:
+    - source_root=/.../pbmc10k, source_dir=/.../pbmc10k/data  -> pbmc10k
+    - source_root=/.../datasets, source_dir=/.../datasets/pbmc10k/data -> pbmc10k
+    - source_root=/.../datasets, source_dir=/.../datasets/pbmc10k/raw -> pbmc10k-raw
+    """
+    rel = source_dir.resolve().relative_to(source_root.resolve())
+    rel_parts = list(rel.parts)
+    if rel_parts and rel_parts[-1].lower() == "data":
+        rel_parts = rel_parts[:-1]
+    if not rel_parts:
+        return slugify_fs_safe(source_root.name)
+    return _slugify_relpath(Path(*rel_parts), fallback=source_dir.name)
+
+
+def _default_dataset_name_from_slug(slug: str) -> str:
+    tokens = [t for t in re.split(r"[-_]+", slug.strip()) if t]
+    if not tokens:
+        return slug
+    return " ".join(t.upper() if any(ch.isdigit() for ch in t) else t.capitalize() for t in tokens)
+
+
+def _should_replace_generic_name(name: str) -> bool:
+    return slugify_fs_safe(name) in {"data", "dataset", "datasets"}
 
 
 def _list_raw_files_in_dir(directory: Path) -> List[Path]:
@@ -155,15 +190,17 @@ def migrate_one(
     *,
     dry_run: bool,
 ) -> MigrationResult:
-    rel = source_dir.resolve().relative_to(source_root.resolve())
-    slug = _slugify_relpath(rel, fallback=source_dir.name)
-    dest_dataset = dest_store / "datasets" / slug
+    slug = _derive_dataset_slug(source_root, source_dir)
+    dest_dataset = dest_store / slug
     dest_data = dest_dataset / "data"
 
     try:
         manifest = guesser.generate_manifest(source_dir)
     except Exception as exc:  # noqa: BLE001
         return MigrationResult(source_dir, dest_dataset, "failed", f"heuristic failed: {exc}")
+
+    if _should_replace_generic_name(str(manifest.get("name", ""))):
+        manifest["name"] = _default_dataset_name_from_slug(slug)
 
     validation_error = _validate_manifest(manifest)
     if validation_error:
@@ -211,7 +248,7 @@ def migrate_one(
 
 def run_migration(source: Path, dest_store: Path, *, dry_run: bool) -> int:
     source = source.resolve()
-    dest_store = dest_store.resolve()
+    dest_store = _normalize_dest_datasets_root(dest_store)
     guesser = DatasetHeuristics()
 
     if not source.is_dir() or not os.access(source, os.R_OK):

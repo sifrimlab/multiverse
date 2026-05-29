@@ -1,6 +1,10 @@
-import anndata as ad
-import mudata as md
-import muon as mu
+from __future__ import annotations
+
+import importlib
+from typing import Any
+ad = Any
+md = Any
+mu = None
 import numpy as np
 import os
 from typing import List, Union
@@ -10,6 +14,26 @@ from .config import load_config
 
 
 logger = get_logger(__name__)
+
+
+CONTAINER_ONLY_ERROR = (
+    "This module must be run inside a Model Container, not on the Orchestrator Host."
+)
+
+
+def _ensure_ml_runtime() -> None:
+    global ad, md, mu
+    if mu is not None:
+        return
+    try:
+        _ad = importlib.import_module("anndata")
+        _md = importlib.import_module("mudata")
+        _mu = importlib.import_module("muon")
+    except ImportError as exc:
+        raise RuntimeError(CONTAINER_ONLY_ERROR) from exc
+    ad = _ad
+    md = _md
+    mu = _mu
 
 
 def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None) -> md.MuData:
@@ -28,6 +52,7 @@ def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] 
     Raises:
         ValueError: If the lengths of `list_modality` and `list_anndata` are not equal.
     """
+    _ensure_ml_runtime()
     if len(list_modality) != len(list_anndata):
         raise ValueError("Length of list_modality and list_anndata must be equal!")
     else:
@@ -47,9 +72,10 @@ def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] 
     if "cell_type" in data["rna"].obs.columns:
         data.obs["cell_type"] = data["rna"].obs["cell_type"]
     else:
-        logger.warning("No 'cell_type' annotation found in rna modality. Creating a default 'cell_type' column with zeros.")
-        num_obs = data.n_obs
-        data.obs["cell_type"] = np.zeros(num_obs, dtype=int)
+        logger.warning(
+            "No 'cell_type' annotation found in rna modality — supervised metrics will be unavailable."
+        )
+        data.obs["cell_type"] = "unknown"
 
     return data
 
@@ -66,6 +92,7 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
     Returns:
         anndata.AnnData: The concatenated AnnData object.
     """
+    _ensure_ml_runtime()
     mudata = fuse_mudata(list_anndata=list_anndata, list_modality=list_modality)
     list_ann = []
     for mod in list_modality:
@@ -78,7 +105,10 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
     if "cell_type" in mudata.obs.columns:
         anndata.obs["cell_type"] = mudata.obs["cell_type"]
     else:
-        anndata.obs["cell_type"] = np.zeros(num_obs, dtype=int)
+        logger.warning(
+            "No 'cell_type' annotation found after modality concatenation — supervised metrics will be unavailable."
+        )
+        anndata.obs["cell_type"] = "unknown"
     
     # Initialize modality mapping for compatibility with models like MultiVI.
     anndata.obs["modality"] = np.zeros(num_obs, dtype=int)
@@ -98,6 +128,7 @@ def load_datasets(config_path_or_dict: Union[str, dict]):
     Raises:
         ValueError: If a dataset has no modalities defined.
     """
+    _ensure_ml_runtime()
     config_dict = load_config(config_path_or_dict)
     datasets = {}
 
@@ -153,6 +184,7 @@ def dataset_select(datasets_dict: dict, data_type: str = ""):
     Raises:
         ValueError: If an unsupported `data_type` is provided.
     """
+    _ensure_ml_runtime()
     datasets = datasets_dict
 
     if data_type == "concatenate":

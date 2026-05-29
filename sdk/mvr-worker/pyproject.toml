@@ -1,0 +1,19 @@
+[project]
+name = "mvr-worker"
+version = "0.1.0"
+description = "Container worker SDK for Multi-verse model runners"
+requires-python = ">=3.10"
+dependencies = [
+    "h5py",
+    "numpy",
+    "mudata",
+    "anndata",
+    "pandas",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["mvr_worker"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

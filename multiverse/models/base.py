@@ -1,11 +1,13 @@
+import json
 import os
-from typing import Union
+from typing import Any, Dict, Union
 import numpy as np
 import scanpy as sc
 import h5py
 import matplotlib.pyplot as plt
 from ..config import load_config
 from ..logging_utils import get_logger
+from ..tracking import sanitize_nan_inf
 
 logger = get_logger(__name__)
 
@@ -44,7 +46,10 @@ class ModelFactory:
                 Defaults to "./config.json".
             is_gridsearch (bool): Flag indicating if this is a grid search run. Defaults to False.
         """
-        self.config_dict = load_config(config_path)
+        if isinstance(config_path, dict):
+            self.config_dict = config_path
+        else:
+            self.config_dict = load_config(config_path)
         self.model_params = self.config_dict.get("model")
         self.dataset = dataset
         self.dataset_name = dataset_name
@@ -78,19 +83,6 @@ class ModelFactory:
         if self.model_name in self.model_params:
             model_specific_params = self.model_params.get(self.model_name)
             self.umap_color_type = model_specific_params.get("umap_color_type")
-
-    def update_parameters(self, **kwargs):
-        """Updates the model attributes with new parameter values.
-
-        Args:
-            **kwargs: Dictionary of attribute names and new values.
-        """
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                # Handle invalid parameter names if necessary
-                logger.warning(f"Invalid parameter name '{key}'")
 
     def train(self):
         """Abstract method for training the model. Subclasses must implement this."""
@@ -178,6 +170,56 @@ class ModelFactory:
         except Exception as e:
             logger.error(f"An error occurred during UMAP generation: {e}")
             raise
+
+    def write_metrics(
+        self,
+        metrics: Dict[str, Any],
+        history: Dict[str, Any] | None = None,
+    ) -> None:
+        """Persist final scalars and optional per-epoch history to metrics.json.
+
+        Writes both the nested model path and the flat container contract path
+        at ``<output_dir>/metrics.json`` so the orchestrator and MLflow can find them.
+        """
+        payload: Dict[str, Any] = dict(metrics)
+        if history:
+            import math
+
+            cleaned_history = {}
+            for key, values in history.items():
+                if not values:
+                    continue
+                series = []
+                for value in values:
+                    try:
+                        numeric = float(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if math.isfinite(numeric):
+                        series.append(numeric)
+                if series:
+                    cleaned_history[str(key)] = series
+            if cleaned_history:
+                payload["history"] = cleaned_history
+
+        payload = sanitize_nan_inf(payload)
+
+        paths = {
+            self.metrics_filepath,
+            os.path.join(self.config_dict["output_dir"], "metrics.json"),
+        }
+        last_error: Exception | None = None
+        for path in paths:
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fp:
+                    json.dump(payload, fp, indent=4)
+            except IOError as exc:
+                last_error = exc
+                logger.error("Could not write metrics file to %s: %s", path, exc)
+        if last_error is not None and not any(os.path.exists(p) for p in paths):
+            raise last_error
+        logger.info("Metrics saved to %s", self.metrics_filepath)
 
     def evaluate_model(self):
         """Abstract method for evaluating the model. Subclasses must implement this."""

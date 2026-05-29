@@ -1,327 +1,217 @@
-# Multi-verse
+# mvexp
 
-[![MIT License](https://img.shields.io/badge/license-MIT-green.svg)](https://opensource.org/licenses/MIT)
+**Reproducible benchmarking for multimodal single-cell integration, without making bioinformaticians become infrastructure engineers.**
 
-Multi-verse is a production-grade framework for the comparative analysis of multimodal single-cell data integration methods. It supports a variety of state-of-the-art models, including MOFA+, MOWGLI, MultiVI, Cobolt, and PCA, providing standardized evaluation metrics and visualizations.
+mvexp is an MLOps platform for academic biological integration studies. You bring the scientific objects you already use in notebooks: `AnnData`, `MuData`, batch annotations, cell-type labels, and model questions. mvexp handles the repetitive infrastructure around registration, model execution, parameter tracking, artifacts, Optuna sweeps, and MLflow comparison.
 
-<p align="center">
-  <img src="logo.png" alt="Multi-verse Logo" width="200">
-</p>
+The goal is simple: make it easier to run a defensible benchmark and easier to explain exactly what you did in a paper.
 
-<p align="center">
-  <a href="https://github.com/sifrimlab/multi-verse/issues">Report Bug</a> ·
-  <a href="https://github.com/sifrimlab/multi-verse/pulls">Add Feature</a>
-</p>
+## Who This Is For
 
-<p align="right"><sub><em>Logo generated with the help of ChatGPT.</em></sub></p>
+mvexp is designed for researchers who are comfortable with Scanpy, Seurat, MuData, and Jupyter, but do not want every benchmark to become a Docker and orchestration project.
 
-## Overview
+You should be able to answer scientific questions such as:
 
-Multi-verse simplifies the benchmarking of multimodal integration by providing:
+- Which integration model best preserves my annotated cell populations?
+- Does batch correction remove donor or chemistry effects without erasing biology?
+- Are conclusions stable across random seeds and hyperparameters?
+- Can I attach enough provenance for a reviewer to reproduce my benchmark?
 
-- **Dynamic Routing**: Automatically filters eligible models based on the omics present in your dataset (RNA, ATAC, ADT).
-- **Concurrent Orchestration**: Executes multiple models in parallel using isolated Docker containers for maximum performance and stability.
-- **Standardized Evaluation**: Integrates `scIB-metrics` to calculate bio-conservation and batch-correction scores (ARI, NMI, Silhouette, etc.).
-- **Interactive Setup**: A Streamlit-based wizard to generate configuration files without manual JSON editing.
+## What mvexp Handles for You
 
-Supported methods include [MOFA+](https://biofam.github.io/MOFA2/), [Mowgli](https://mowgli.readthedocs.io/en/latest/index.html), [MultiVI](https://docs.scvi-tools.org/en/stable/user_guide/models/multivi.html), Cobolt, and PCA, with scIB metrics and UMAP visualizations for interpretation.
+| You focus on | mvexp handles |
+|---|---|
+| Biological question and dataset curation | Dataset registration and compatibility checks |
+| Batch and cell-type metadata | Metric eligibility and clear warnings |
+| Model choice and hyperparameters | Safe, parallel execution without hand-running containers |
+| Comparing embeddings and metrics | Results tables, artifacts, MLflow tracking, and Optuna sweeps |
+| Writing a reproducible Methods section | `run_manifest.yaml`, `job_spec.json`, metrics, logs, and provenance artifacts |
 
----
+## How the Workflow Feels
+
+1. Prepare your `AnnData` or `MuData` object in Jupyter.
+2. Save it under `store/datasets/<dataset-slug>/data/`.
+3. Open the Streamlit GUI.
+4. Register the dataset in the Registry tab.
+5. Choose dataset x model pairs in Job Builder.
+6. Set parameters in the Parameters tab.
+7. Launch the run in Execute.
+8. Review metrics, embeddings, logs, and artifacts in Results and MLflow.
+9. Bring the selected `embeddings.h5` back into Jupyter for figures and downstream analysis.
 
 ## Quick Start
 
-### Prerequisites
+Prerequisites:
 
 - Python 3.12+
-- [uv](https://github.com/astral-sh/uv) (recommended) or `pip`
-- Docker (for containerized execution)
+- `uv`
+- Docker with Compose v2
 
-**Alternative (conda):** You can use a conda environment from `environment.yml` instead of `uv`:
-
-```bash
-conda env create -f environment.yml
-conda activate multiverse
-```
-
-`cmake` may be required for the Louvain dependency to install correctly in some setups.
-
-### Installation
-
-1. Clone the repository:
-
-   ```bash
-   git clone https://github.com/sifrimlab/multi-verse.git
-   cd multi-verse
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   make install
-   ```
-
-   Optional development install (if not using `uv` workflows):
-
-   ```bash
-   pip install -e .
-   ```
-
-### Running the Setup Wizard
-
-Launch the interactive GUI to generate your configuration:
+Set up the platform:
 
 ```bash
+make bootstrap
+make services-up
 make setup
 ```
 
-### Running the Pipeline
+Then open the GUI at `http://localhost:8501`.
 
-You can run the pipeline with the default Makefile target, directly with Python, or via the Docker orchestrator.
+In the GUI:
 
-**Option 1: Makefile / `runner.py`**
+1. Open the **Registry** tab.
+2. Expand **Register New Dataset**.
+3. Either provide an existing `dataset.yaml`, or switch on **Build manifest from fields**.
+4. Click **Register Dataset**.
+5. Open **Job Builder** and select compatible dataset x model pairs.
+6. Open **Parameters** and set model hyperparameters.
+7. Open **Execute** and click **Launch Run**.
+8. Open **Results** to inspect completed runs and artifact paths.
 
-```bash
-make run
-# or, with a specific config:
-uv run python runner.py config_alldatasets.json
+For a full guided tutorial, see [Getting Started](docs/GETTING_STARTED.md).
+
+## The Jupyter Bridge
+
+Most users should keep doing their exploratory work in notebooks. mvexp is meant to sit between notebook curation and notebook interpretation.
+
+### Save a MuData Object for mvexp
+
+```python
+from pathlib import Path
+
+import mudata as md
+
+# Assume you already created these in Scanpy:
+# adata_rna  : AnnData with RNA counts/features
+# adata_atac : AnnData with ATAC counts/features
+
+dataset_dir = Path("store/datasets/pbmc_rna_atac")
+data_dir = dataset_dir / "data"
+data_dir.mkdir(parents=True, exist_ok=True)
+
+mdata = md.MuData({
+    "rna": adata_rna,
+    "atac": adata_atac,
+})
+
+# Shared sample/cell metadata used by evaluation.
+mdata.obs["batch"] = adata_rna.obs["batch"].astype(str)
+mdata.obs["cell_type"] = adata_rna.obs["cell_type"].astype(str)
+
+mdata.write_h5mu(data_dir / "processed.h5mu")
 ```
 
-If no config file is passed, `runner.py` defaults to `config_alldatasets.json` when invoked that way.
+Create the dataset manifest next to the data:
 
-**Option 2: Module entry point**
+```python
+import yaml
 
-```bash
-python -m multiverse.main config.json
-```
-
-**Option 3: Docker orchestrator (concurrent)**
-
-```bash
-python -m multiverse.runner.cli --concurrent --input /path/to/data --output /path/to/results --models pca mofa multivi
-```
-
----
-
-## Migrating Legacy Data
-
-Use the migration utility to convert researcher-centric folders into the standardized
-`store/datasets/<slug>/data/` layout. The workflow is:
-
-1. Recursively discover directories that contain raw inputs: `.h5ad` / `.h5mu`, 10x Cell Ranger `filtered_feature_bc_matrix.h5`, and per-modality tables such as `*_adt_counts.csv.gz`.
-2. Run `DatasetHeuristics` to infer modalities and likely `batch` / `cell_type` keys.
-3. Safely materialize files into the new store (hard-link first, fallback to copy).
-4. Write `dataset.yaml` next to `data/`, with comments when multiple metadata alternatives are detected.
-
-Dry-run preview (recommended first):
-
-```bash
-python -m multiverse.migrate_data --source /path/to/old --dest /path/to/store --dry-run
-```
-
-Run migration:
-
-```bash
-python -m multiverse.migrate_data --source /path/to/old --dest /path/to/store
-```
-
-The migration is non-destructive and will skip any destination dataset that already
-contains a `dataset.yaml` to avoid overwriting manual edits.
-
----
-
-## Model overview
-
-| Model | Pairing type | Methodology | Hyperparameter evaluation (typical) | scIB metrics |
-| --- | --- | --- | --- | --- |
-| PCA | Unpaired | Linear dimensionality reduction | Variance explained | Yes |
-| MOFA+ | Paired | Variational inference | Variance explained | Yes |
-| MultiVI | Paired-guided | Deep generative model | Silhouette (and related) | Yes |
-| Mowgli | Paired | Optimal transport + NMF | Optimal transport loss | Yes |
-| Cobolt | Paired | Multi-omics joint embedding | Model-specific | Yes |
-
----
-
-## Configuration reference
-
-The system uses a JSON configuration file. Primary keys:
-
-| Key | Type | Description |
-| :--- | :--- | :--- |
-| `batch_key` | `string` | **Required.** The key in `.obs` identifying experimental batches. |
-| `cell_type_key` | `string` | Optional. The key in `.obs` identifying ground-truth cell types. |
-| `random_seed` | `int` | Seed for reproducibility (default: 42). |
-| `output_dir` | `string` | Path where results and logs will be saved. |
-| `data` | `object` | Mapping of dataset names to file paths and per-modality settings. |
-| `model` | `object` | Models to run (e.g. `pca`, `mofa`, `multivi`, `mowgli`, `cobolt`) and their hyperparameters. |
-| `_run_user_params` | `bool` | Whether to run models with the specified parameters. |
-| `_run_gridsearch` | `bool` | Enable hyperparameter search using each model’s `grid_search_params`. |
-| `preprocess_params` | `object` | Optional filtering/normalization settings for RNA, ATAC, and ADT. |
-| `training` | `object` | Optional training-related options. |
-
-### Datasets (`data`)
-
-Each dataset entry includes:
-
-- `data_path`: Directory (or file path, depending on layout) where modality files live.
-- `rna`, `atac`, `adt` (optional): Per-modality blocks with:
-  - `file_name`: Data file name.
-  - `is_preprocessed`: Whether data are already preprocessed.
-  - `annotation`: Optional key for cell types or other labels used in evaluation/plots.
-
-Example `data` entry:
-
-```json
-"dataset_1": {
-  "data_path": "data/pbmc.h5mu",
-  "rna": { "file_name": "rna.h5ad", "is_preprocessed": false }
+manifest = {
+    "name": "PBMC RNA+ATAC",
+    "omics": ["rna", "atac"],
+    "raw_files": {
+        "rna": "data/processed.h5mu",
+        "atac": "data/processed.h5mu",
+    },
+    "metadata_keys": {
+        "batch": "batch",
+        "cell_type": "cell_type",
+    },
 }
+
+with open(dataset_dir / "dataset.yaml", "w") as f:
+    yaml.safe_dump(manifest, f, sort_keys=False)
 ```
 
-The repo ships example configs such as `dataset_Pbmc10k` (RNA + ATAC). Example datasets referenced in older tutorials:
+Then register `store/datasets/pbmc_rna_atac/dataset.yaml` in the GUI Registry tab.
 
-- **dataset_Pbmc10k** — [Download (Google Drive)](https://drive.google.com/drive/u/0/folders/1uq6UJFaCqcrV7XjAiNmfdptKW0BfL0Ha): RNA and ATAC from ~10k PBMCs; includes cell type annotations.
-- **dataset_TEA** — Same folder: RNA, ATAC, and ADT from a leukopak sample; annotation may be absent but useful for multi-modal tests.
+### Read an Embedding Back into Jupyter
 
-### Models (`model`)
+After a successful run, copy the artifact path from the Results tab. The embedding file contains one HDF5 dataset named `latent`.
 
-Each enabled model is a key under `model` (e.g. `pca`, `mofa`, `multivi`, `mowgli`, `cobolt`). Common fields:
+```python
+from pathlib import Path
 
-- `device`: `cpu` or `cuda:<index>`.
-- `umap_random_state`, `umap_color_type`, `umap_use_representation` (where applicable).
-- `grid_search_params`: Hyperparameter grids used when `_run_gridsearch` is true.
+import h5py
+import mudata as md
+import scanpy as sc
 
-Model-specific hyperparameters vary; see `config_alldatasets.json` for full examples.
+artifact_dir = Path("store/artifacts/benchmark_run/pbmc_rna_atac/pca/run_abc123def456")
 
-### Preprocessing (`preprocess_params`)
+with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
+    latent = f["latent"][:]
 
-Optional structure for RNA, ATAC, and ADT filtering and normalization (e.g. min/max genes by counts, normalization targets, ADT per-cell normalization). The default device for preprocessing can be aligned with your `device` settings in each model block.
+mdata = md.read_h5mu("store/datasets/pbmc_rna_atac/data/processed.h5mu")
+adata = mdata["rna"].copy()
+adata.obsm["X_mvexp_pca"] = latent
 
----
+sc.pp.neighbors(adata, use_rep="X_mvexp_pca")
+sc.tl.umap(adata)
+sc.pl.umap(adata, color=["batch", "cell_type"])
+```
 
-## Results format
+See [Data Preparation](docs/DATA_PREPARATION.md) for more detailed examples for `AnnData`, `MuData`, RNA+ATAC, and RNA+ADT studies.
 
-### Grid search
+## Data State: Biological Assumptions
 
-`_run_gridsearch` and per-model `grid_search_params` are part of the configuration schema. The main workflow may still log that grid search is skipped while that path is fully wired; see `multiverse/main.py` for current behavior. When grid search is fully executed, outputs are typically organized under your configured `output_dir` (historically tutorials used `./outputs/gridsearch_output/` for best-run artifacts and console summaries).
+mvexp does not decide what counts as appropriate biological preprocessing for your study. It makes your choices explicit and reproducible.
 
-### Evaluation
+Recommended expectations:
 
-Metrics come from [scIB-metrics](https://scib-metrics.readthedocs.io/en/stable/) on latent embeddings. Per-dataset results are written under `output_dir/<dataset_name>/` (e.g. `evaluation_metrics.json`). Aggregated summaries may also appear as `results.json` at the `output_dir` root when the aggregation step runs.
+- Use matrices in the state expected by the selected model. Count-based probabilistic models generally expect count-like input; PCA-style baselines are often run on normalized/log-transformed features.
+- Keep raw counts available when possible, especially for RNA, ATAC, and ADT models that assume count data.
+- Preserve feature annotations such as `feature_types` when models need to distinguish genes, peaks, and proteins.
+- Provide a `batch`-like column for technical or donor effects you want assessed.
+- Provide a `cell_type`-like column when you want supervised bio-conservation metrics such as ARI, NMI, label silhouette, or cLISI.
+- Store metadata columns as categorical or string-like values, not mixed Python objects.
+- Record HVG selection and filtering choices in your notebook or supplementary methods.
 
-Commonly reported metrics include:
+The platform checks whether metadata columns exist and whether batch metrics are meaningful. It does not silently invent biological labels.
 
-- **ARI** — Clustering agreement with known annotations.
-- **NMI** — Normalized mutual information between clusters and labels.
-- **Silhouette** — Separation quality of clusters.
-- **Graph connectivity** — Batch mixing / integration.
-- **Isolated labels ASW** — How well isolated populations are preserved after integration.
+## Publishing and Reproducibility
 
----
+Every run is designed to leave a Methods trail:
 
-## Developer guide
+- `run_manifest.yaml` records the selected datasets, models, parameters, metrics, experiment name, and seed.
+- `job_spec.json` records the exact runtime instructions passed to each model container.
+- `metrics.json` records model-level metrics and histories when available.
+- `embeddings.h5` records the latent representation used for downstream evaluation.
+- logs and provenance artifacts document what ran and where outputs were written.
 
-### Adding a new model
+For a paper, include `run_manifest.yaml` and `provenance.json` when it is present in the run directory as Supplementary Material. Together with the archived input data, these files are the reproducibility contract for the benchmark: they record what was run, with which parameters, seed, metrics, and artifacts. In your Methods section, describe the dataset state, metadata keys, selected models, random seed, and metric families.
 
-1. **Implement the wrapper**: Add a class in `multiverse/models/` inheriting from `ModelFactory`.
-2. **Update the registry**: Add metadata in `model_registry.json`.
+## Documentation Map
 
-   ```json
-   {
-     "name": "new_model",
-     "docker_image": "multiverse-new_model:latest",
-     "supported_omics": ["rna", "atac"]
-   }
-   ```
+The docs follow Diátaxis:
 
-3. **Containerize**: Add a Dockerfile under `containers/` and build before running the orchestrator.
+| Type | Document | Purpose |
+|---|---|---|
+| Tutorial | [Getting Started](docs/GETTING_STARTED.md) | First complete run from notebook object to results. |
+| How-To | [Data Preparation](docs/DATA_PREPARATION.md) | Practical recipes for making data acceptable to mvexp. |
+| How-To | [Migrate from v1 to v2](docs/HOWTO_MIGRATE_V1_to_V2.md) | Move from the old manual workflow to the GUI and registry. |
+| Reference | [Models Glossary](docs/reference/MODELS_GLOSSARY.md) | Built-in model assumptions and hyperparameters. |
+| Reference | [Evaluation Metrics](docs/reference/EVALUATION_METRICS.md) | Bio-conservation and batch-correction metric definitions. |
+| Explanation | [Architecture](docs/ARCHITECTURE.md) | How the platform works internally. |
 
-### Master–worker flow
+## Cookbook Preview
 
-1. **Master process**: Validates config, loads the model registry, and checks dataset omics.
-2. **Dynamic routing**: Drops models incompatible with the dataset’s modalities.
-3. **Preparation**: Pulls or builds required Docker images concurrently.
-4. **Execution**: Worker containers mount input data **read-only**.
-5. **Aggregation**: Collects outputs and builds the evaluation summary.
+- **RNA+ATAC Integration for PBMC Multiome**: prepare paired RNA and ATAC modalities, compare MultiVI, MOFA, Mowgli, Cobolt, and PCA, then inspect whether immune cell labels remain separated.
+- **CITE-seq RNA+ADT Protein Integration**: prepare RNA and antibody-derived tags for TotalVI, evaluate protein-aware latent structure, and bring embeddings back into Scanpy.
+- **Cross-Donor Batch Correction in an Atlas Subset**: register donor metadata as the batch key, compare models by bio-conservation and batch-correction metrics, and produce a reproducible Methods bundle.
 
----
+## How to Cite mvexp
 
-## Troubleshooting
+Until a formal paper or DOI is available, cite the repository or archived release used for the benchmark. Include the mvexp version or commit hash, `run_manifest.yaml`, and run provenance artifacts with Supplementary Material.
 
-### Docker build issues
+Suggested wording:
 
-1. **Check Docker**
-
-   ```bash
-   docker --version
-   docker info
-   ```
-
-2. **Build manually**
-
-   ```bash
-   docker build -t multiverse:test .
-   ```
-
-3. **Inspect logs** for missing dependencies, network errors, or Dockerfile issues.
-
-4. **Shell into a container**
-
-   ```bash
-   docker run -it multiverse:test /bin/bash
-   ```
-
-5. **Logs**
-
-   ```bash
-   docker logs <container_id>
-   ```
-
-6. **Dependencies**: Confirm requirements match your base image and `requirements.txt` / lockfile.
-
-7. **Clean rebuild**
-
-   ```bash
-   docker system prune -a
-   docker build --no-cache -t multiverse:test .
-   ```
-
-### Common issues
-
-- **Out of memory**: Increase Docker memory limits (e.g. Docker Desktop).
-- **Network timeouts**: Check proxies and connectivity for image pulls.
-- **Permission errors**: Ensure the Docker daemon is running and your user can access it.
-
----
-
-## Contributing
-
-1. Fork the repository.
-2. Create a feature branch (`git checkout -b feature/YourFeature`).
-3. Commit your changes with clear messages.
-4. Push and open a pull request.
-
----
-
-## Contact
-
-**Project:** [github.com/sifrimlab/multi-verse](https://github.com/sifrimlab/multi-verse)
-
-### Contributors
-
-Developed as part of the Integrated Bioinformatics Project (B-KUL-I0U20A), Faculty of Bioscience Engineering, KU Leuven.
-
-**Authors**
-
-- [Yuxin Qiu](https://github.com/yuxin0924)
-- [Thi Hanh Nguyen Ly](https://github.com/HannahLy1204)
-- [Zuzanna Olga Bednarska](https://github.com/ZOBednar)
-
-**Supervisors:** Anis Ismail, Lorenzo Venturelli  
-**Promotor:** Prof. Alejandro Sifrim  
-**Course coordinator:** Prof. Vera van Noort
-
----
+```text
+Integration benchmarks were executed with mvexp (version/commit: <commit>). The full
+benchmark recipe, including datasets, models, hyperparameters, random seed, and requested
+metrics, is provided as Supplementary File X (`run_manifest.yaml`). Per-run provenance and
+model artifacts are archived with the analysis.
+```
 
 ## License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. See `LICENSE` for details.

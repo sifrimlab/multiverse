@@ -1,0 +1,12 @@
+name: Cobolt
+version: 1.0.0
+contract_version: 1.0.0
+supported_omics:
+  - rna
+  - atac
+runtime:
+  image: multiverse-cobolt:1.0.0
+hyperparameters_schema: schemas/models/cobolt.hyperparameters.schema.json
+build:
+  context: ../../..
+  dockerfile: store/models/cobolt/container/Dockerfile

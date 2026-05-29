@@ -36,8 +36,22 @@ data/input/
 sample_data/input/
 store/
 mvexp_state.db
+optuna_demo.db
+run_manifests.yaml
+run_manifest.yaml
+multiverse.config.yaml
+*.db*
 
 # IDEs
 .vscode/
 .idea/
-/store
+
+!/store/models/
+!/store/models/**
+# Documentation builds
+site/
+
+.understand-anything/
+*.dvc
+.dvc/
+.pytest_cache/

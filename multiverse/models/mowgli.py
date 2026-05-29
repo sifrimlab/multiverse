@@ -1,15 +1,19 @@
-import argparse
-import os
-import json
+import random
 from typing import Union
 
 import anndata as ad
 import mowgli
+import numpy as np
+import torch
 from .base import ModelFactory
-from ..config import load_config
-from ..logging_utils import get_logger, setup_logging
+from ..logging_utils import get_logger
 from ..utils import get_device
-from ..data_utils import load_datasets, dataset_select
+from .runtime_io import (
+    build_model_config,
+    load_input_mudata,
+    load_job_spec,
+    setup_container_logging,
+)
 
 logger = get_logger(__name__)
 
@@ -96,60 +100,47 @@ class MowgliModel(ModelFactory):
         Raises:
             IOError: If the metrics file cannot be written.
         """
+        requested = self.config_dict.get("metrics", {}).get("model_metrics")
         metrics = {}
+        history: dict = {}
         if hasattr(self, "loss"):
-            logger.info(f"Optimal Transport Loss (Mowgli): {self.loss}")
-            metrics["ot_loss"] = str(-self.loss)
+            if requested is None or "ot_loss" in requested:
+                ot_loss = float(-self.loss)
+                logger.info(f"Optimal Transport Loss (Mowgli): {ot_loss}")
+                metrics["ot_loss"] = ot_loss
         else:
             logger.warning("Loss not available in the model.")
-
-        try:
-            with open(self.metrics_filepath, "w") as f:
-                json.dump(metrics, f, indent=4)
-            logger.info(f"Metrics saved to {self.metrics_filepath}")
-        except IOError as e:
-            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
-            raise
+        if hasattr(self.model, "losses") and self.model.losses:
+            history["ot_loss"] = [float(-value) for value in self.model.losses]
+        self.write_metrics(metrics, history=history or None)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Mowgli model")
-    parser.add_argument(
-        "--config_path",
-        type=str,
-        default="/app/config_alldatasets.json",
-        help="Path to the configuration file",
-    )
-    args = parser.parse_args()
-
-    config = load_config(config_path=args.config_path)
-    os.makedirs(config["output_dir"], exist_ok=True)
-    setup_logging(config["output_dir"])
-
-    # Data information from config file
-    datasets = load_datasets(args.config_path)
-    data_concat = dataset_select(datasets_dict=datasets, data_type="mudata")
+    setup_container_logging()
+    job_spec = load_job_spec()
+    config = build_model_config(model_name="mowgli", job_spec=job_spec)
+    seed = config.get("seed") or 42
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    data_concat = load_input_mudata()
+    dataset_name = job_spec.get("dataset_name", "dataset")
 
     try:
-        for dataset_name, data_dict in data_concat.items():
-            # Instantiate and run model
-            model = MowgliModel(
-                dataset=data_dict,
-                dataset_name=dataset_name,
-                config_path=args.config_path,
-            )
-            logger.info(f"Running Mowgli model on dataset: {dataset_name}")
-            # Run the model pipeline
-            model.train()
-            model.save_latent()
-            model.umap()
-            model.evaluate_model()
-
-            logger.info(f"Mowgli model run for {dataset_name} completed successfully.")
+        model = MowgliModel(
+            dataset=data_concat,
+            dataset_name=dataset_name,
+            config_path=config,
+        )
+        logger.info(f"Running Mowgli model on dataset: {dataset_name}")
+        model.train()
+        model.save_latent()
+        model.umap()
+        model.evaluate_model()
+        logger.info(f"Mowgli model run for {dataset_name} completed successfully.")
 
     except Exception as e:
         logger.error(f"An error occurred during Mowgli model run: {e}")
-        # Optionally, re-raise the exception to indicate failure to the container runner
         raise
 
 if __name__ == "__main__":
