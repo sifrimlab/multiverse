@@ -39,7 +39,6 @@ Typical examples:
 
 - RNA+ATAC PBMC multiome: compare PCA, MOFA, MultiVI, Mowgli, and Cobolt.
 - CITE-seq RNA+ADT: compare TotalVI against simpler baselines.
-- Atlas subset: compare models on the same donor/site metadata.
 
 ### One Model, Many Datasets
 
@@ -121,26 +120,4 @@ Good interpretation practice:
 - treat missing metrics as metadata information, not just missing numbers;
 - bring selected embeddings back into Jupyter for biological validation plots.
 
-## Common Errors
 
-| Symptom | Likely cause | What to do |
-|---|---|---|
-| Job status is `SKIPPED` | Dataset lacks required omics for that model. | Choose a compatible model or register a dataset with the needed modality. |
-| Job status is `FAILED` before training | `batch_key` is missing from `.obs` or the data file cannot be read. | Open the run in **Results**, read `container.log`, and confirm `dataset.yaml` metadata keys exist in `.obs`. |
-| Supervised metrics are absent | `cell_type_key` was not registered or is absent from `.obs`. | Add a stable biological label column and re-register the dataset. |
-| Batch metrics are absent | Only one batch is present, or `batch_key` is absent. | Confirm that the batch column contains at least two meaningful groups. |
-| UMAP has no colors | `umap_color_type` does not match a column in `.obs`. | Set it to a valid metadata column such as `cell_type`. |
-| Model ranking looks surprising | One metric family may improve while another declines. | Compare bio-conservation and batch-correction metrics together. |
-
-## How to Cite mvexp
-
-Until a formal publication is available, cite the software repository and archive the exact version used. Include the commit hash, `run_manifest.yaml`, and run provenance with the Supplementary Material.
-
-Suggested wording:
-
-```text
-Integration benchmarks were executed with mvexp (version/commit: <commit>). The full
-benchmark recipe, including datasets, models, hyperparameters, random seed, and requested
-metrics, is provided as Supplementary File X (`run_manifest.yaml`). Per-run provenance and
-model outputs are provided with the archived artifacts.
-```

@@ -16,6 +16,7 @@ Install dependencies, initialize the registry, optionally start observability se
 
 ```bash
 make bootstrap      # uv sync --group dev + init registry + register built-in models
+make register-all-datasets # add all the datasets
 make services-up    # optional: MLflow on :5000, Optuna Dashboard on :8080
 make setup          # optional: GUI and ML model wrapper extras (Streamlit, Scanpy, scvi-tools)
 make gui            # Streamlit on :8501
