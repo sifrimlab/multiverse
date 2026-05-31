@@ -1,21 +1,26 @@
 globals:
-  experiment_name: testbench126
-  random_seed: 48
+  experiment_name: benchmark_run
+  random_seed: 42
   run_user_params: true
   run_gridsearch: false
 jobs:
 - dataset_slug: pbmc10k
-  model_name: MOFA
+  model_name: Cobolt
   model_params:
-    device: cuda:0
-    n_iterations: 5
-    n_factors: 4
+    device: cuda
+    latent_dimensions: 20
+    learning_rate: 0.001
+    num_epochs: 2
     umap_random_state: 42
     umap_color_type: cell_type
-- dataset_slug: pbmc10k
-  model_name: PCA
+    random_state: 42
+- dataset_slug: teaseq
+  model_name: Cobolt
   model_params:
-    n_components: 6
-    device: cpu
+    device: cuda
+    latent_dimensions: 20
+    learning_rate: 0.001
+    num_epochs: 2
     umap_random_state: 42
     umap_color_type: cell_type
+    random_state: 42

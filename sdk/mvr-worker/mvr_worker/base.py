@@ -82,6 +82,7 @@ class ModelFactory:
             model_specific_params = self.model_params.get(self.model_name)
             self.umap_color_type = model_specific_params.get("umap_color_type")
 
+        
     def train(self):
         """Abstract method for training the model. Subclasses must implement this."""
         logger.info("Training the model.")

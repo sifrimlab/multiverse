@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+
 from typing import Any, Dict, List, Union
 
-import anndata as ad
 import h5py
 import mudata as md
+import scanpy as sc
+import anndata as ad
 import numpy as np
 import pandas as pd
 
@@ -110,47 +112,45 @@ def save_umap(
 
 
 def anndata_concatenate(
-    list_anndata: List[ad.AnnData],
-    list_modality: List[str],
+    mdata: md.MuData = None, adata_list: list = None, selected_modalities: list = None, obs: pd.DataFrame = None, cell_type_key: str = "cell_type", batch_key: str = "batch"
 ) -> ad.AnnData:
-    """Fuse modalities and concatenate along variables axis.
-
-    Reimplements multiverse/data_utils.py without the muon dependency —
-    obs intersection is done with plain set arithmetic on mudata.MuData.
     """
-    if len(list_modality) != len(list_anndata):
-        raise ValueError("list_modality and list_anndata must have equal length.")
-
-    data_dict: Dict[str, ad.AnnData] = {}
-    for mod, adata in zip(list_modality, list_anndata):
-        adata = adata.copy()
-        if hasattr(adata.X, "toarray"):
-            adata.X = np.array(adata.X.toarray())
-        data_dict[mod] = adata
-
-    mdata = md.MuData(data_dict)
-
-    # Intersect observations across modalities (replaces muon.pp.intersect_obs)
-    common_idx = sorted(
-        set.intersection(*[set(mdata.mod[m].obs_names) for m in mdata.mod])
-    )
-    for key in list(mdata.mod.keys()):
-        mdata.mod[key] = mdata.mod[key][common_idx].copy()
-    mdata.update()
-
-    # Propagate cell_type from rna modality when available
-    if "rna" in mdata.mod and "cell_type" in mdata["rna"].obs.columns:
-        mdata.obs["cell_type"] = mdata["rna"].obs["cell_type"]
+    Fuse modalities and concatenate along variables axis.
+    This is a common preprocessing step for models that require a single AnnData input.
+    It also ensures that cell type and batch annotations are preserved in the concatenated object.
+    Note: this function assumes that the same cells are present across all modalities and that
+    cell type and batch annotations are consistent across modalities.
+    :param mdata: MuData object containing multiple modalities
+    :param adata_list: List of AnnData objects to concatenate (if None, will be constructed from mdata.mod using selected_modalities)
+    :param selected_modalities: List of modalities to include in the concatenated object
+    :param cell_type_key: Key in .obs that contains cell type annotations
+    :param batch_key: Key in .obs that contains batch annotations
+    :return: Concatenated AnnData object with modalities fused along variables axis
+     and cell type and batch annotations preserved in .obs.
+        
+    """
+    if adata_list is not None and mdata is not None:
+        raise ValueError("Provide either adata_list or mdata, not both.")
+    if adata_list is None and mdata is None:
+        raise ValueError("Either adata_list or mdata must be provided.")
+    if selected_modalities is None and mdata is None:
+        raise ValueError("selected_modalities has to be provided when mdata is not provided.")
+    if obs is None and mdata is None:
+        raise ValueError("obs has to be provided when mdata is not provided.")
+    if obs is None:
+        obs = mdata.obs
+    if selected_modalities is None and mdata is not None:
+        selected_modalities = list(mdata.mod.keys())
+        
+    if adata_list is None:
+        list_mod_adata = [mdata[m] for m in selected_modalities if m in mdata.mod.keys()]
     else:
-        logger.warning("No 'cell_type' annotation found — supervised metrics unavailable.")
-        mdata.obs["cell_type"] = "unknown"
-
-    # Concatenate modalities along variable axis
-    list_mod_adata = [mdata[m] for m in list_modality]
+        list_mod_adata = adata_list
     adata_concat = ad.concat(
-        list_mod_adata, axis="var", label="cell_type", merge="unique", uns_merge="unique"
+        list_mod_adata, axis="var", label=cell_type_key, merge="unique", uns_merge="unique"
     )
-    adata_concat.obs["cell_type"] = mdata.obs["cell_type"]
+    adata_concat.obs[batch_key] = obs[batch_key]
+    adata_concat.obs[cell_type_key] = obs[cell_type_key]
     adata_concat.obs["modality"] = np.zeros(adata_concat.n_obs, dtype=int)
     return adata_concat
 
@@ -189,3 +189,150 @@ def load_config(config_path: Union[str, dict] = "./config.json"):
         )
         raise
     return config
+
+def preprocess_mudata(
+    mdata,
+    preprocess_params,
+    cell_type_key="cell_type",
+    batch_key="batch",
+):
+    #TODO: make modality specific preprocessing configurable, e.g. log normalization only for RNA, not ADT, etc.
+    """Preprocess MuData while keeping all modalities aligned."""
+
+    modalities = list(mdata.mod.keys())
+
+    # ------------------------------------------------------------------
+    # Step 1: Filter genes independently
+    # ------------------------------------------------------------------
+    for modality in modalities:
+        logger.info(f"Preprocessing modality: {modality}")
+        sc.pp.filter_genes(mdata.mod[modality], min_cells=1)
+
+    # ------------------------------------------------------------------
+    # Step 2: Find cells with counts in ALL modalities
+    # ------------------------------------------------------------------
+    common_cells = None
+
+    for modality in modalities:
+        adata = mdata.mod[modality]
+
+        counts_per_cell = np.asarray(adata.X.sum(axis=1)).ravel()
+        valid_cells = adata.obs_names[counts_per_cell > 0]
+
+        if common_cells is None:
+            common_cells = set(valid_cells)
+        else:
+            common_cells &= set(valid_cells)
+
+    common_cells = sorted(common_cells)
+
+    # ------------------------------------------------------------------
+    # Step 3: Subset ALL modalities to identical cells
+    # ------------------------------------------------------------------
+    for modality in modalities:
+        mdata.mod[modality] = mdata.mod[modality][common_cells].copy()
+
+    mdata.update()
+
+    # ------------------------------------------------------------------
+    # Step 4: Modality-specific preprocessing
+    # ------------------------------------------------------------------
+    for modality in modalities:
+        adata = mdata.mod[modality]
+
+        if modality.lower() == "rna":
+            target_sum = preprocess_params.get("normalization_target_sum", None)
+
+            if target_sum is not None:
+                sc.pp.normalize_total(
+                    adata,
+                    target_sum=target_sum,
+                )
+
+            if preprocess_params.get(
+                "log_normalization",
+                False,
+            ):
+                sc.pp.log1p(adata)
+
+    # ------------------------------------------------------------------
+    # Step 5: HVG selection
+    # ------------------------------------------------------------------
+    n_top_genes = preprocess_params.get("n_top_genes")
+
+    if n_top_genes is not None:
+        for modality in modalities:
+            adata = mdata.mod[modality]
+            if adata.n_vars <= n_top_genes:
+                logger.warning(
+                    f"Warning: Modality '{modality}' has only {adata.n_vars} features, which is less than or equal to n_top_genes={n_top_genes}. Skipping HVG selection for this modality."
+                )
+
+            hvg_flavor = "seurat" if (modality.lower() == "rna" and preprocess_params.get("log_normalization", False)) else "seurat_v3"
+
+            sc.pp.highly_variable_genes(
+                adata,
+                n_top_genes=min(
+                    n_top_genes,
+                    adata.n_vars,
+                ),
+                flavor=hvg_flavor,
+            )
+
+            mdata.mod[modality] = adata[
+                :,
+                adata.var["highly_variable"],
+            ].copy()
+
+        mdata.update()
+
+    """ 
+        # --------------------------------------------------------------
+        # Step 6: Remove cells that became empty after HVG filtering
+        # --------------------------------------------------------------
+        common_cells = None
+
+        for modality in modalities:
+            adata = mdata.mod[modality]
+
+            counts_per_cell = np.asarray(adata.X.sum(axis=1)).ravel()
+
+            valid_cells = adata.obs_names[counts_per_cell > 0]
+
+            if common_cells is None:
+                common_cells = set(valid_cells)
+            else:
+                common_cells &= set(valid_cells)
+
+        common_cells = sorted(common_cells)
+
+        for modality in modalities:
+            mdata.mod[modality] = mdata.mod[modality][common_cells].copy()
+
+        mdata.update()"""
+
+    # ------------------------------------------------------------------
+    # Step 7: Scaling
+    # ------------------------------------------------------------------
+    modality_scaling = preprocess_params.get("scale", {})
+    for modality in modalities:
+        if  modality_scaling.get(modality, False):
+            sc.pp.scale(mdata.mod[modality])
+
+        mdata.update()
+
+    # ------------------------------------------------------------------
+    # Step 8: Synchronize metadata
+    # ------------------------------------------------------------------
+    ref_obs = mdata.mod[modalities[0]].obs
+
+    mdata.obs[cell_type_key] = (
+        ref_obs[cell_type_key] if cell_type_key in ref_obs.columns else "unknown"
+    )
+
+    mdata.obs[batch_key] = (
+        ref_obs[batch_key] if batch_key in ref_obs.columns else "unknown"
+    )
+    mdata.var_names_make_unique()
+    logger.info("Preprocessing completed.")
+    return mdata

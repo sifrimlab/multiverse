@@ -1,12 +1,10 @@
 """MOFA container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
-import json
-import math
-import os
 import random
+from typing import Union
 
-import muon as mu
 import numpy as np
-import scanpy as sc
+import anndata as ad
+import muon as mu
 
 from mvr_worker import (
     OUTPUT_DIR,
@@ -14,70 +12,183 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
-    save_embeddings,
-    save_umap,
     setup_container_logging,
+    ModelFactory,
+    preprocess_mudata,
 )
 
 logger = get_logger(__name__)
+
+
+class MOFAModel(ModelFactory):
+    """MOFA model wrapper using the `muon` library.
+
+    Attributes:
+        device (str): Computation device (e.g., "cpu", "cuda:0").
+        n_iterations (int): Maximum number of iterations for training.
+        n_factors (int): Number of latent factors to extract.
+        gpu_mode (bool): Flag indicating if GPU acceleration is used.
+    """
+
+    def __init__(
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: Union[str, dict],
+        is_gridsearch: bool = False,
+    ):
+        """Initializes the MOFAModel.
+
+        Args:
+            dataset (ad.AnnData): The input dataset (MuData-derived AnnData).
+            dataset_name (str): Name of the dataset.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'mofa' configuration is not found in the model parameters.
+        """
+        logger.info("Initializing MOFA Model")
+
+        super().__init__(
+            dataset,
+            dataset_name,
+            config_path=config_path,
+            model_name="mofa",
+            is_gridsearch=is_gridsearch,
+        )
+
+        if self.model_name not in self.model_params:
+            raise ValueError(
+                f"'{self.model_name}' configuration not found in the model parameters."
+            )
+
+        mofa_params = self.model_params.get(self.model_name)
+
+        self.device = mofa_params.get("device")
+        self.n_iterations = mofa_params.get("n_iterations")
+        self.umap_color_type = mofa_params.get("umap_color_type")
+        self.n_factors = mofa_params.get("n_factors")
+        self.umap_random_state = mofa_params.get("umap_random_state")
+        self.gpu_mode = self.device != "cpu"
+
+    def train(self):
+        """Trains the MOFA+ model using variational inference."""
+        logger.info("Training MOFA+ Model")
+        try:
+            mu.tl.mofa(
+                data=self.dataset, n_factors=self.n_factors, gpu_mode=self.gpu_mode
+            )
+            self.dataset.obsm[self.latent_key] = self.dataset.obsm["X_mofa"]
+            logger.info("MOFA training completed.")
+
+            # Compute explained variance if not available
+            if "explained_variance" in self.dataset.uns.get("mofa", {}):
+                self.explained_variance = self.dataset.uns["mofa"]["explained_variance"]
+                logger.info(f"Explained variance per factor: {self.explained_variance}")
+            else:
+                # Manually calculate explained variance
+                self.explained_variance = self._compute_explained_variance()
+                logger.info(
+                    f"Computed explained variance per factor: {self.explained_variance}"
+                )
+
+            logger.info(f"Total explained variance: {sum(self.explained_variance)}")
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
+            raise
+
+    def _compute_explained_variance(self):
+        """Computes the variance explained by each latent factor.
+
+        Returns:
+            np.ndarray: An array containing the explained variance ratio for each factor.
+        """
+        try:
+            factors = self.dataset.obsm[self.latent_key]
+
+            # Total variance from raw data across modalities (dense where needed).
+            total_variance = 0
+            for modality in self.dataset.mod.values():
+                if hasattr(modality.X, "toarray"):
+                    modality_data = modality.X.toarray()
+                else:
+                    modality_data = modality.X
+                total_variance += np.var(modality_data, axis=0).sum()
+
+            factor_variances = np.var(factors, axis=0)
+            explained_variance_ratio = factor_variances / total_variance
+            return explained_variance_ratio
+
+        except Exception as e:
+            logger.error(f"Error computing explained variance: {e}")
+            return []
+
+    def evaluate_model(self):
+        """Evaluates the MOFA+ model by calculating total explained variance.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
+        """
+        requested = self.config_dict.get("metrics", {}).get("model_metrics")
+        metrics = {}
+        if hasattr(self, "explained_variance"):
+            if requested is None or "total_variance" in requested:
+                total_variance = sum(self.explained_variance)
+                logger.info(f"Total Explained Variance (MOFA+): {total_variance}")
+                metrics["total_variance"] = total_variance
+        else:
+            logger.warning("Explained variance not available for MOFA+.")
+
+        self.write_metrics(metrics)
 
 
 def main() -> None:
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("mofa", job_spec, OUTPUT_DIR)
-
+    
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
+    dataset_name = job_spec.get("dataset_slug", "dataset")
+    try:
+        mdata = load_input_mudata()
+        # TODO: make preprocessing not hardcoded but GUI based
+        # TODO: make cell type and batch key not hardcoded
+        config["preprocess_params"] = {
+            "n_top_genes": 1000,
+            "scale": {
+            modality: True for modality in mdata.mod.keys()
+            },
+            "normalization_target_sum": 1e4,
+            "log_normalization": True,
+        }
+        mdata = preprocess_mudata(mdata, config["preprocess_params"], cell_type_key="cell_type", batch_key="batch")
+        
+    except Exception as e:
+        logger.error(f"Failed to load and concatenate input data: {e}")
+        raise
+    
+    try:
+        model = MOFAModel(
+            dataset=mdata,
+            dataset_name=dataset_name,
+            config_path=config,
+        )
+        logger.info(f"Running MOFA model on dataset: {dataset_name}")
+        model.train()
+        model.save_latent()
+        model.umap()
+        model.evaluate_model()
+        logger.info(f"MOFA model run for {dataset_name} completed successfully.")
 
-    params = config["model"].get("mofa", {})
-    n_factors = params.get("n_factors", 20)
-    n_iterations = params.get("n_iterations", 5000)
-    device = params.get("device", "cpu")
-    gpu_mode = device != "cpu"
-
-    mdata = load_input_mudata()
-
-    # Select highly variable features per modality to keep memory manageable.
-    for mod in list(mdata.mod.keys()):
-        adata = mdata[mod]
-        if "highly_variable" not in adata.var.columns:
-            if mod == "rna":
-                sc.pp.normalize_total(adata, target_sum=1e4)
-                sc.pp.log1p(adata)
-                sc.pp.highly_variable_genes(adata, n_top_genes=min(2000, adata.n_vars))
-            else:
-                sc.pp.normalize_total(adata, target_sum=1e4)
-                sc.pp.log1p(adata)
-                sc.pp.highly_variable_genes(adata, n_top_genes=min(20000, adata.n_vars))
-        mdata.mod[mod] = adata[:, adata.var["highly_variable"]].copy()
-    mdata.update()
-
-    logger.info(f"Running MOFA+ with n_factors={n_factors}, n_iterations={n_iterations}, gpu_mode={gpu_mode}")
-    mu.tl.mofa(mdata, n_factors=n_factors, n_iterations=n_iterations, gpu_mode=gpu_mode)
-
-    latent = mdata.obsm["X_mofa"]
-    save_embeddings(latent, OUTPUT_DIR)
-    save_umap(latent, mdata.obs, OUTPUT_DIR)
-
-    # MOFA does not expose per-iteration ELBO at the Python level; emit a single
-    # scalar (total explained variance) so metrics.json + finalize work uniformly.
-    total_variance = 0.0
-    for modality in mdata.mod.values():
-        modality_data = modality.X.toarray() if hasattr(modality.X, "toarray") else modality.X
-        total_variance += float(np.var(modality_data, axis=0).sum())
-    factor_variances = np.var(latent, axis=0)
-    explained = (factor_variances / total_variance) if total_variance > 0 else np.zeros_like(factor_variances)
-    total_explained = float(np.sum(explained))
-
-    payload: dict = {}
-    if math.isfinite(total_explained):
-        payload["total_variance"] = total_explained
-    with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as fp:
-        json.dump(payload, fp, indent=2)
-
-    logger.info("MOFA run complete.")
+    except Exception as e:
+        logger.error(f"An error occurred during MOFA model run: {e}")
+        raise
 
 
 if __name__ == "__main__":

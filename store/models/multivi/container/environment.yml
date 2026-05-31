@@ -14,3 +14,4 @@ dependencies:
   - pip:
       - muon==0.1.7
       - louvain==0.8.2
+      - scikit-misc==0.5.2

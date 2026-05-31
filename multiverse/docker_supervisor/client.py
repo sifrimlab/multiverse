@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Protocol, runtime_checkable
-
+import docker
 
 class ContainerState(str, Enum):
     """Coarse state recognised by the supervisor.
@@ -177,6 +177,10 @@ class RealDockerEngine:
                 mem_limit=mem_limit,
                 name=name,
                 entrypoint=entrypoint,
+                # TODO: make it from the config file
+                device_requests=[
+                    docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+                ],
             )
             container.start()
             container.reload()

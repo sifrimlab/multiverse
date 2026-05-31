@@ -14,10 +14,9 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
-    save_embeddings,
-    save_umap,
     setup_container_logging,
     ModelFactory,
+    preprocess_mudata,
 )
 
 logger = get_logger(__name__)
@@ -120,7 +119,7 @@ def main() -> None:
     logger.info("PCA container run script started.")
     job_spec = load_job_spec()
     config = build_model_config("pca", job_spec, OUTPUT_DIR)
-
+    
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
@@ -130,10 +129,26 @@ def main() -> None:
     try:
 
         mudata_obj = load_input_mudata()
-        dataset_name = job_spec.get("dataset_name", "dataset")
+        modalities = list(mudata_obj.mod.keys())
+        #TODO: make preprocessing not hardcoded but GUI based
+        config["preprocess_params"] = {
+            "n_top_genes": 1000,
+            "scale": {mod: False for mod in modalities},  # Skip scaling to preserve count-based nature of the data
+            "normalization_target_sum": 1e4,
+            "log_normalization": True,
+        }
+        mudata_obj = preprocess_mudata(
+            mudata_obj,
+            config["preprocess_params"],
+            cell_type_key="cell_type",
+            batch_key="batch",
+        )
+        dataset_name = job_spec.get("dataset_slug", "dataset")
         data_concat = anndata_concatenate(
-        list_anndata=[mudata_obj[modality] for modality in mudata_obj.mod.keys()],
-        list_modality=list(mudata_obj.mod.keys()),
+       mdata=mudata_obj,
+         selected_modalities=modalities,
+       cell_type_key="cell_type",
+       batch_key="batch",
         )
     except Exception as e:
         logger.error(f"Failed to load and concatenate input data: {e}")

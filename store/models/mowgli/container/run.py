@@ -2,7 +2,9 @@
 import json
 import os
 import random
+from typing import Union
 
+import anndata as ad
 import mowgli
 import numpy as np
 import scanpy as sc
@@ -14,84 +16,177 @@ from mvr_worker import (
     get_logger,
     load_input_mudata,
     load_job_spec,
-    replay_history,
-    resolve_device,
-    save_embeddings,
-    save_umap,
     setup_container_logging,
+    ModelFactory,
+    get_device,
+    replay_history,
+    preprocess_mudata,
 )
 
+
 logger = get_logger(__name__)
+
+class MowgliModel(ModelFactory):
+    """Mowgli model wrapper.
+
+    Uses Optimal Transport and Non-negative Matrix Factorization for multimodal
+    data integration.
+
+    Attributes:
+        latent_dimensions (int): Dimension of the latent space.
+        optimizer (str): Name of the optimizer to use.
+        learning_rate (float): Learning rate for the optimizer.
+        loss (float): Final training loss.
+    """
+
+    def __init__(
+        self,
+        dataset: ad.AnnData,
+        dataset_name: str,
+        config_path: Union[str, dict],
+        is_gridsearch: bool = False,
+    ):
+        """Initializes the MowgliModel.
+
+        Args:
+            dataset (ad.AnnData): The input dataset.
+            dataset_name (str): Name of the dataset.
+            config_path: Path to the JSON configuration file or an in-memory config dict.
+            is_gridsearch (bool): Flag indicating if this is a grid search run.
+                Defaults to False.
+
+        Raises:
+            ValueError: If 'mowgli' configuration is not found in the model parameters.
+        """
+        logger.info("Initializing Mowgli Model")
+
+        super().__init__(
+            dataset,
+            dataset_name,
+            config_path=config_path,
+            model_name="mowgli",
+            is_gridsearch=is_gridsearch,
+        )
+
+        if self.model_name not in self.model_params:
+            raise ValueError(
+                f"'{self.model_name}' configuration not found in the model parameters."
+            )
+
+        mowgli_params = self.model_params.get(self.model_name)
+
+        self.device = mowgli_params.get("device")
+        self.torch_device = "cpu"
+        self.latent_dimensions = mowgli_params.get("latent_dimensions", 20)
+        self.optimizer = mowgli_params.get("optimizer", "adam")
+        self.learning_rate = mowgli_params.get("learning_rate", 0.001)
+        self.inner_tolerance = mowgli_params.get("tol_inner", 1e-6)
+        self.max_inner_iteration = mowgli_params.get("max_iter_inner", 500)
+        self.umap_color_type = mowgli_params.get("umap_color_type")
+        self.umap_random_state = mowgli_params.get("umap_random_state")
+        self.loss = 0
+        self.model = mowgli.models.MowgliModel(latent_dim=self.latent_dimensions)
+        self.torch_device = get_device(self.device)
+        self.dataset_name = dataset_name
+        logger.info(f"Mowgli model initiated with {self.latent_dimensions} dimension.")
+
+    def train(self):
+        """Trains the Mowgli model using the specified optimizer."""
+        logger.info("Training Mowgli Model")
+        try:
+            self.model.train(
+                self.dataset,
+                device=self.torch_device,
+                optim_name=self.optimizer,
+                lr=self.learning_rate,
+                tol_inner=self.inner_tolerance,
+                max_iter_inner=self.max_inner_iteration,
+            )
+            self.dataset.obsm[self.latent_key] = self.dataset.obsm["W_OT"]
+            self.loss = self.model.losses[-1]
+            logger.info(f"Final training loss: {self.loss}")
+        except Exception as e:
+            logger.error(f"Error during training: {e}")
+            raise
+
+    def evaluate_model(self):
+        """Evaluates the Mowgli model by reporting the final Optimal Transport loss.
+
+        Writes the resulting metrics to a JSON file.
+
+        Raises:
+            IOError: If the metrics file cannot be written.
+        """
+        requested = self.config_dict.get("metrics", {}).get("model_metrics")
+        metrics = {}
+        history: dict = {}
+        if hasattr(self, "loss"):
+            if requested is None or "ot_loss" in requested:
+                ot_loss = float(-self.loss)
+                logger.info(f"Optimal Transport Loss (Mowgli): {ot_loss}")
+                metrics["ot_loss"] = ot_loss
+        else:
+            logger.warning("Loss not available in the model.")
+        
+        if hasattr(self.model, "losses") and self.model.losses:
+            history["ot_loss"] = [float(-value) for value in self.model.losses]
+            history = replay_history(
+                history,
+                output_dir=OUTPUT_DIR,
+                run_name=f"{self.dataset_name}-mowgli-{os.path.basename(OUTPUT_DIR)}",
+            )
+        
+        self.write_metrics(metrics, history=history or None)
 
 
 def main() -> None:
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("mowgli", job_spec, OUTPUT_DIR)
-
+    
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
 
-    params = config["model"].get("mowgli", {})
-    latent_dim = params.get("latent_dimensions", 20)
-    optimizer = params.get("optimizer", "adam")
-    lr = params.get("learning_rate", 0.001)
-    tol_inner = params.get("tol_inner", 1e-6)
-    max_iter_inner = params.get("max_iter_inner", 500)
-    device = resolve_device(params.get("device", "cpu"))
+    dataset_name = job_spec.get("dataset_slug", "dataset")
+    try:
+        mdata = load_input_mudata()
+        # TODO: make preprocessing not hardcoded but GUI based
+        # TODO: make cell type and batch key not hardcoded
+        config["preprocess_params"] = {
+            "n_top_genes": 1000,
+            "scale": {mod: True for mod in mdata.mod.keys()},  # Scale all modalities by default
+            "normalization_target_sum": 1e4,
+            "log_normalization": True,
+        }
+        mdata = preprocess_mudata(
+            mdata,
+            config["preprocess_params"],
+            cell_type_key="cell_type",
+            batch_key="batch",
+        )
+    except Exception as e:
+        logger.error(f"Failed to load and concatenate input data: {e}")
+        raise
 
-    mdata = load_input_mudata()
-    dataset_name = job_spec.get("dataset_name") or "dataset"
+    
+    try:
+        model = MowgliModel(
+            dataset=mdata,
+            dataset_name=dataset_name,
+            config_path=config,
+        )
+        logger.info(f"Running Mowgli model on dataset: {dataset_name}")
+        model.train()
+        model.save_latent()
+        model.umap()
+        model.evaluate_model()
+        logger.info(f"Mowgli model run for {dataset_name} completed successfully.")
 
-    # Mowgli requires highly_variable annotation on every modality var.
-    for mod in list(mdata.mod.keys()):
-        adata = mdata[mod]
-        if "highly_variable" not in adata.var.columns:
-            if mod == "rna":
-                sc.pp.normalize_total(adata, target_sum=1e4)
-                sc.pp.log1p(adata)
-                sc.pp.highly_variable_genes(adata, n_top_genes=min(2000, adata.n_vars))
-            else:
-                sc.pp.normalize_total(adata, target_sum=1e4)
-                sc.pp.log1p(adata)
-                sc.pp.highly_variable_genes(adata, n_top_genes=min(20000, adata.n_vars))
-
-    logger.info(f"Running Mowgli with latent_dim={latent_dim}, device={device}")
-    model = mowgli.models.MowgliModel(latent_dim=latent_dim)
-    model.train(
-        mdata,
-        device=device,
-        optim_name=optimizer,
-        lr=lr,
-        tol_inner=tol_inner,
-        max_iter_inner=max_iter_inner,
-    )
-
-    latent = mdata.obsm["W_OT"]
-    save_embeddings(latent, OUTPUT_DIR)
-    save_umap(latent, mdata.obs, OUTPUT_DIR)
-
-    raw_losses = list(getattr(model, "losses", []) or [])
-    # Mowgli minimizes -OT loss internally; flip sign so the curve trends down to zero.
-    ot_loss_series = [-float(v) for v in raw_losses]
-    history = replay_history(
-        {"ot_loss": ot_loss_series} if ot_loss_series else {},
-        output_dir=OUTPUT_DIR,
-        run_name=f"{dataset_name}-mowgli-{os.path.basename(OUTPUT_DIR)}",
-    )
-
-    payload: dict = {}
-    if "ot_loss" in history:
-        payload["ot_loss"] = history["ot_loss"][-1]
-    if history:
-        payload["history"] = history
-    with open(os.path.join(OUTPUT_DIR, "metrics.json"), "w", encoding="utf-8") as fp:
-        json.dump(payload, fp, indent=2)
-
-    logger.info("Mowgli run complete.")
-
+    except Exception as e:
+        logger.error(f"An error occurred during Mowgli model run: {e}")
+        raise
 
 if __name__ == "__main__":
     main()

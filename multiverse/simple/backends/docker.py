@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import docker
+
 from ...artifact import ImageIdentity
 from ..manifest import SimpleJob
 from .base import ExecutionResult
@@ -100,6 +102,10 @@ class DockerBackend:
                 environment=environment,
                 volumes=volumes,
                 mem_limit=self.mem_limit,
+                # TODO: make it from the config file 
+                device_requests=[
+                    docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+                ],
             )
             container.start()
             exit_status = container.wait(timeout=self.timeout_seconds)
