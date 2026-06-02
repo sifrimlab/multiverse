@@ -5,16 +5,18 @@ globals:
   run_gridsearch: false
 jobs:
 - dataset_slug: pbmc10k
-  model_name: PCA
+  model_name: MOFA-Cpu
   model_params:
-    n_components: 50
     device: cpu
+    n_iterations: 5000
+    n_factors: 20
     umap_random_state: 42
     umap_color_type: cell_type
 - dataset_slug: teaseq
-  model_name: PCA
+  model_name: MOFA-Cpu
   model_params:
-    n_components: 50
     device: cpu
+    n_iterations: 5000
+    n_factors: 20
     umap_random_state: 42
     umap_color_type: cell_type

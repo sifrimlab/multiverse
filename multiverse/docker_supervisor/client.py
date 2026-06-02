@@ -197,6 +197,7 @@ class RealDockerEngine:
                 environment=dict(env or {}),
                 volumes=_docker_volumes(volumes),
                 name=name,
+                mem_limit=mem_limit,
                 entrypoint=entrypoint,
             )
             if device_requests is not None:

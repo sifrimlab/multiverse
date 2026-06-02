@@ -34,7 +34,9 @@ outputs/
 results/
 data/input/
 sample_data/input/
-store/
+store/artifacts/**
+store/datasets/**
+store/workspaces/**
 mvexp_state.db
 optuna_demo.db
 run_manifests.yaml

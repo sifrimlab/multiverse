@@ -10,9 +10,10 @@ dependencies:
   - pytorch::pytorch
   - pytorch::pytorch-cuda=12.1
   - scanpy==1.10.3
+  - scikit-misc==0.5.2
   - pip:
       - mowgli==0.1.0
       - muon==0.1.7
       - jaxlib==0.4.34
-      - louvain==0.8.2
-      - scikit-misc==0.5.2
+
+

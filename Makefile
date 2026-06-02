@@ -86,6 +86,11 @@ build-mofa:
 	@echo "Building MOFA image..."
 	docker build $(DOCKER_BUILD_FLAGS) -f store/models/mofa/container/Dockerfile -t multiverse-mofa:1.0.0 .
 
+.PHONY: build-mofa-cpu
+build-mofa-cpu:
+	@echo "Building MOFA-CPU image..."
+	docker build $(DOCKER_BUILD_FLAGS) -f store/models/mofa-cpu/container/Dockerfile -t multiverse-mofa-cpu:1.0.0 .
+
 .PHONY: build-cobolt
 build-cobolt:
 	@echo "Building Cobolt image..."
