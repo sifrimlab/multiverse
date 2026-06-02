@@ -39,6 +39,19 @@ CONTAINER_OUTPUT_DIR = "/output"
 JOB_SPEC_FILENAME = "job_spec.json"
 
 
+import subprocess
+
+def gpu_available():
+    try:
+        subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        return True
+    except Exception:
+        return False
 class DockerBackendError(RuntimeError):
     """Raised on hard Docker failures (image missing, container non-zero
     exit, daemon unreachable)."""
@@ -88,13 +101,22 @@ class DockerBackend:
             "multiverse.model_slug": job.model_slug,
             "multiverse.image_kind": image_identity.kind.value,
         }
+        device_requests = None
+         # TODO: make it from the config file
+        if gpu_available():
+            device_requests = [
+                docker.types.DeviceRequest(
+                    count=-1,
+                    capabilities=[["gpu"]]
+                )
+            ]
         environment = self._environment_for(seed)
         volumes = self._volumes_for(job, workspace_dir)
 
         container_name = f"{self.name_prefix}-{job.name}"
         container = None
         try:
-            container = client.containers.create(
+            kwargs = dict(
                 image=image_ref,
                 name=container_name,
                 detach=True,
@@ -102,11 +124,10 @@ class DockerBackend:
                 environment=environment,
                 volumes=volumes,
                 mem_limit=self.mem_limit,
-                # TODO: make it from the config file 
-                device_requests=[
-                    docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
-                ],
             )
+            if device_requests is not None:
+                kwargs["device_requests"] = device_requests
+            container = client.containers.create(**kwargs)
             container.start()
             exit_status = container.wait(timeout=self.timeout_seconds)
             exit_code = (

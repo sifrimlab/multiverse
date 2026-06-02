@@ -31,7 +31,6 @@ ml-legacy = [
     "scvi-tools==1.2.0",
     "scanpy==1.10.3",
     "muon==0.1.7",
-    "louvain==0.8.2",
     "anndata",
     "mudata",
     "pandas",

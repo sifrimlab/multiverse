@@ -138,7 +138,19 @@ def _docker_volumes(volumes: Optional[Dict[str, str]]) -> Dict[str, Any]:
         out[host_s] = {"bind": target_s, "mode": mode}
     return out
 
+import subprocess
 
+def gpu_available():
+    try:
+        subprocess.run(
+            ["nvidia-smi"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+        return True
+    except Exception:
+        return False
 @dataclass
 class RealDockerEngine:
     """Thin Docker SDK adapter implementing :class:`ContainerEngine`.
@@ -166,21 +178,32 @@ class RealDockerEngine:
     ) -> ContainerInfo:
         from .errors import ContainerEngineError
 
+        device_requests = None
+
+        # TODO: make it from the config file
+        if gpu_available():
+            device_requests = [
+                docker.types.DeviceRequest(
+                    count=-1,
+                    capabilities=[["gpu"]]
+                )
+            ]
         try:
-            container = self._client().containers.create(
+            kwargs = dict(
                 image=image,
                 command=command,
                 detach=True,
                 labels=dict(labels or {}),
                 environment=dict(env or {}),
                 volumes=_docker_volumes(volumes),
-                mem_limit=mem_limit,
                 name=name,
                 entrypoint=entrypoint,
-                # TODO: make it from the config file
-                device_requests=[
-                    docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
-                ],
+            )
+            if device_requests is not None:
+                kwargs["device_requests"] = device_requests
+
+            container = self._client().containers.create(
+                **kwargs
             )
             container.start()
             container.reload()
