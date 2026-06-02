@@ -1,6 +1,6 @@
 # Contributing
 
-This guide explains how to contribute to mvexp without weakening the researcher-facing workflow. Contributions should preserve the GUI-first, reproducible, notebook-compatible experience.
+This guide explains how to contribute to Multiverse. Contributions should preserve the GUI-first, reproducible, notebook-compatible experience.
 
 ## Documentation Principles
 

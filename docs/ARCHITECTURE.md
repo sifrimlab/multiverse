@@ -1,10 +1,10 @@
 # Architecture
 
-This page is the current system map for mvexp.
+This page is the current system map for Multiverse.
 
 ## What the System Is
 
-mvexp is a local single-user application built around these pieces:
+Multiverse is built around these pieces:
 
 1. **Artifact store** under `store/`, which is the durable scientific record.
 2. **mvd kernel**, which owns run state transitions, execution supervision (Docker or Slurm), cancellation, validation, and promotion.
@@ -112,18 +112,3 @@ The two executors have different defaults for image identity:
 - **Docker executor** — `accept_degraded=True` by default. Locally-built images (`make build-pca`) are the normal development workflow; no OCI digest is expected. Pass `--strict` to opt into publication mode, which requires a registry digest.
 - **Slurm executor** — `accept_degraded=False` by default. HPC runs should have a verified OCI source digest; a SIF of unknown provenance is genuinely degraded. Pass `--accept-degraded` if you need to run an unverified SIF.
 
-## Observability
-
-MLflow and Optuna are projections. They can be offline without invalidating a promoted artifact bundle. Sync failures should surface as projection status, not as scientific run failure.
-
-## Why This Design
-
-| Question | Answer |
-|---|---|
-| Why per-model containers? | Single-cell integration methods have conflicting ML stacks; containers isolate them. |
-| Why mvd instead of Streamlit subprocesses? | Run lifetime and browser/session lifetime are different; the kernel owns execution. |
-| Why artifact manifests? | They make results portable, verifiable, and rebuildable without trusting SQLite. |
-| Why SQLite at all? | It provides fast local indexing and registry queries without a server. |
-| Why MLflow as projection? | Dashboards are useful for comparison, but artifact bundles are the durable Methods record. |
-| Why two SQLite databases? | Run index and asset catalog have different durability contracts. The run index is derived and rebuildable; the asset catalog is authoritative and must not be lost with the run index. |
-| Why dual-digest on Slurm? | OCI digests identify the registry source; SIF digests identify the binary that ran. Both are needed for full reproducibility tracing on HPC. |

@@ -1,10 +1,10 @@
 # Benchmarking
 
-This how-to explains how to run and interpret model benchmarks in mvexp. It is written for researchers who want the benchmark to be reproducible, not for users who want to manage execution infrastructure by hand.
+This how-to explains how to run and interpret model benchmarks in Multiverse.
 
 ## What Benchmarking Means in mvexp
 
-A benchmark is a comparison of dataset x model runs under a recorded recipe. You choose the biology: dataset, models, metadata keys, parameters, metrics, and seed. mvexp handles execution, artifact capture, and comparison reports.
+A benchmark is a comparison of dataset x model runs under a recorded recipe. You choose the biology: dataset, models, metadata keys, parameters, metrics, and seed. Multiverse handles execution, artifact capture, and comparison reports.
 
 ```mermaid
 flowchart LR
@@ -34,11 +34,6 @@ flowchart LR
 ### One Dataset, Many Models
 
 Use this when asking which integration model best represents one biological dataset.
-
-Typical examples:
-
-- RNA+ATAC PBMC multiome: compare PCA, MOFA, MultiVI, Mowgli, and Cobolt.
-- CITE-seq RNA+ADT: compare TotalVI against simpler baselines.
 
 ### One Model, Many Datasets
 
@@ -80,44 +75,19 @@ Every successful run is promoted to an artifact directory similar to:
 | `orchestrator.log` | Host-side per-run log: admission, launch, exit classification, promotion outcome, failure reason. |
 | `provenance.json` | Run provenance when present; include it with supplementary materials. |
 
-## Explanation: The Container Boundary
-
-Every integration model in mvexp runs in its own Docker container. The container sees only `/input/data.h5mu`, `/output/job_spec.json`, and `/output/` for its results — no host paths appear in model code. For a researcher, this means three practical things:
-
-- fewer path errors when moving between laptops, lab servers, or HPC;
-- the exact image tag is part of every run's record, so a published result can be reproduced by pulling the recorded image rather than rebuilding an environment;
-- new methods plug into the same comparison surface without changes to your workflow.
-
-The full specification is documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md) for engineers maintaining or extending the platform.
-
 ## Live Training Metrics
 
 Each containerized model run first produces a verified local artifact bundle. MLflow is then used as a projection for comparison and dashboarding. A run can be scientifically successful (`ARTIFACT_SUCCESS`) even if MLflow sync is pending or failed. When sync is available, it captures four kinds of data:
 
 - **Hyperparameters and tags** — logged at run start by the host so they appear in MLflow before training begins.
-- **System metrics (CPU/GPU/RAM)** — sampled by MLflow's built-in monitor while the parent run is open, which is exactly the duration the container is alive.
-- **Per-epoch metrics** — streamed from inside the container by `EpochLogger` (see [Adding a Model](ADDING_A_MODEL.md#live-per-epoch-metrics-optional-but-recommended)) when the model exposes them. The host injects `MLFLOW_RUN_ID` into the container so `EpochLogger` attaches to the same run instead of opening a duplicate. Models without per-epoch hooks (e.g. PCA) simply skip this step.
+- **System metrics** — sampled by MLflow's built-in monitor while the parent run is open, which is exactly the duration the container is alive.
+- **Per-epoch metrics** — streamed from inside the container by `EpochLogger` (see [Adding a Model](ADDING_A_MODEL.md#live-per-epoch-metrics-optional-but-recommended)) when the model exposes them. 
 - **Final scalars and artifacts** — appended by the host after the container exits, then the run is ended with `FINISHED` or `FAILED` status.
-
-Connectivity: projection sync uses the configured MLflow tracking URI. If the service is offline, keep the artifact bundle and retry with `multiverse mlflow-sync` later.
-
-Local sidecar: each run also writes **`metrics.jsonl`** — one JSON line per epoch (`step`, `timestamp`, metrics) — alongside `metrics.json`. It survives crashes and is convenient for offline analysis (`pandas.read_json(path, lines=True)`).
-
-Cobolt is the reference example of a wired-up model container — see `store/models/cobolt/container/run.py`.
-
 > **Rebuild after editing a model container or `mvr_worker`.** The SDK is `COPY`'d into each image at build time, so changes only take effect after rebuilding (`docker compose build <model>`).
 
 ## Comparison Reports
 
 The Results tab and MLflow views help compare models across biological conservation and batch-correction metrics. Use comparison reports to rank models by the metrics relevant to the manuscript, not by training loss alone.
 
-[IMAGE: Comparison Report Ranking Models]
-
-Good interpretation practice:
-
-- rank models separately for bio-conservation and batch correction;
-- inspect both groups together before choosing a model;
-- treat missing metrics as metadata information, not just missing numbers;
-- bring selected embeddings back into Jupyter for biological validation plots.
-
+TODO: [IMAGE: Comparison Report Ranking Models]
 
