@@ -1,0 +1,14 @@
+Bootstrap: docker
+From: mambaorg/micromamba:1.5.1
+
+%files
+    store/models/mofa/container/environment.yml /opt/environment.yml
+    sdk/ /opt/sdk/
+
+%post
+    micromamba install -y -n base -f /opt/environment.yml
+    micromamba clean --all --yes
+    pip install /opt/sdk/mvr-worker/ --no-deps
+
+%runscript
+    exec python /opt/sdk/mvr-worker/run.py "$@"

@@ -60,3 +60,4 @@ site/
 
 STRATEGY.md
 !store/models/**/Singularity.def
+*.pyc
