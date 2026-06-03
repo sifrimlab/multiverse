@@ -36,29 +36,17 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
-from ..artifact import (
-    ArtifactManifest,
-    ModelOutputContract,
-    ValidationLevel,
-    ValidationReport,
-    validate_output_bundle,
-    write_manifest,
-)
+from ..artifact import (ArtifactManifest, ModelOutputContract, ValidationLevel,
+                        ValidationReport, validate_output_bundle,
+                        write_manifest)
 from ..artifact.checksums import fsync_path
 from ..journal import JournalKind, JournalWriter
 from .errors import OwnershipMismatchError
-from .fsutil import (
-    is_same_filesystem,
-    staged_copy_directory,
-)
+from .fsutil import is_same_filesystem, staged_copy_directory
 from .layout import StoreLayout
 from .quarantine import QuarantineReport, quarantine_directory
-from .tokens import (
-    OWNER_TOKEN_FILENAME,
-    new_owner_token,
-    read_owner_token,
-    write_owner_token,
-)
+from .tokens import (OWNER_TOKEN_FILENAME, new_owner_token, read_owner_token,
+                     write_owner_token)
 
 
 class PromotionStep(str, Enum):
@@ -435,12 +423,9 @@ class PromotionSaga:
                 staging_dir, self.contract, level=self.validators
             )
             if not report.passed:
-                reasons = "; ".join(
-                    f"{i.code}: {i.message}" for i in report.refusals
-                )
+                reasons = "; ".join(f"{i.code}: {i.message}" for i in report.refusals)
                 raise ValueError(
-                    "refusing COMMIT_MANIFEST with invalid staged artifacts: "
-                    + reasons
+                    "refusing COMMIT_MANIFEST with invalid staged artifacts: " + reasons
                 )
             self.manifest.artifacts = list(report.artifact_entries)
         body_sha = write_manifest(

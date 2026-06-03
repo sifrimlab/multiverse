@@ -69,6 +69,29 @@ assert adata.n_vars > 0
 ```
 
 
+## Two registration modes
+
+A dataset can be registered in one of two ways:
+
+- **Raw ingestion** — declare `raw_files` and run preprocessing to fuse them
+  into `data/processed.h5mu` (shown above).
+- **Processed registration** — you already have a processed `.h5mu`/`.h5ad`
+  and want to register it directly, skipping preprocessing. Declare
+  `processed_path` instead of `raw_files`:
+
+```yaml
+name: "Hello PBMC (processed)"
+omics: ["rna"]
+processed_path: "data/processed.h5mu"
+metadata_keys:
+  batch: "batch"
+  cell_type: "cell_type"
+```
+
+The manifest must provide exactly one of `raw_files` or `processed_path`.
+Model runs always consume the processed `.h5mu`; `raw_files` belongs only to
+the raw-ingestion workflow.
+
 ## Register from the CLI
 
 For a dataset stored at `store/datasets/hello_pbmc/dataset.yaml`:
@@ -91,7 +114,8 @@ uv run multiverse register-dataset --slug hello_pbmc --update
 |---|---|---|---|
 | `name` | Yes | Human-readable dataset name. | `PBMC Multiome RNA+ATAC` |
 | `omics` | Yes | Modalities available in the dataset. | `["rna", "atac"]` |
-| `raw_files` | Yes | Mapping from modality to file path relative to the dataset folder. | `rna: "data/rna.h5ad"` |
+| `raw_files` | Conditional | Mapping from modality to raw file path relative to the dataset folder. Required for raw ingestion; omit when using `processed_path`. | `rna: "data/rna.h5ad"` |
+| `processed_path` | Conditional | Path (relative to the dataset folder) to an already-processed `.h5mu`/`.h5ad`. Required for processed registration; omit when using `raw_files`. | `data/processed.h5mu` |
 | `metadata_keys.batch` | Recommended | `.obs` column used for batch-correction metrics. | `donor_id` |
 | `metadata_keys.cell_type` | Optional | `.obs` column used for supervised bio-conservation metrics. | `cell_type` |
 

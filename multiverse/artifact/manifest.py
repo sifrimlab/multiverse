@@ -17,18 +17,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
-from .checksums import (
-    PathLike,
-    atomic_write_bytes,
-    fsync_path,
-    sha256_bytes,
-    sha256_file,
-)
-from .errors import (
-    ChecksumMismatchError,
-    ManifestCorruptError,
-    ManifestMissingError,
-)
+from .checksums import (PathLike, atomic_write_bytes, fsync_path, sha256_bytes,
+                        sha256_file)
+from .errors import (ChecksumMismatchError, ManifestCorruptError,
+                     ManifestMissingError)
 from .image_identity import ImageIdentity
 
 ARTIFACT_MANIFEST_FILENAME = "artifact_manifest.json"
@@ -290,7 +282,9 @@ class ArtifactManifest:
                 mv_contract_version=str(data["mv_contract_version"]),
                 produced_at=ProducedAt.from_dict(data["produced_at"]),
                 produced_by=ProducedBy.from_dict(data["produced_by"]),
-                artifacts=[ArtifactEntry.from_dict(a) for a in data.get("artifacts", [])],
+                artifacts=[
+                    ArtifactEntry.from_dict(a) for a in data.get("artifacts", [])
+                ],
                 state_transitions=[
                     StateTransition.from_dict(s)
                     for s in data.get("state_transitions", [])
@@ -312,7 +306,9 @@ class ArtifactManifest:
                 f"manifest missing required field: {exc.args[0]!r}"
             ) from exc
         except (TypeError, ValueError) as exc:
-            raise ManifestCorruptError(f"manifest field has wrong shape: {exc}") from exc
+            raise ManifestCorruptError(
+                f"manifest field has wrong shape: {exc}"
+            ) from exc
 
     def to_canonical_json_bytes(self) -> bytes:
         """Encode for on-disk write. Stable byte ordering across runs."""
@@ -360,6 +356,7 @@ def write_manifest(
 
     # Step 1: tmp body
     import os
+
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
     try:
         os.write(fd, body)

@@ -1,17 +1,17 @@
-import sqlite3
 import json
+import sqlite3
 import sys
 from unittest.mock import MagicMock
 
 # Mocking modules to avoid side effects during test
-if 'multiverse.logging_utils' not in sys.modules:
-    sys.modules['multiverse.logging_utils'] = MagicMock()
-if 'rich.live' not in sys.modules:
-    sys.modules['rich.live'] = MagicMock()
-if 'rich.table' not in sys.modules:
-    sys.modules['rich.table'] = MagicMock()
-if 'docker' not in sys.modules:
-    sys.modules['docker'] = MagicMock()
+if "multiverse.logging_utils" not in sys.modules:
+    sys.modules["multiverse.logging_utils"] = MagicMock()
+if "rich.live" not in sys.modules:
+    sys.modules["rich.live"] = MagicMock()
+if "rich.table" not in sys.modules:
+    sys.modules["rich.table"] = MagicMock()
+if "docker" not in sys.modules:
+    sys.modules["docker"] = MagicMock()
 
 from multiverse.runner.cli import generate_execution_plan
 
@@ -44,12 +44,30 @@ def test_generate_execution_plan():
     cursor.execute(
         "INSERT INTO datasets (id, name, slug, path, omics_available, batch_key, cell_type_key, status) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (1, "dataset1", "dataset1", "/path/to/d1", json.dumps(["rna"]), "batch", "cell_type", "READY"),
+        (
+            1,
+            "dataset1",
+            "dataset1",
+            "/path/to/d1",
+            json.dumps(["rna"]),
+            "batch",
+            "cell_type",
+            "READY",
+        ),
     )
     cursor.execute(
         "INSERT INTO datasets (id, name, slug, path, omics_available, batch_key, cell_type_key, status) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (2, "dataset2", "dataset2", "/path/to/d2", json.dumps(["rna", "atac"]), "batch", "cell_type", "READY"),
+        (
+            2,
+            "dataset2",
+            "dataset2",
+            "/path/to/d2",
+            json.dumps(["rna", "atac"]),
+            "batch",
+            "cell_type",
+            "READY",
+        ),
     )
     cursor.execute(
         "INSERT INTO models (slug, docker_image, supported_omics, version, status) VALUES (?, ?, ?, ?, ?)",

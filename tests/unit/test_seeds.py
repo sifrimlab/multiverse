@@ -1,9 +1,10 @@
 """Tests that each model's main() sets seeds before model instantiation."""
+
 import json
 import os
-from unittest.mock import MagicMock, patch, call
-import pytest
+from unittest.mock import MagicMock, call, patch
 
+import pytest
 
 JOB_SPEC = {
     "seed": 99,
@@ -32,6 +33,7 @@ def test_pca_sets_numpy_and_random_seeds(tmp_path):
         patch("multiverse.models.pca.np") as mock_np,
     ):
         from multiverse.models import pca
+
         pca.main()
         mock_random.seed.assert_called_once_with(99)
         mock_np.random.seed.assert_called_once_with(99)
@@ -50,6 +52,7 @@ def test_multivi_sets_scvi_seed(tmp_path):
         patch("multiverse.models.multivi.scvi") as mock_scvi,
     ):
         from multiverse.models import multivi
+
         multivi.main()
         mock_random.seed.assert_called_once_with(99)
         mock_np.random.seed.assert_called_once_with(99)
@@ -69,6 +72,7 @@ def test_totalvi_sets_scvi_seed(tmp_path):
         patch("multiverse.models.totalvi.scvi") as mock_scvi,
     ):
         from multiverse.models import totalvi
+
         totalvi.main()
         mock_random.seed.assert_called_once_with(99)
         mock_np.random.seed.assert_called_once_with(99)
@@ -86,6 +90,7 @@ def test_mofa_sets_numpy_and_random_seeds(tmp_path):
         patch("multiverse.models.mofa.np") as mock_np,
     ):
         from multiverse.models import mofa
+
         mofa.main()
         mock_random.seed.assert_called_once_with(99)
         mock_np.random.seed.assert_called_once_with(99)
@@ -103,6 +108,7 @@ def test_mowgli_sets_torch_seed(tmp_path):
         patch("multiverse.models.mowgli.torch") as mock_torch,
     ):
         from multiverse.models import mowgli
+
         mowgli.main()
         mock_random.seed.assert_called_once_with(99)
         mock_np.random.seed.assert_called_once_with(99)
@@ -121,6 +127,7 @@ def test_cobolt_sets_torch_seed(tmp_path):
         patch("multiverse.models.cobolt.torch") as mock_torch,
     ):
         from multiverse.models import cobolt
+
         cobolt.main()
         mock_random.seed.assert_called_once_with(99)
         mock_np.random.seed.assert_called_once_with(99)
@@ -140,6 +147,7 @@ def test_seed_defaults_to_42_when_none():
         patch("multiverse.models.pca.np") as mock_np,
     ):
         from multiverse.models import pca
+
         pca.main()
         mock_random.seed.assert_called_once_with(42)
         mock_np.random.seed.assert_called_once_with(42)

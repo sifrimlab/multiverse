@@ -17,11 +17,7 @@ from __future__ import annotations
 
 from .engine import RealApptainerEngine
 from .fake import InMemoryApptainerEngine
-from .images import (
-    ApptainerImageRef,
-    classify_image_ref,
-    compute_sif_digest,
-)
+from .images import ApptainerImageRef, classify_image_ref, compute_sif_digest
 
 __all__ = [
     "ApptainerImageRef",

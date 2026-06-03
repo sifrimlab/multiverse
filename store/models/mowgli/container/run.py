@@ -1,4 +1,5 @@
 """Mowgli container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+
 import json
 import os
 import random
@@ -9,22 +10,13 @@ import mowgli
 import numpy as np
 import scanpy as sc
 import torch
-
-from mvr_worker import (
-    OUTPUT_DIR,
-    build_model_config,
-    get_logger,
-    load_input_mudata,
-    load_job_spec,
-    setup_container_logging,
-    ModelFactory,
-    get_device,
-    replay_history,
-    preprocess_mudata,
-)
-
+from mvr_worker import (OUTPUT_DIR, ModelFactory, build_model_config,
+                        get_device, get_logger, load_input_mudata,
+                        load_job_spec, preprocess_mudata, replay_history,
+                        resolve_preprocess_params, setup_container_logging)
 
 logger = get_logger(__name__)
+
 
 class MowgliModel(ModelFactory):
     """Mowgli model wrapper.
@@ -127,7 +119,7 @@ class MowgliModel(ModelFactory):
                 metrics["ot_loss"] = ot_loss
         else:
             logger.warning("Loss not available in the model.")
-        
+
         if hasattr(self.model, "losses") and self.model.losses:
             history["ot_loss"] = [float(-value) for value in self.model.losses]
             history = replay_history(
@@ -135,7 +127,7 @@ class MowgliModel(ModelFactory):
                 output_dir=OUTPUT_DIR,
                 run_name=f"{self.dataset_name}-mowgli-{os.path.basename(OUTPUT_DIR)}",
             )
-        
+
         self.write_metrics(metrics, history=history or None)
 
 
@@ -143,7 +135,7 @@ def main() -> None:
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("mowgli", job_spec, OUTPUT_DIR)
-    
+
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
@@ -152,14 +144,22 @@ def main() -> None:
     dataset_name = job_spec.get("dataset_slug", "dataset")
     try:
         mdata = load_input_mudata()
-        # TODO: make preprocessing not hardcoded but GUI based
         # TODO: make cell type and batch key not hardcoded
-        config["preprocess_params"] = {
-            "n_top_genes": 1000,
-            "scale": {mod: True for mod in mdata.mod.keys()},  # Scale all modalities by default
-            "normalization_target_sum": 1e4,
-            "log_normalization": True,
-        }
+        modalities = list(mdata.mod.keys())
+        # Preprocessing is resolved from the job spec (run manifest / GUI),
+        # falling back to these built-in defaults when unspecified (issue #22).
+        config["preprocess_params"] = resolve_preprocess_params(
+            job_spec,
+            modalities,
+            {
+                "n_top_genes": 1000,
+                "scale": {
+                    mod: True for mod in modalities
+                },  # Scale all modalities by default
+                "normalization_target_sum": 1e4,
+                "log_normalization": True,
+            },
+        )
         mdata = preprocess_mudata(
             mdata,
             config["preprocess_params"],
@@ -170,7 +170,6 @@ def main() -> None:
         logger.error(f"Failed to load and concatenate input data: {e}")
         raise
 
-    
     try:
         model = MowgliModel(
             dataset=mdata,
@@ -187,6 +186,7 @@ def main() -> None:
     except Exception as e:
         logger.error(f"An error occurred during Mowgli model run: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()

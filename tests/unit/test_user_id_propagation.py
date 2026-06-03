@@ -21,25 +21,17 @@ import numpy as np
 import pytest
 
 from multiverse.artifact import BootContext
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    ResourceBroker,
-)
-from multiverse.docker_supervisor import DockerSupervisor, InMemoryContainerEngine
+from multiverse.broker import HostMetrics, InMemoryHostObserver, ResourceBroker
+from multiverse.docker_supervisor import (DockerSupervisor,
+                                          InMemoryContainerEngine)
 from multiverse.index.rebuilder import rebuild_index
 from multiverse.index.sqlite_index import open_index
-from multiverse.journal import JournalKind, JournalLayout, JournalReader, JournalWriter
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
 from multiverse.journal.record import JournalRecord
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    PrimaryState,
-    build_executor_options,
-)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            PrimaryState, build_executor_options)
 from multiverse.promotion import StoreLayout
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -57,6 +49,7 @@ def _producer_and_exit(engine: InMemoryContainerEngine):
             if not c.removed and c.state.value == "running":
                 engine.simulate_natural_exit(c.container_id, exit_code=0)
                 return
+
     return _p
 
 
@@ -71,7 +64,9 @@ def _build_kernel(
     config = KernelConfig(state_root=state_root, user_id=user_id)
     layout = JournalLayout.at(state_root / "journal").ensure()
     journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
-    supervisor = DockerSupervisor(engine=engine, journal=journal, mvd_version="0.1.0-test")
+    supervisor = DockerSupervisor(
+        engine=engine, journal=journal, mvd_version="0.1.0-test"
+    )
     broker = ResourceBroker(
         observer=InMemoryHostObserver(
             HostMetrics(ram_free_bytes=8 * 1024**3, ram_total_bytes=16 * 1024**3)
@@ -90,7 +85,9 @@ def _build_kernel(
         accept_degraded=False,
         user_id=config.user_id,
     )
-    kernel = Kernel(config, executor=executor, journal=journal, boot=boot, broker=broker)
+    kernel = Kernel(
+        config, executor=executor, journal=journal, boot=boot, broker=broker
+    )
     return kernel, executor, journal
 
 
@@ -194,6 +191,7 @@ def test_manifest_produced_by_carries_user_id(tmp_path: Path) -> None:
     assert snap["primary_state"] == PrimaryState.ARTIFACT_SUCCESS.value
 
     from multiverse.artifact import read_manifest
+
     manifest = read_manifest(Path(snap["artifact_dir"]))
     assert manifest.produced_by.user_id == "bob"
 
@@ -264,7 +262,9 @@ def test_rebuild_index_null_user_id_for_pre_g2_journal(tmp_path: Path) -> None:
     # Construct writer WITHOUT user_id (simulates pre-G2 writer).
     layout = JournalLayout.at(state_root / "journal").ensure()
     journal = JournalWriter(layout, boot_id=boot.boot_id)  # no user_id kwarg
-    supervisor = DockerSupervisor(engine=engine, journal=journal, mvd_version="0.1.0-test")
+    supervisor = DockerSupervisor(
+        engine=engine, journal=journal, mvd_version="0.1.0-test"
+    )
     broker = ResourceBroker(
         observer=InMemoryHostObserver(
             HostMetrics(ram_free_bytes=8 * 1024**3, ram_total_bytes=16 * 1024**3)
@@ -284,7 +284,9 @@ def test_rebuild_index_null_user_id_for_pre_g2_journal(tmp_path: Path) -> None:
         # user_id not set on executor either
     )
     config = KernelConfig(state_root=state_root)
-    kernel = Kernel(config, executor=executor, journal=journal, boot=boot, broker=broker)
+    kernel = Kernel(
+        config, executor=executor, journal=journal, boot=boot, broker=broker
+    )
 
     async def _run() -> str:
         opts = build_executor_options(

@@ -47,7 +47,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def _require(module: str):
-    return pytest.importorskip(module, reason=f"requires the ml-legacy extra ({module})")
+    return pytest.importorskip(
+        module, reason=f"requires the ml-legacy extra ({module})"
+    )
 
 
 @pytest.fixture
@@ -91,8 +93,16 @@ def dummy_registry_file(tmp_path):
     data = {
         "models": [
             {"name": "pca", "docker_image": "pca:tag", "supported_omics": ["rna"]},
-            {"name": "mofa", "docker_image": "mofa:tag", "supported_omics": ["rna", "atac"]},
-            {"name": "totalvi", "docker_image": "totalvi:tag", "supported_omics": ["rna", "adt"]},
+            {
+                "name": "mofa",
+                "docker_image": "mofa:tag",
+                "supported_omics": ["rna", "atac"],
+            },
+            {
+                "name": "totalvi",
+                "docker_image": "totalvi:tag",
+                "supported_omics": ["rna", "adt"],
+            },
         ]
     }
     with open(path, "w") as f:

@@ -17,12 +17,12 @@ Install dependencies, initialize the registry, optionally start observability se
 ```bash
 make bootstrap      # uv sync --group dev + init registry + register built-in models
 make register-all-datasets # add all the datasets
-make services-up    # optional: MLflow on :5000, Optuna Dashboard on :8080
+make services-up    # optional: MLflow on :25000, Optuna Dashboard on :28080
 make setup          # optional: GUI and ML model wrapper extras (Streamlit, Scanpy, scvi-tools)
-make gui            # Streamlit on :8501
+make gui            # Streamlit on :28501
 ```
 
-Open `http://localhost:8501`. You do not need to run `docker` commands by hand during normal use; the mvd-backed runner manages model containers on your behalf.
+Open `http://localhost:28501` (or the `STREAMLIT_PORT` in `.env`). You do not need to run `docker` commands by hand during normal use; the mvd-backed runner manages model containers on your behalf.
 
 The same setup can be driven directly through the canonical CLI:
 
@@ -174,7 +174,7 @@ Successful runs are promoted to `store/artifacts/<artifact-id>/`. Runs that fail
 
 Set `MVEXP_LOG_LEVEL=DEBUG` (a level name or numeric value) before launching to raise verbosity across the host logs and the in-container `run.log`.
 
-For cross-run comparison and metric histories, open the **Analysis** tab or visit MLflow at `http://localhost:5000` directly.
+For cross-run comparison and metric histories, open the **Analysis** tab or visit MLflow at `http://localhost:25000` directly.
 
 ## Step 7: Bring Embeddings Back to Jupyter
 

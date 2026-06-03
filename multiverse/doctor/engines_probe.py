@@ -20,13 +20,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from .health_probes import (
-    CleanupResult,
-    LeakInventoryResult,
-    ProbeOutcome,
-    ProbeReport,
-)
-
+from .health_probes import (CleanupResult, LeakInventoryResult, ProbeOutcome,
+                            ProbeReport)
 
 _CANDIDATE_BINS: Dict[str, List[str]] = {
     "docker": ["docker"],
@@ -81,10 +76,10 @@ def check_engine(name: str, *, deep: bool = False) -> EngineCheck:
                 note = f"{found} --version returned {result.returncode}"
         except (OSError, subprocess.TimeoutExpired) as exc:
             note = f"{type(exc).__name__}: {exc}"
-            return EngineCheck(
-                name=name, available=False, binary=found, note=note
-            )
-    return EngineCheck(name=name, available=True, binary=found, version=version, note=note)
+            return EngineCheck(name=name, available=False, binary=found, note=note)
+    return EngineCheck(
+        name=name, available=True, binary=found, version=version, note=note
+    )
 
 
 def probe_container_engines(*, deep: bool = False) -> ProbeReport:

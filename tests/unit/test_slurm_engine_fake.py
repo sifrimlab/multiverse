@@ -6,13 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.slurm import (
-    InMemorySlurmEngine,
-    SlurmEngine,
-    SlurmJobSpec,
-    SlurmJobState,
-)
-
+from multiverse.slurm import (InMemorySlurmEngine, SlurmEngine, SlurmJobSpec,
+                              SlurmJobState)
 
 pytestmark = pytest.mark.control_plane
 

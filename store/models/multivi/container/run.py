@@ -1,29 +1,20 @@
 """MultiVI container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+
 import json
 import os
 import random
 from typing import Union
 
+import anndata as ad
 import numpy as np
 import pandas as pd
 import scvi
-import anndata as ad
+from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
+                        build_model_config, get_device, get_logger,
+                        load_input_mudata, load_job_spec, preprocess_mudata,
+                        replay_history, resolve_preprocess_params,
+                        scvi_history_to_dict, setup_container_logging)
 from sklearn.metrics import silhouette_score
-
-from mvr_worker import (
-    OUTPUT_DIR,
-    anndata_concatenate,
-    build_model_config,
-    get_logger,
-    load_input_mudata,
-    load_job_spec,
-    replay_history,
-    setup_container_logging,
-    ModelFactory,
-    get_device,
-    scvi_history_to_dict,
-    preprocess_mudata,
-)
 
 logger = get_logger(__name__)
 
@@ -95,7 +86,9 @@ class MultiVIModel(ModelFactory):
                 :, self.dataset.var["feature_types"].argsort()
             ].copy()
             if "Protein Expression" in self.dataset.var["feature_types"].unique():
-                protein_indices = (self.dataset.var["feature_types"] == "Protein Expression").values
+                protein_indices = (
+                    self.dataset.var["feature_types"] == "Protein Expression"
+                ).values
                 protein_col_idx = np.where(protein_indices)[0]
                 protein_names = self.dataset.var_names[protein_indices]
                 raw_protein = self.dataset.X[:, protein_col_idx]
@@ -108,7 +101,9 @@ class MultiVIModel(ModelFactory):
                 )
                 self.dataset.obsm["protein_expression"] = protein_expression_df
                 scvi.model.MULTIVI.setup_anndata(
-                    self.dataset, protein_expression_obsm_key="protein_expression", batch_key="modality"
+                    self.dataset,
+                    protein_expression_obsm_key="protein_expression",
+                    batch_key="modality",
                 )
             else:
                 scvi.model.MULTIVI.setup_anndata(
@@ -133,7 +128,6 @@ class MultiVIModel(ModelFactory):
             self.model.train(
                 max_epochs=self.max_epochs,
                 lr=self.learning_rate,
-               
             )
             self.dataset.obsm[self.latent_key] = self.model.get_latent_representation()
             logger.info("MultiVI training completed.")
@@ -160,7 +154,9 @@ class MultiVIModel(ModelFactory):
                 if self.umap_color_type and self.umap_color_type in self.dataset.obs:
                     labels = self.dataset.obs[self.umap_color_type]
                     if np.unique(labels).shape[0] < 2:
-                        logger.warning("Silhouette score cannot be computed with less than 2 clusters.")
+                        logger.warning(
+                            "Silhouette score cannot be computed with less than 2 clusters."
+                        )
                         metrics["silhouette_score"] = 0
                     else:
                         silhouette = silhouette_score(latent, labels)
@@ -187,22 +183,27 @@ def main() -> None:
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("multivi", job_spec, OUTPUT_DIR)
-    
+
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
     scvi.settings.seed = seed
 
     mudata_obj = load_input_mudata()
-    modalities = mudata_obj.mod.keys()
-    # TODO: make preprocessing not hardcoded but GUI based
+    modalities = list(mudata_obj.mod.keys())
     # TODO: make cell type and batch key not hardcoded
-    config["preprocess_params"] = {
-        "n_top_genes": 1000,
-        "scale": {modality: False for modality in modalities},
-        "normalization_target_sum": None,
-        "log_normalization": False,
-    }
+    # Preprocessing is resolved from the job spec (run manifest / GUI),
+    # falling back to these built-in defaults when unspecified (issue #22).
+    config["preprocess_params"] = resolve_preprocess_params(
+        job_spec,
+        modalities,
+        {
+            "n_top_genes": 1000,
+            "scale": {modality: False for modality in modalities},
+            "normalization_target_sum": None,
+            "log_normalization": False,
+        },
+    )
     mudata_obj = preprocess_mudata(
         mudata_obj,
         config["preprocess_params"],
@@ -212,7 +213,7 @@ def main() -> None:
     dataset_name = job_spec.get("dataset_slug", "dataset")
     data_concat = anndata_concatenate(
         mdata=mudata_obj,
-        selected_modalities= ["rna","atac","adt"],
+        selected_modalities=["rna", "atac", "adt"],
         cell_type_key="cell_type",
         batch_key="batch",
     )
@@ -232,6 +233,7 @@ def main() -> None:
     except Exception as e:
         logger.error(f"An error occurred during MultiVI model run: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()

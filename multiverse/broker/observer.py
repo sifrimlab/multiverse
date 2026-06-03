@@ -40,8 +40,7 @@ class HostObserver(Protocol):
 
     name: str
 
-    def observe(self) -> HostMetrics:
-        ...
+    def observe(self) -> HostMetrics: ...
 
 
 @dataclass

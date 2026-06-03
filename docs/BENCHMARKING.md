@@ -41,7 +41,7 @@ Use this when asking whether a model is robust across cohorts, tissues, donors, 
 
 ### Parameter Sweeps
 
-Set `globals.run_gridsearch: true` in the manifest (or toggle the sweep controls in **Configure**) and the runner delegates each job to Optuna. The GUI reads each model's hyperparameter schema and renders typed sweep controls — you do not need to hand-write a search-space YAML. Trials appear as child runs of the parent MLflow run, and the Optuna Dashboard at `http://localhost:8080` visualizes parameter importance and pruning.
+Set `globals.run_gridsearch: true` in the manifest (or toggle the sweep controls in **Configure**) and the runner delegates each job to Optuna. The GUI reads each model's hyperparameter schema and renders typed sweep controls — you do not need to hand-write a search-space YAML. Trials appear as child runs of the parent MLflow run, and the Optuna Dashboard at `http://localhost:28080` visualizes parameter importance and pruning.
 
 ## Reference: Benchmark Artifacts
 

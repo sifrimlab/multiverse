@@ -14,17 +14,10 @@ through the socket.
 """
 
 from .in_process import InProcessClient
-from .protocol import (
-    ApiError,
-    RpcRequest,
-    RpcResponse,
-    encode_request,
-    decode_request,
-    encode_response,
-    decode_response,
-)
-from .socket_server import KernelSocketServer, serve_kernel
+from .protocol import (ApiError, RpcRequest, RpcResponse, decode_request,
+                       decode_response, encode_request, encode_response)
 from .socket_client import KernelSocketClient
+from .socket_server import KernelSocketServer, serve_kernel
 
 __all__ = [
     "ApiError",

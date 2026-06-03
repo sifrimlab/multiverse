@@ -33,26 +33,12 @@ multiple appends in one fsync, but it MUST NOT ack any of them before the
 batch fsync succeeds.
 """
 
-from .errors import (
-    JournalError,
-    JournalCorruptError,
-    JournalLocked,
-    JournalReplayError,
-)
-from .record import (
-    INLINE_BLOB_SPILL_THRESHOLD,
-    JournalKind,
-    JournalRecord,
-)
-from .reader import (
-    JournalReader,
-    ReplayResult,
-)
-from .writer import (
-    JournalWriter,
-    SegmentInfo,
-)
+from .errors import (JournalCorruptError, JournalError, JournalLocked,
+                     JournalReplayError)
 from .layout import JournalLayout
+from .reader import JournalReader, ReplayResult
+from .record import INLINE_BLOB_SPILL_THRESHOLD, JournalKind, JournalRecord
+from .writer import JournalWriter, SegmentInfo
 
 __all__ = [
     "INLINE_BLOB_SPILL_THRESHOLD",

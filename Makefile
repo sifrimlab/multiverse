@@ -4,6 +4,14 @@
 # MVEXP_STATE_DIR can be overridden from the environment to point elsewhere.
 export MVEXP_STATE_DIR ?= $(CURDIR)
 
+# Observability host ports (.env overrides; high defaults for shared servers).
+MLFLOW_PORT ?= 25000
+OPTUNA_PORT ?= 28080
+STREAMLIT_PORT ?= 28501
+MLFLOW_TRACKING_URI ?= http://localhost:$(MLFLOW_PORT)
+-include .env
+export MLFLOW_PORT OPTUNA_PORT STREAMLIT_PORT MLFLOW_TRACKING_URI
+
 # --- Dependency Management ---
 
 .PHONY: install
@@ -23,8 +31,8 @@ setup:
 
 .PHONY: gui
 gui:
-	@echo "Starting Multiverse GUI (Streamlit)..."
-	uv run python -m streamlit run multiverse/gui.py
+	@echo "Starting Multiverse GUI (Streamlit) on port $(STREAMLIT_PORT)..."
+	uv run python -m streamlit run multiverse/gui.py --server.port $(STREAMLIT_PORT)
 
 # bootstrap: one-shot first-run initialisation after git clone.
 # Installs deps, creates the SQLite registry, and registers all built-in models.
@@ -113,8 +121,8 @@ build-evaluate:
 services-up:
 	@echo "Starting MLflow and Optuna dashboard services..."
 	docker compose up -d mlflow optuna-ui
-	@echo "MLflow  → http://localhost:$${MLFLOW_PORT:-5000}"
-	@echo "Optuna  → http://localhost:$${OPTUNA_PORT:-8080}"
+	@echo "MLflow  → http://localhost:$(MLFLOW_PORT)"
+	@echo "Optuna  → http://localhost:$(OPTUNA_PORT)"
 
 .PHONY: services-down
 services-down:

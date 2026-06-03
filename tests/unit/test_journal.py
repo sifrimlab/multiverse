@@ -24,20 +24,16 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.journal import (
-    INLINE_BLOB_SPILL_THRESHOLD,
-    JournalKind,
-    JournalLayout,
-    JournalReader,
-    JournalRecord,
-    JournalWriter,
-)
+from multiverse.journal import (INLINE_BLOB_SPILL_THRESHOLD, JournalKind,
+                                JournalLayout, JournalReader, JournalRecord,
+                                JournalWriter)
 from multiverse.journal.errors import JournalReplayError
 
 
 def _writer(tmp_path: Path, **kwargs) -> JournalWriter:
-    return JournalWriter(JournalLayout.at(tmp_path / "journal"),
-                         boot_id="boot-A", **kwargs)
+    return JournalWriter(
+        JournalLayout.at(tmp_path / "journal"), boot_id="boot-A", **kwargs
+    )
 
 
 def _records(reader: JournalReader) -> list[JournalRecord]:

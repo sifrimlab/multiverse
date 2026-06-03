@@ -260,8 +260,9 @@ def _validate_embedding(
                 artifact=spec.name,
             )
         )
-        return ArtifactEntry.from_path(path, name=spec.name, role=spec.role.value,
-                                       validated=False)
+        return ArtifactEntry.from_path(
+            path, name=spec.name, role=spec.role.value, validated=False
+        )
 
     try:
         with h5py.File(path, "r") as f:
@@ -284,7 +285,11 @@ def _validate_embedding(
             shape = tuple(int(d) for d in latent.shape)
             dtype = latent.dtype
 
-            if spec.expected_n_obs is not None and shape and shape[0] != spec.expected_n_obs:
+            if (
+                spec.expected_n_obs is not None
+                and shape
+                and shape[0] != spec.expected_n_obs
+            ):
                 issues.append(
                     ValidationIssue(
                         code="EMBEDDING_WRONG_N_OBS",
@@ -311,6 +316,7 @@ def _validate_embedding(
 
             # Streaming finite-fraction check; bounded RSS regardless of size.
             import numpy as np  # local import to keep top-level clean
+
             arr = latent[...]
             finite = float(np.isfinite(arr).mean()) if arr.size > 0 else 0.0
             floor = _level_finite_floor(level, spec.finite_fraction_min)

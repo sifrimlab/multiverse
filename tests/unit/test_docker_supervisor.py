@@ -26,29 +26,19 @@ from pathlib import Path
 import pytest
 
 from multiverse.artifact import BootContext
-from multiverse.journal import JournalKind, JournalLayout, JournalReader, JournalWriter
+from multiverse.docker_supervisor import (LABEL_HOST_PID, LABEL_LOGICAL_RUN_ID,
+                                          LABEL_MANIFEST_HASH,
+                                          LABEL_MVD_VERSION, LABEL_OWNER_TOKEN,
+                                          LABEL_RUN_ID, LABEL_WORKSPACE,
+                                          CancelOutcome, CancelSaga,
+                                          CancelStep, ContainerEngine,
+                                          ContainerState, DockerSupervisor,
+                                          InMemoryContainerEngine, LeaseLedger,
+                                          MultiverseLabels, RealDockerEngine,
+                                          multiverse_labels)
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
 from multiverse.promotion import StoreLayout
-from multiverse.docker_supervisor import (
-    CancelOutcome,
-    CancelSaga,
-    CancelStep,
-    ContainerEngine,
-    ContainerState,
-    DockerSupervisor,
-    InMemoryContainerEngine,
-    RealDockerEngine,
-    LABEL_HOST_PID,
-    LABEL_LOGICAL_RUN_ID,
-    LABEL_MANIFEST_HASH,
-    LABEL_MVD_VERSION,
-    LABEL_OWNER_TOKEN,
-    LABEL_RUN_ID,
-    LABEL_WORKSPACE,
-    LeaseLedger,
-    MultiverseLabels,
-    multiverse_labels,
-)
-
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -79,7 +69,9 @@ def store(tmp_path: Path) -> StoreLayout:
 
 
 @pytest.fixture
-def supervisor(engine: ContainerEngine, journal_writer: JournalWriter) -> DockerSupervisor:
+def supervisor(
+    engine: ContainerEngine, journal_writer: JournalWriter
+) -> DockerSupervisor:
     return DockerSupervisor(
         engine=engine,
         journal=journal_writer,
@@ -124,6 +116,46 @@ def test_launch_writes_all_seven_required_labels(
     assert labels[LABEL_OWNER_TOKEN] == "own-1"
     assert labels[LABEL_MVD_VERSION] == "0.1.0-test"
     assert MultiverseLabels.from_dict(labels) is not None
+
+
+def test_launch_defaults_to_no_gpu(
+    supervisor: DockerSupervisor,
+    engine: InMemoryContainerEngine,
+    tmp_path: Path,
+) -> None:
+    """GPU is opt-in (issue #30): a launch without gpu_requested must not
+    record a GPU request on the container."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    res = supervisor.launch(
+        physical_attempt_id="run-nogpu",
+        logical_run_id="L" * 64,
+        manifest_hash="M" * 64,
+        workspace=workspace,
+        owner_token="own-1",
+        image="multiverse-pca:1.0.0",
+    )
+    assert engine.containers[res.container_id].gpu_requested is False
+
+
+def test_launch_threads_gpu_request_to_engine(
+    supervisor: DockerSupervisor,
+    engine: InMemoryContainerEngine,
+    tmp_path: Path,
+) -> None:
+    """An explicit gpu_requested=True must reach the engine (issue #30)."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    res = supervisor.launch(
+        physical_attempt_id="run-gpu",
+        logical_run_id="L" * 64,
+        manifest_hash="M" * 64,
+        workspace=workspace,
+        owner_token="own-1",
+        image="multiverse-pca:1.0.0",
+        gpu_requested=True,
+    )
+    assert engine.containers[res.container_id].gpu_requested is True
 
 
 def test_launch_journals_intent_before_engine_call(
@@ -644,6 +676,6 @@ def test_no_real_docker_imports_in_kernel_modules() -> None:
         "multiverse/docker_supervisor/client.py",
     ):
         text = (root / rel).read_text(encoding="utf-8")
-        assert not re.search(r"^\s*import\s+docker\b", text, re.MULTILINE), (
-            f"top-level `import docker` found in {rel}"
-        )
+        assert not re.search(
+            r"^\s*import\s+docker\b", text, re.MULTILINE
+        ), f"top-level `import docker` found in {rel}"

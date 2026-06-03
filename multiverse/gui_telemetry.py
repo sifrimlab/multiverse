@@ -8,13 +8,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 _ENV_FLAG = "MULTIVERSE_GUI_TELEMETRY"
 _DEFAULT_PATH = Path.home() / ".multiverse" / "gui_events.jsonl"
 
 
 def telemetry_enabled() -> bool:
-    return os.environ.get(_ENV_FLAG, "1").strip().lower() not in {"0", "false", "no", "off"}
+    return os.environ.get(_ENV_FLAG, "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def track(event_name: str, **fields: Any) -> None:

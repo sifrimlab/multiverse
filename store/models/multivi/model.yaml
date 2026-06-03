@@ -6,7 +6,7 @@ supported_omics:
   - atac
 runtime:
   image: multiverse-multivi:1.0.0
-hyperparameters_schema: schemas/models/multivi.hyperparameters.schema.json
+hyperparameters_schema: store/models/multivi/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/multivi/container/Dockerfile

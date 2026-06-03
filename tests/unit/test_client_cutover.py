@@ -22,25 +22,12 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.client import (
-    ApiError,
-    InProcessClient,
-    KernelSocketClient,
-    serve_kernel,
-)
-from multiverse.client.protocol import (
-    RpcRequest,
-    decode_request,
-    encode_request,
-)
-from multiverse.mvd import (
-    KERNEL_VERBS,
-    Kernel,
-    KernelConfig,
-    PrimaryState,
-    SyntheticRunExecutor,
-)
-
+from multiverse.client import (ApiError, InProcessClient, KernelSocketClient,
+                               serve_kernel)
+from multiverse.client.protocol import (RpcRequest, decode_request,
+                                        encode_request)
+from multiverse.mvd import (KERNEL_VERBS, Kernel, KernelConfig, PrimaryState,
+                            SyntheticRunExecutor)
 
 # ---------------------------------------------------------------------------
 # 1. InProcessClient
@@ -48,9 +35,7 @@ from multiverse.mvd import (
 
 
 def test_in_process_client_exposes_seven_verbs() -> None:
-    public = {
-        name for name in dir(InProcessClient) if not name.startswith("_")
-    }
+    public = {name for name in dir(InProcessClient) if not name.startswith("_")}
     # Filter to verbs + the dataclass field "kernel".
     api = public - {"kernel"}
     assert api == set(KERNEL_VERBS)
@@ -115,10 +100,7 @@ def test_socket_round_trip(tmp_path: Path, socket_kernel: Kernel) -> None:
                     status="TRACKING_SYNC_FAILED",
                 )
                 after = await client.query_run(physical_attempt_id=attempt)
-                assert (
-                    after["primary_state"]
-                    == PrimaryState.ARTIFACT_SUCCESS.value
-                )
+                assert after["primary_state"] == PrimaryState.ARTIFACT_SUCCESS.value
                 assert after["projections"]["mlflow"] == "TRACKING_SYNC_FAILED"
 
                 # Health works through the wire.
@@ -213,9 +195,9 @@ def test_client_source_grep_gate() -> None:
     for source in client_dir.glob("*.py"):
         text = source.read_text(encoding="utf-8")
         match = forbidden_pattern.search(text)
-        assert match is None, (
-            f"forbidden top-level import {match.group(1)!r} in client/{source.name}"
-        )
+        assert (
+            match is None
+        ), f"forbidden top-level import {match.group(1)!r} in client/{source.name}"
 
 
 def test_gui_results_tab_reads_mvd_controller_and_index_sources() -> None:

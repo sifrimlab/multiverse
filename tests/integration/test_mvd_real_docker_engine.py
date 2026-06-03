@@ -16,7 +16,6 @@ import pytest
 
 from multiverse.docker_supervisor import ContainerState, RealDockerEngine
 
-
 CANDIDATE_IMAGES = (
     "busybox:latest",
     "alpine:latest",
@@ -38,7 +37,9 @@ def _docker_client_and_image():
             return client, image
         except Exception:
             continue
-    pytest.skip(f"no local candidate image available from {CANDIDATE_IMAGES!r}; not pulling in tests")
+    pytest.skip(
+        f"no local candidate image available from {CANDIDATE_IMAGES!r}; not pulling in tests"
+    )
 
 
 def _wait_for_exit(engine: RealDockerEngine, container_id: str, timeout: float = 10.0):

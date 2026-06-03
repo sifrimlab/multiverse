@@ -9,7 +9,6 @@ import pytest
 
 from multiverse import state_paths
 
-
 pytestmark = pytest.mark.control_plane
 
 
@@ -115,9 +114,7 @@ def test_legacy_db_refusal_skipped_when_db_name_monkeypatched(monkeypatch, tmp_p
     registry_db._check_legacy_db_refusal()
 
 
-def test_legacy_db_refusal_fires_when_default_and_legacy_exists(
-    monkeypatch, tmp_path
-):
+def test_legacy_db_refusal_fires_when_default_and_legacy_exists(monkeypatch, tmp_path):
     """Simulate the upgrade scenario: resolver default is $HOME/.mvexp,
     a legacy DB exists at the repo root."""
     from multiverse import registry_db
@@ -135,9 +132,7 @@ def test_legacy_db_refusal_fires_when_default_and_legacy_exists(
     legacy_dir.mkdir()
     fake_legacy = legacy_dir / "mvexp_state.db"
     fake_legacy.write_bytes(b"")
-    monkeypatch.setattr(
-        registry_db, "_find_legacy_db", lambda: fake_legacy
-    )
+    monkeypatch.setattr(registry_db, "_find_legacy_db", lambda: fake_legacy)
     # DB_NAME equals the new resolver default (the trigger condition).
     expected_default = str(fake_home / ".mvexp" / "mvexp_state.db")
     monkeypatch.setattr(registry_db, "DB_NAME", expected_default)

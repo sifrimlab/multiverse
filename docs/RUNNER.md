@@ -8,10 +8,12 @@ This page documents the current execution path for turning `run_manifest.yaml` i
 |---|---|---|
 | Canonical CLI (Docker) | `multiverse run --manifest <path> --output <dir>` | Installed command; delegates to the mvd-backed Docker runner. |
 | Canonical CLI (Slurm) | `multiverse slurm-submit --model-slug <slug> --image-sif <path> [--image-digest sha256:…]` | Submit a single job through the Slurm + Apptainer path. |
+| Simple-mode (no daemon) | `multiverse run --simple <simple_manifest.yaml> --out <dir>` | Contract-only runner: no mvd, SQLite, MLflow, or Optuna required. See [Simple-Mode Runner](#simple-mode-runner). |
+| Build SIF | `multiverse build-sif --slug <slug> --output-dir <dir>` | Build an Apptainer SIF from a model's Dockerfile or Singularity.def. See [Building SIF Files](#building-sif-files). |
 | Source checkout | `uv run multiverse run --manifest <path> --output <dir>` | Same Docker run path without installing the package globally. |
 | Compatibility CLI | `python -m multiverse.runner.cli run --manifest <path> --output <dir>` | Kept for compatibility; prefer `multiverse`. |
 | GUI | Streamlit **Run** tab | Submits to the in-process mvd controller; it does not spawn the runner as a subprocess. |
-| Maintenance | `multiverse doctor`, `multiverse rebuild-index`, `multiverse gc --dry-run`, `multiverse mlflow-sync`, `multiverse migrate-asset-registry` | Recovery and projection commands. Use `uv run multiverse ...` from a source checkout. |
+| Maintenance | `multiverse doctor`, `multiverse rebuild-index`, `multiverse gc --dry-run`, `multiverse mlflow-sync`, `multiverse migrate-asset-registry`, `multiverse migrate-state-dir` | Recovery and projection commands. Use `uv run multiverse ...` from a source checkout. |
 
 ## Execution Pipelines
 
@@ -73,6 +75,52 @@ The Slurm executor:
 | `CANCELLED` | The user cancelled the run; workspace evidence is preserved. |
 | `RECOVERY_PENDING` | The run needs explicit user/operator recovery or adoption. |
 
+## Resuming Completed Work (`skip_completed`)
+
+Launching a manifest runs **every** job in it by default. Planning is a pure
+manifest → plan expansion: it never decides that prior work makes a job
+unnecessary. This is deliberate — a manifest you explicitly launched should run
+what it says, and a stale row in an old table must never make a requested job
+silently vanish.
+
+Skipping already-finished work is **opt-in** and **mvd-backed**:
+
+| Surface | How to enable |
+|---|---|
+| CLI | `multiverse run --manifest <path> --output <dir> --skip-completed` |
+| Manifest | `globals.skip_completed: true` |
+| GUI | **Run** tab -> *Skip completed jobs (resume)* checkbox; defaults from `globals.skip_completed` when present, otherwise off |
+
+Precedence is: CLI flag / explicit GUI user choice -> `globals.skip_completed`
+-> default `false`. In the GUI, an untouched checkbox honors the manifest
+global; changing it in the Run tab is an explicit launch override. This keeps
+old manifests from skipping jobs unexpectedly while still letting you resume a
+large interrupted benchmark.
+
+When enabled, a job is skipped only when its **canonical logical run** already
+reached `ARTIFACT_SUCCESS` in the mvd state for the selected `--output`
+directory (read from the rebuildable index, falling back to the journal). A
+skipped job is never removed from the plan: it is shown — in the CLI preflight
+summary and the GUI event log — with the completing attempt id and artifact
+directory.
+
+The logical run identity folds in everything that changes the scientific result
+or execution recipe: manifest hash, dataset fingerprint, image identity, params
+hash, contract version, **seed, preprocessing, and model version**. Editing any
+of these produces a new logical run, so it is planned and runnable again even
+with `skip_completed` on.
+
+### mvd `ARTIFACT_SUCCESS` vs legacy `SUCCESS`
+
+mvd completion state is `ARTIFACT_SUCCESS`, recorded in the journal and projected
+into the rebuildable SQLite index. The legacy `runs` table's `status = 'SUCCESS'`
+is **not** authoritative for mvd-backed execution and is never consulted when
+planning or resuming a manifest. The legacy table is left intact for old
+installations and tooling, but it can neither suppress a manifest job nor mark
+one as resumable. Only `ARTIFACT_SUCCESS` with an artifact directory still on
+disk counts as completed; `FAILED`, `CANCELLED`, and `RECOVERY_PENDING` never
+skip a job.
+
 ## Artifact Contract
 
 Every successful run must contain a verified `artifact_manifest.json` and `artifact_manifest.sha256`. The manifest records logical and physical run IDs, dataset fingerprint, image identity, parameter hash, timestamps, owner token, and validated artifact entries with checksums.
@@ -128,6 +176,85 @@ To run with a SIF that has no known registry provenance (e.g. a SIF built manual
 uv run multiverse slurm-submit ... --accept-degraded
 ```
 
+## Simple-Mode Runner
+
+The simple-mode runner executes the model artifact contract without the mvd daemon, SQLite registry, MLflow, or Optuna. It is useful for:
+
+- HPC environments where the daemon cannot run persistently.
+- Scripted one-off runs outside the GUI workflow.
+- Testing a model image against the artifact contract in isolation.
+
+```bash
+multiverse run --simple simple_manifest.yaml --out ./bundle-output
+```
+
+The simple-mode manifest is a self-contained YAML — it does not consult the asset registry, so every value the runner needs (image, dataset path, n_obs) must appear in the manifest:
+
+```yaml
+schema_version: "1"
+globals:
+  mv_contract_version: "1"
+jobs:
+  - name: "demo_pca"
+    model:
+      slug: "pca"
+      version: "1.0.0"
+      image: "multiverse-pca:1.0.0"
+      image_digest: "sha256:..."   # optional; promotes identity kind
+    dataset:
+      slug: "demo"
+      path: "/abs/path/to/processed.h5mu"
+      n_obs: 100
+    params:
+      n_components: 20
+```
+
+Key differences from the full manifest:
+
+| Aspect | Full manifest (`multiverse run`) | Simple-mode (`multiverse run --simple`) |
+|---|---|---|
+| Registry lookup | Required (SQLite) | None — all values in manifest |
+| Projection | MLflow + Optuna | None |
+| State tracking | mvd journal + SQLite | Per-run JSONL in output dir |
+| GPU | `jobs[].gpu: true` | `jobs[].model.gpu: true` |
+| Output location | `<output>/store/artifacts/<id>/` | `<out>/<job-name>/` |
+| Failed run dir | `<output>/store/workspaces/<id>/` | `<out>/_failed/<job-name>/` |
+
+Additional flags:
+
+| Flag | Meaning |
+|---|---|
+| `--strict` | Publication mode: refuse images with no registry provenance. |
+| `--validators basic\|strict\|developer` | Override validation level (default: `basic`). |
+| `--no-image-pull` | Local-only mode; do not attempt to pull the image even if a digest is declared. |
+| `--seed <int>` | Seed forwarded to the model backend. |
+| `--json` | Emit a machine-readable JSON summary on stdout in addition to the human-readable output. |
+
+## Building SIF Files
+
+`multiverse build-sif` converts a model's Dockerfile or Singularity.def into an Apptainer SIF file and records the output path in the asset registry. Requires `apptainer` (or `singularity`) on `PATH`.
+
+```bash
+# From a Dockerfile (default when build.dockerfile is set in model.yaml)
+multiverse build-sif --slug pca --output-dir /scratch/sif/
+
+# From a Singularity.def (default when apptainer.def_file is set)
+multiverse build-sif --slug my_hpc_model --method def-file --output-dir /scratch/sif/
+
+# Force-overwrite an existing SIF
+multiverse build-sif --slug pca --output-dir /scratch/sif/ --force
+```
+
+The output file is named `<slug>-<version>.sif` and placed in `<output-dir>` (default: `<state-root>/sif/`). After a successful build, the SIF path is written back into `asset_registry.db` so `multiverse slurm-submit` can find it.
+
+| Flag | Meaning |
+|---|---|
+| `--slug <slug>` | Model slug (required). |
+| `--output-dir <dir>` | Directory to write the `.sif` file (default: `<state-root>/sif/`). |
+| `--method docker-daemon\|def-file` | Build method; auto-detected from `model.yaml` if omitted. |
+| `--force` | Overwrite an existing `.sif` file. |
+| `--manifest <path>` | Override slug-based manifest lookup with an explicit `model.yaml` path. |
+
 ## Asset Registry Migration
 
 If you are upgrading from a prior version that stored dataset and model records in the combined `mvexp_state.db`, run the one-time migration:
@@ -139,6 +266,57 @@ uv run multiverse migrate-asset-registry --dry-run
 ```
 
 This copies dataset and model rows from `mvexp_state.db` into the new dedicated `asset_registry.db`. The migration refuses to run twice (idempotent guard). After migration, `mvexp_state.db` continues to hold run/index state; `asset_registry.db` holds the dataset and model catalog.
+
+## Maintenance Command Reference
+
+### `multiverse doctor`
+
+Probes state paths, container engines, storage, workspaces, the reservation ledger, and MLflow projection consistency.
+
+```bash
+multiverse doctor
+multiverse doctor --json                          # machine-readable output
+multiverse doctor --deep-slurm                    # submit a smoke job to verify Slurm end-to-end
+multiverse doctor --deep-slurm --slurm-smoke-partition gpu   # specify partition for smoke job
+multiverse doctor --repair-health-probes          # sweep expired entries from health-probe namespaces
+```
+
+`--deep-slurm` enumerates partitions via `sinfo` and submits a one-second `--wrap=true` smoke job. It briefly allocates a node, so only use it when you want to confirm Slurm is fully operational (not just installed).
+
+### `multiverse rebuild-index`
+
+Reconstructs `mvexp_state.db` from the append-only journal and artifact store.
+
+```bash
+multiverse rebuild-index --state-root <path> --store-root <path>
+multiverse rebuild-index --state-root <path> --verify   # read-only drift check; exits 0 if in sync
+```
+
+`--verify` reports drift between the journal and the current SQLite projection without writing anything. Exit code 0 = in sync, 1 = drift detected.
+
+### `multiverse gc`
+
+Garbage-collects failed workspaces, cancelled runs, and quarantine entries.
+
+```bash
+multiverse gc --dry-run                           # show what would be deleted (default)
+multiverse gc --apply                             # actually delete
+multiverse gc --apply --no-export-required        # skip the EXPORTED marker requirement
+multiverse gc --apply --apply-to-promoted         # also consider promoted artifacts (use with care)
+multiverse gc --retention-failed 86400            # keep failed workspaces for 24 h (seconds)
+multiverse gc --retention-cancelled 3600          # keep cancelled runs for 1 h
+```
+
+By default, `gc` requires an `EXPORTED` marker file before deleting promoted artifacts. Pass `--no-export-required` to delete without it. `--apply-to-promoted` includes promoted artifact bundles as candidates — this is a destructive operation; use only after exporting.
+
+### `multiverse migrate-state-dir`
+
+Relocates the state directory (database + store) from a pre-M1 location to the resolver's chosen location. Run this once when upgrading installations that stored state in a non-standard location.
+
+```bash
+multiverse migrate-state-dir --from /old/path --to /new/path   # preview
+multiverse migrate-state-dir --from /old/path --to /new/path --apply
+```
 
 ## Troubleshooting
 

@@ -59,6 +59,7 @@ class _FakeContainer:
     volumes: Dict[str, str] = field(default_factory=dict)
     mem_limit: Optional[str] = None
     name: Optional[str] = None
+    gpu_requested: bool = False
     removed: bool = False
     log_output: bytes = b""
 
@@ -95,6 +96,7 @@ class InMemoryApptainerEngine:
         mem_limit: Optional[str] = None,
         name: Optional[str] = None,
         entrypoint: Optional[str] = None,
+        gpu_requested: bool = False,
     ) -> ContainerInfo:
         labels = dict(labels or {})
         oci = labels.get("multiverse.image_digest")
@@ -111,6 +113,7 @@ class InMemoryApptainerEngine:
             volumes=dict(volumes or {}),
             mem_limit=mem_limit,
             name=name,
+            gpu_requested=gpu_requested,
         )
         self.containers[container_id] = container
         return container.to_info()

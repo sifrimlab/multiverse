@@ -15,7 +15,6 @@ from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 from multiverse.mvd.state import PrimaryState
 from multiverse.promotion import StoreLayout
 
-
 # ---------------------------------------------------------------------------
 # Preferred path: rebuild-index classifies PROMOTE_PREPARE-without-commit
 # without deletion.

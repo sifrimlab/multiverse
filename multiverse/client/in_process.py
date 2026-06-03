@@ -46,13 +46,9 @@ class InProcessClient:
         state: Optional[str] = None,
         logical_run_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        return await self.kernel.list_runs(
-            state=state, logical_run_id=logical_run_id
-        )
+        return await self.kernel.list_runs(state=state, logical_run_id=logical_run_id)
 
-    def stream_events(
-        self, *, physical_attempt_id: str
-    ) -> AsyncIterator[KernelEvent]:
+    def stream_events(self, *, physical_attempt_id: str) -> AsyncIterator[KernelEvent]:
         return self.kernel.stream_events(physical_attempt_id=physical_attempt_id)
 
     async def health(self) -> Dict[str, Any]:

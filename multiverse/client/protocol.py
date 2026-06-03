@@ -21,7 +21,9 @@ from ..mvd.api import KERNEL_VERBS
 class ApiError(Exception):
     """Raised on a non-OK server response."""
 
-    def __init__(self, code: str, message: str, details: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(
+        self, code: str, message: str, details: Optional[Dict[str, Any]] = None
+    ) -> None:
         super().__init__(f"[{code}] {message}")
         self.code = code
         self.message = message
@@ -61,8 +63,9 @@ class RpcResponse:
             payload["stream"] = True
         if self.stream_end:
             payload["stream_end"] = True
-        return json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                          allow_nan=False)
+        return json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+        )
 
 
 def encode_request(req: RpcRequest) -> bytes:

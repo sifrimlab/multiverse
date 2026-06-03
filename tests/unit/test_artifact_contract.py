@@ -20,30 +20,17 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    ARTIFACT_MANIFEST_SHA256_FILENAME,
-    ArtifactEntry,
-    ArtifactManifest,
-    BootContext,
-    ChecksumMismatchError,
-    ImageIdentity,
-    ImageIdentityKind,
-    ManifestCorruptError,
-    ManifestMissingError,
-    ProducedAt,
-    ProducedBy,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    new_physical_attempt_id,
-    produced_at_now,
-    read_manifest,
-    sha256_bytes,
-    write_manifest,
-)
+from multiverse.artifact import (ARTIFACT_MANIFEST_FILENAME,
+                                 ARTIFACT_MANIFEST_SHA256_FILENAME,
+                                 ArtifactEntry, ArtifactManifest, BootContext,
+                                 ChecksumMismatchError, ImageIdentity,
+                                 ImageIdentityKind, ManifestCorruptError,
+                                 ManifestMissingError, ProducedAt, ProducedBy,
+                                 compute_logical_run_id, compute_manifest_hash,
+                                 compute_params_hash, new_physical_attempt_id,
+                                 produced_at_now, read_manifest, sha256_bytes,
+                                 write_manifest)
 from multiverse.artifact.manifest import normalize_for_equivalence
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -85,7 +72,9 @@ def _make_manifest(
         params_hash=params_hash,
         mv_contract_version="1",
         produced_at=ProducedAt.from_dict(produced_at_now(boot)),
-        produced_by=ProducedBy(mvd_version=boot.mvd_version, git_commit=boot.git_commit),
+        produced_by=ProducedBy(
+            mvd_version=boot.mvd_version, git_commit=boot.git_commit
+        ),
         artifacts=[
             ArtifactEntry(
                 name="embeddings.h5",
@@ -160,9 +149,7 @@ def test_truncating_manifest_is_detected_as_corruption(
     assert not (tmp_path / "artifact_manifest.corrupt.json").exists()
 
 
-def test_manual_edit_of_manifest_is_detected(
-    tmp_path: Path, boot: BootContext
-) -> None:
+def test_manual_edit_of_manifest_is_detected(tmp_path: Path, boot: BootContext) -> None:
     write_manifest(tmp_path, _make_manifest(boot))
     body_path = tmp_path / ARTIFACT_MANIFEST_FILENAME
 
@@ -200,9 +187,7 @@ def test_bad_schema_version_is_corrupt(tmp_path: Path, boot: BootContext) -> Non
         data, sort_keys=True, indent=2, ensure_ascii=False, allow_nan=False
     ).encode("utf-8")
     body_path.write_bytes(new_body)
-    sidecar_path.write_text(
-        f"{sha256_bytes(new_body)}  {ARTIFACT_MANIFEST_FILENAME}\n"
-    )
+    sidecar_path.write_text(f"{sha256_bytes(new_body)}  {ARTIFACT_MANIFEST_FILENAME}\n")
 
     with pytest.raises(ManifestCorruptError):
         read_manifest(tmp_path)
@@ -289,9 +274,9 @@ def test_normalize_for_equivalence_drops_nondeterministic_fields(
 
     norm_a = normalize_for_equivalence(a.to_dict())
     norm_b = normalize_for_equivalence(b.to_dict())
-    assert norm_a == norm_b, (
-        "normalised manifests from identical recipes must be byte-equal"
-    )
+    assert (
+        norm_a == norm_b
+    ), "normalised manifests from identical recipes must be byte-equal"
 
 
 def test_normalize_keeps_logical_run_id_and_artifact_hashes(

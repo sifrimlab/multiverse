@@ -17,12 +17,7 @@ import pytest
 
 from multiverse.cli_entrypoints import rebuild_index_main
 from multiverse.index import INDEX_FILENAME, open_index
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalWriter,
-)
-
+from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 
 pytestmark = pytest.mark.control_plane
 
@@ -41,9 +36,7 @@ def _capture(state_root: Path, *args: str) -> tuple[int, str]:
     saved_stdout = sys.stdout
     sys.stdout = buf
     try:
-        rc = rebuild_index_main(
-            ["--state-root", str(state_root), "--verify", *args]
-        )
+        rc = rebuild_index_main(["--state-root", str(state_root), "--verify", *args])
     finally:
         sys.stdout = saved_stdout
     return rc, buf.getvalue()
@@ -82,9 +75,7 @@ def test_verify_returns_nonzero_on_drift(tmp_path: Path) -> None:
     assert rc == 1, stdout
     payload = json.loads(stdout)
     assert payload["drift_count"] >= 1
-    assert any(
-        d["physical_attempt_id"] == "r-missing" for d in payload["drifts"]
-    )
+    assert any(d["physical_attempt_id"] == "r-missing" for d in payload["drifts"])
 
 
 def test_verify_does_not_write_to_index(tmp_path: Path) -> None:

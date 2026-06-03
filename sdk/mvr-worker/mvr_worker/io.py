@@ -3,15 +3,14 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-
 from typing import Any, Dict, List, Union
 
+import anndata as ad
 import h5py
 import mudata as md
-import scanpy as sc
-import anndata as ad
 import numpy as np
 import pandas as pd
+import scanpy as sc
 
 from .logging import get_logger, setup_logging
 
@@ -19,7 +18,9 @@ logger = get_logger(__name__)
 
 OUTPUT_DIR = os.environ.get("MVR_OUTPUT_DIR", "/output")
 INPUT_DATA_PATH = os.environ.get("MVR_INPUT_DATA_PATH", "/input/data.h5mu")
-JOB_SPEC_PATH = os.environ.get("MVR_JOB_SPEC_PATH", os.path.join(OUTPUT_DIR, "job_spec.json"))
+JOB_SPEC_PATH = os.environ.get(
+    "MVR_JOB_SPEC_PATH", os.path.join(OUTPUT_DIR, "job_spec.json")
+)
 
 
 def setup_container_logging(output_dir: str = OUTPUT_DIR) -> None:
@@ -77,6 +78,7 @@ def save_umap(
     """
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         import scanpy as sc
@@ -112,7 +114,12 @@ def save_umap(
 
 
 def anndata_concatenate(
-    mdata: md.MuData = None, adata_list: list = None, selected_modalities: list = None, obs: pd.DataFrame = None, cell_type_key: str = "cell_type", batch_key: str = "batch"
+    mdata: md.MuData = None,
+    adata_list: list = None,
+    selected_modalities: list = None,
+    obs: pd.DataFrame = None,
+    cell_type_key: str = "cell_type",
+    batch_key: str = "batch",
 ) -> ad.AnnData:
     """
     Fuse modalities and concatenate along variables axis.
@@ -127,27 +134,35 @@ def anndata_concatenate(
     :param batch_key: Key in .obs that contains batch annotations
     :return: Concatenated AnnData object with modalities fused along variables axis
      and cell type and batch annotations preserved in .obs.
-        
+
     """
     if adata_list is not None and mdata is not None:
         raise ValueError("Provide either adata_list or mdata, not both.")
     if adata_list is None and mdata is None:
         raise ValueError("Either adata_list or mdata must be provided.")
     if selected_modalities is None and mdata is None:
-        raise ValueError("selected_modalities has to be provided when mdata is not provided.")
+        raise ValueError(
+            "selected_modalities has to be provided when mdata is not provided."
+        )
     if obs is None and mdata is None:
         raise ValueError("obs has to be provided when mdata is not provided.")
     if obs is None:
         obs = mdata.obs
     if selected_modalities is None and mdata is not None:
         selected_modalities = list(mdata.mod.keys())
-        
+
     if adata_list is None:
-        list_mod_adata = [mdata[m] for m in selected_modalities if m in mdata.mod.keys()]
+        list_mod_adata = [
+            mdata[m] for m in selected_modalities if m in mdata.mod.keys()
+        ]
     else:
         list_mod_adata = adata_list
     adata_concat = ad.concat(
-        list_mod_adata, axis="var", label=cell_type_key, merge="unique", uns_merge="unique"
+        list_mod_adata,
+        axis="var",
+        label=cell_type_key,
+        merge="unique",
+        uns_merge="unique",
     )
     adata_concat.obs[batch_key] = obs[batch_key]
     adata_concat.obs[cell_type_key] = obs[cell_type_key]
@@ -190,13 +205,47 @@ def load_config(config_path: Union[str, dict] = "./config.json"):
         raise
     return config
 
+
+def resolve_preprocess_params(job_spec, modalities, defaults):
+    """Resolve effective preprocessing parameters for a run (issue #22).
+
+    ``defaults`` are the model's built-in preprocessing parameters (the values
+    previously hard-coded in each ``run.py``); they remain authoritative so an
+    absent ``preprocessing`` block reproduces the legacy behaviour exactly.
+    Any non-null key in ``job_spec["preprocessing"]`` (the per-run override
+    resolved from the run manifest / GUI) takes precedence.
+
+    ``scale`` accepts either a per-modality mapping or a single bool applied to
+    every modality, in both ``defaults`` and the override.
+    """
+    resolved = dict(defaults or {})
+    # Normalise a bool ``scale`` default into a per-modality mapping.
+    if "scale" in resolved and not isinstance(resolved["scale"], dict):
+        resolved["scale"] = {mod: bool(resolved["scale"]) for mod in modalities}
+
+    overrides = (job_spec or {}).get("preprocessing") or {}
+    for key, val in dict(overrides).items():
+        if val is None:
+            continue
+        if key == "scale":
+            if isinstance(val, dict):
+                merged = dict(resolved.get("scale") or {})
+                merged.update({m: bool(v) for m, v in val.items()})
+                resolved["scale"] = merged
+            else:
+                resolved["scale"] = {mod: bool(val) for mod in modalities}
+        else:
+            resolved[key] = val
+    return resolved
+
+
 def preprocess_mudata(
     mdata,
     preprocess_params,
     cell_type_key="cell_type",
     batch_key="batch",
 ):
-    #TODO: make modality specific preprocessing configurable, e.g. log normalization only for RNA, not ADT, etc.
+    # TODO: make modality specific preprocessing configurable, e.g. log normalization only for RNA, not ADT, etc.
     """Preprocess MuData while keeping all modalities aligned."""
 
     modalities = list(mdata.mod.keys())
@@ -268,7 +317,14 @@ def preprocess_mudata(
                     f"Warning: Modality '{modality}' has only {adata.n_vars} features, which is less than or equal to n_top_genes={n_top_genes}. Skipping HVG selection for this modality."
                 )
 
-            hvg_flavor = "seurat" if (modality.lower() == "rna" and preprocess_params.get("log_normalization", False)) else "seurat_v3"
+            hvg_flavor = (
+                "seurat"
+                if (
+                    modality.lower() == "rna"
+                    and preprocess_params.get("log_normalization", False)
+                )
+                else "seurat_v3"
+            )
 
             sc.pp.highly_variable_genes(
                 adata,
@@ -316,7 +372,7 @@ def preprocess_mudata(
     # ------------------------------------------------------------------
     modality_scaling = preprocess_params.get("scale", {})
     for modality in modalities:
-        if  modality_scaling.get(modality, False):
+        if modality_scaling.get(modality, False):
             sc.pp.scale(mdata.mod[modality])
 
         mdata.update()

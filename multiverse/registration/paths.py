@@ -38,7 +38,7 @@ def validate_paths_in_mapping(
     mapping: Mapping[str, Any],
     *,
     root: str | os.PathLike[str] | Path,
-    keys: tuple[str, ...] = ("path", "paths", "raw_files"),
+    keys: tuple[str, ...] = ("path", "paths", "raw_files", "processed_path"),
 ) -> Dict[str, Path]:
     """Walk a manifest dict, verify every path-bearing leaf, and return
     a flat ``key_dotted_path -> resolved_path`` map.

@@ -10,7 +10,8 @@ def _init_db(path):
         "run_id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL, "
         "output_path TEXT, container_id TEXT, failure_reason TEXT)"
     )
-    conn.commit(); conn.close()
+    conn.commit()
+    conn.close()
 
 
 def test_sigterm_mid_promote_recovers(tmp_path):
@@ -21,8 +22,12 @@ def test_sigterm_mid_promote_recovers(tmp_path):
     _init_db(db_path)
 
     conn = sqlite3.connect(db_path)
-    conn.execute("INSERT INTO runs (status, output_path) VALUES (?, ?)", ("PROMOTING", str(artifact)))
-    conn.commit(); conn.close()
+    conn.execute(
+        "INSERT INTO runs (status, output_path) VALUES (?, ?)",
+        ("PROMOTING", str(artifact)),
+    )
+    conn.commit()
+    conn.close()
 
     old = registry_db.DB_NAME
     registry_db.DB_NAME = db_path
@@ -46,8 +51,11 @@ def test_sigterm_drains_queue_direct_fallback(tmp_path):
     db_path = str(tmp_path / "registry.db")
     _init_db(db_path)
     conn = sqlite3.connect(db_path)
-    conn.execute("INSERT INTO runs (status, output_path) VALUES (?, ?)", ("RUNNING", "/tmp/work"))
-    conn.commit(); conn.close()
+    conn.execute(
+        "INSERT INTO runs (status, output_path) VALUES (?, ?)", ("RUNNING", "/tmp/work")
+    )
+    conn.commit()
+    conn.close()
 
     old = rdb.DB_NAME
     rdb.DB_NAME = db_path

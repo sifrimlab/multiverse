@@ -1,26 +1,20 @@
 """TotalVI container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+
 import random
 from typing import Union
 
-import numpy as np
-import scvi
 import anndata as ad
+import numpy as np
 import pandas as pd
-from mvr_worker import (
-    OUTPUT_DIR,
-    anndata_concatenate,
-    build_model_config,
-    get_logger,
-    load_input_mudata,
-    load_job_spec,
-    setup_container_logging,
-    ModelFactory,
-    get_device,
-    scvi_history_to_dict,
-    preprocess_mudata,
-)
+import scvi
+from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
+                        build_model_config, get_device, get_logger,
+                        load_input_mudata, load_job_spec, preprocess_mudata,
+                        resolve_preprocess_params, scvi_history_to_dict,
+                        setup_container_logging)
 
 logger = get_logger(__name__)
+
 
 class TotalVIModel(ModelFactory):
     """TotalVI model wrapper from the `scvi-tools` library.
@@ -91,7 +85,9 @@ class TotalVIModel(ModelFactory):
             self.dataset = self.dataset[
                 :, self.dataset.var["feature_types"].argsort()
             ].copy()
-            protein_indices = (self.dataset.var["feature_types"] == "Protein Expression").values
+            protein_indices = (
+                self.dataset.var["feature_types"] == "Protein Expression"
+            ).values
             protein_col_idx = np.where(protein_indices)[0]
             protein_names = self.dataset.var_names[protein_indices]
             raw_protein = self.dataset.X[:, protein_col_idx]
@@ -159,21 +155,28 @@ def main() -> None:
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("totalvi", job_spec, OUTPUT_DIR)
-    
+
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
     scvi.settings.seed = seed
     mudata_obj = load_input_mudata()
-    # TODO: make preprocessing not hardcoded but GUI based
     # TODO: make cell type and batch key not hardcoded
     modalities = list(mudata_obj.mod.keys())
-    config["preprocess_params"] = {
-        "n_top_genes": 1000,
-        "scale": {mod: False for mod in modalities},  # Skip scaling to preserve count-based nature of the data for TotalVI
-        "normalization_target_sum": None,  # No normalization to preserve count-based nature of the data for TotalVI
-        "log_normalization": False,
-    }
+    # Preprocessing is resolved from the job spec (run manifest / GUI),
+    # falling back to these built-in defaults when unspecified (issue #22).
+    config["preprocess_params"] = resolve_preprocess_params(
+        job_spec,
+        modalities,
+        {
+            "n_top_genes": 1000,
+            "scale": {
+                mod: False for mod in modalities
+            },  # Skip scaling to preserve count-based nature of the data for TotalVI
+            "normalization_target_sum": None,  # No normalization to preserve count-based nature of the data for TotalVI
+            "log_normalization": False,
+        },
+    )
     mudata_obj = preprocess_mudata(
         mudata_obj,
         config["preprocess_params"],
@@ -183,7 +186,10 @@ def main() -> None:
     dataset_name = job_spec.get("dataset_slug", "dataset")
     data_concat = anndata_concatenate(
         mdata=mudata_obj,
-        selected_modalities=["rna", "adt"], # only concatenate RNA and Protein modalities for TotalVI
+        selected_modalities=[
+            "rna",
+            "adt",
+        ],  # only concatenate RNA and Protein modalities for TotalVI
         cell_type_key="cell_type",
         batch_key="batch",
     )
@@ -204,6 +210,7 @@ def main() -> None:
     except Exception as e:
         logger.error(f"An error occurred during TotalVI model run: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()

@@ -36,12 +36,12 @@ Prerequisites: Python 3.12+, [`uv`](https://docs.astral.sh/uv/), Docker with Com
 
 ```bash
 make bootstrap      # install dev deps, create SQLite registry, register built-in models
-make services-up    # optional: start MLflow (:5000) and Optuna Dashboard (:8080)
+make services-up    # optional: start MLflow (:25000) and Optuna Dashboard (:28080)
 make setup          # optional: install GUI/local-runner extras
-make gui            # launch the Streamlit GUI (:8501)
+make gui            # launch the Streamlit GUI (:28501)
 ```
 
-Open `http://localhost:8501` and follow the [Getting Started](GETTING_STARTED.md) tutorial. For headless use, run `uv run multiverse --help` and `uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output`.
+Open `http://localhost:28501` and follow the [Getting Started](GETTING_STARTED.md) tutorial. For headless use, run `uv run multiverse --help` and `uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output`.
 
 ## Documentation Map (Diátaxis)
 

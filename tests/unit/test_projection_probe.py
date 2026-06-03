@@ -9,12 +9,7 @@ import pytest
 from multiverse.doctor import probe_projection_consistency
 from multiverse.doctor.health_probes import ProbeOutcome
 from multiverse.index import INDEX_FILENAME, open_index
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalWriter,
-)
-
+from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 
 pytestmark = pytest.mark.control_plane
 
@@ -102,9 +97,7 @@ def test_probe_truncates_long_drift_list(tmp_path: Path) -> None:
     even when the projection has wildly drifted."""
     records = []
     for i in range(7):
-        records.append(
-            (JournalKind.JOB_INTENT, f"r{i:02d}", {"manifest_path": "/m"})
-        )
+        records.append((JournalKind.JOB_INTENT, f"r{i:02d}", {"manifest_path": "/m"}))
     _write_journal(tmp_path, records)
     report = probe_projection_consistency(tmp_path)
     assert report.probe is ProbeOutcome.FAIL

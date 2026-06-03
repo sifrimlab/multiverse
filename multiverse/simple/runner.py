@@ -9,7 +9,9 @@ Pipeline per job:
     6. On success: assemble the artifact manifest and write a portable bundle
        under ``<out>/<job-name>/``.
     7. On refusal: write a ``run_attempt_manifest.json`` under
-       ``<out>/_failed/<job-name>/`` and keep the workspace for diagnosis.
+       ``<out>/_failed/<job-name>/`` and move the workspace there as
+       ``<out>/_failed/<job-name>/workspace/`` for diagnosis (the original
+       ``_workspaces/<job-name>`` is removed once the copy succeeds).
 
 Strict mode (``--strict``):
     * The image identity must be strict-acceptable (R10).
@@ -27,31 +29,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..artifact import (
-    ArtifactManifest,
-    BootContext,
-    BundleInputs,
-    ExpectedArtifact,
-    ImageIdentity,
-    ImageIdentityKind,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    RunAttemptManifest,
-    StateTransition,
-    ValidationLevel,
-    ValidationReport,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    new_physical_attempt_id,
-    produced_at_now,
-    validate_output_bundle,
-    write_bundle,
-    write_run_attempt_manifest,
-)
+from ..artifact import (ArtifactManifest, BootContext, BundleInputs,
+                        ExpectedArtifact, ImageIdentity, ImageIdentityKind,
+                        ModelOutputContract, ProducedAt, ProducedBy,
+                        RunAttemptManifest, StateTransition, ValidationLevel,
+                        ValidationReport, compute_logical_run_id,
+                        compute_manifest_hash, compute_params_hash,
+                        new_physical_attempt_id, produced_at_now,
+                        validate_output_bundle, write_bundle,
+                        write_run_attempt_manifest)
+from ..logging_utils import get_logger
 from .backends.base import ExecutionBackend
 from .manifest import SimpleJob, SimpleManifest
+
+logger = get_logger(__name__)
 
 _MVD_VERSION = "0.1.0-simple"
 
@@ -170,7 +161,9 @@ class SimpleModeRunner:
 
         transitions: List[StateTransition] = []
 
-        def record_transition(from_state: str, to_state: str, reason: Optional[str] = None) -> None:
+        def record_transition(
+            from_state: str, to_state: str, reason: Optional[str] = None
+        ) -> None:
             transitions.append(
                 StateTransition(
                     from_state=from_state,
@@ -374,7 +367,9 @@ class SimpleModeRunner:
             params_hash=params_hash,
             mv_contract_version=job.contract_version,
         )
-        recovery_hint = _recovery_hint_for(final_state, image_identity, validation_report)
+        recovery_hint = _recovery_hint_for(
+            final_state, image_identity, validation_report
+        )
         attempt = RunAttemptManifest(
             physical_attempt_id=physical_attempt_id,
             logical_run_id=logical_run_id,
@@ -391,16 +386,34 @@ class SimpleModeRunner:
             ).to_dict(),
             state_transitions=[t.to_dict() for t in transitions],
             recovery_hint=recovery_hint,
-            validation_report=validation_report.to_dict() if validation_report else None,
+            validation_report=(
+                validation_report.to_dict() if validation_report else None
+            ),
         )
         write_run_attempt_manifest(failure_dir, attempt)
 
         # Preserve the workspace contents alongside the attempt record so the
         # user can inspect partial outputs (S5: "workspace preserved").
+        # ``_failed/<job>/workspace`` is the canonical failed artifact, so once
+        # the copy succeeds we remove the original ``_workspaces/<job>`` rather
+        # than leaving a duplicate (issue #24). Both operations are guarded so a
+        # copy failure never destroys the only surviving copy.
         preserved = failure_dir / "workspace"
-        if preserved.exists():
-            shutil.rmtree(preserved)
-        shutil.copytree(workspace, preserved)
+        try:
+            if preserved.exists():
+                shutil.rmtree(preserved)
+            shutil.copytree(workspace, preserved)
+        except Exception:
+            # Copy failed: keep the original workspace intact for diagnosis and
+            # do not attempt the removal below.
+            logger.warning(
+                "failed to copy workspace for job %r into %s; leaving original "
+                "workspace in place for inspection",
+                job.name,
+                preserved,
+            )
+        else:
+            shutil.rmtree(workspace, ignore_errors=True)
 
         return JobOutcome(
             job_name=job.name,
@@ -422,8 +435,7 @@ def _recovery_hint_for(
         return (
             "Inspect the saved workspace under workspace/. Re-run "
             "--validators basic to surface warnings, then fix the model "
-            "outputs. Failed checks: "
-            + ", ".join(i.code for i in report.refusals)
+            "outputs. Failed checks: " + ", ".join(i.code for i in report.refusals)
         )
     if identity.kind is ImageIdentityKind.UNVERIFIED_LOCAL:
         return (

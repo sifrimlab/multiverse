@@ -18,25 +18,13 @@ import pytest
 
 from multiverse.apptainer import InMemoryApptainerEngine
 from multiverse.artifact import BootContext, read_manifest
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    ResourceBroker,
-)
-from multiverse.docker_supervisor import (
-    DockerSupervisor,
-    InMemoryContainerEngine,
-)
+from multiverse.broker import HostMetrics, InMemoryHostObserver, ResourceBroker
+from multiverse.docker_supervisor import (DockerSupervisor,
+                                          InMemoryContainerEngine)
 from multiverse.journal import JournalLayout, JournalWriter
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    PrimaryState,
-    build_executor_options,
-)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            PrimaryState, build_executor_options)
 from multiverse.promotion import StoreLayout
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -61,6 +49,7 @@ def _good_producer(n_obs: int):
                 "latent",
                 data=np.zeros((n_obs, 4), dtype=np.float32),
             )
+
     return _producer
 
 
@@ -193,10 +182,8 @@ def test_dual_digest_invariant_violation_fails_the_run(tmp_path: Path):
     strict-acceptable. The run still completes (we're not in strict
     mode in this test scaffolding), but the manifest's strict-acceptable
     flag is False, surfacing the degraded posture to the consumer."""
-    from multiverse.artifact import (
-        ImageIdentity,
-        verify_runtime_identity_matches_source,
-    )
+    from multiverse.artifact import (ImageIdentity,
+                                     verify_runtime_identity_matches_source)
 
     src = ImageIdentity.unverified_local("myimage:latest")
     # The executor would derive built_from=None in this scenario because

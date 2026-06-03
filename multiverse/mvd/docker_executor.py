@@ -32,40 +32,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from ..logging_utils import resolve_log_level
-
-from ..artifact import (
-    ArtifactManifest,
-    BootContext,
-    ImageIdentity,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    ValidationLevel,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    produced_at_now,
-    verify_runtime_identity_matches_source,
-)
-from ..broker import (
-    ResourceBroker,
-    ResourceRequest,
-)
-from ..docker_supervisor import (
-    CancelSaga,
-    ContainerState,
-    DockerSupervisor,
-)
+from ..artifact import (ArtifactManifest, BootContext, ImageIdentity,
+                        ModelOutputContract, ProducedAt, ProducedBy,
+                        ValidationLevel, compute_logical_run_id,
+                        compute_manifest_hash, compute_params_hash,
+                        produced_at_now, runtime_identity_fingerprint,
+                        verify_runtime_identity_matches_source)
+from ..broker import ResourceBroker, ResourceRequest
+from ..docker_supervisor import CancelSaga, ContainerState, DockerSupervisor
 from ..journal import JournalWriter
-from ..promotion import (
-    PromotionOutcome,
-    PromotionSaga,
-    StoreLayout,
-)
+from ..logging_utils import resolve_log_level
+from ..promotion import PromotionOutcome, PromotionSaga, StoreLayout
 from .runs import RunRecord
 from .state import PrimaryState
-
 
 ProducerHook = Callable[[Path, Mapping[str, Any]], None]
 """Optional pre-exit hook called after ``supervisor.launch`` returns. In
@@ -128,13 +107,7 @@ class MvdDockerExecutor:
         # Compute the logical run id and stamp it on the record so later
         # queries can group attempts of the same recipe.
         identity = _resolve_identity_from_options(spec)
-        logical_run_id = compute_logical_run_id(
-            manifest_hash=spec.manifest_hash,
-            dataset_fingerprint=spec.dataset_fingerprint,
-            image_identity=identity,
-            params_hash=compute_params_hash(spec.params),
-            mv_contract_version=spec.contract_version,
-        )
+        logical_run_id = logical_run_id_for_spec(spec, identity)
         record.logical_run_id = logical_run_id
 
         # ---- 1. ADMISSION ----
@@ -210,6 +183,7 @@ class MvdDockerExecutor:
                 mem_limit=spec.mem_limit,
                 name=f"mvd-{record.physical_attempt_id[:8]}",
                 entrypoint=spec.container_entrypoint,
+                gpu_requested=spec.gpu_requested,
             )
             run_logger.info(
                 "container launched id=%s name=mvd-%s",
@@ -240,9 +214,7 @@ class MvdDockerExecutor:
             )
             if exit_code != 0:
                 reason = (
-                    "container OOM_KILLED"
-                    if oom
-                    else f"container exited {exit_code}"
+                    "container OOM_KILLED" if oom else f"container exited {exit_code}"
                 )
                 run_logger.error("run failed: %s", reason)
                 await kernel.transition(
@@ -486,6 +458,10 @@ class MvdDockerExecutor:
             "hyperparameters": {spec.model_slug: dict(spec.params)},
             "seed": spec.seed,
         }
+        # Per-run preprocessing overrides (issue #22); absent block ⇒ the
+        # container falls back to its built-in defaults.
+        if spec.preprocessing:
+            payload["preprocessing"] = dict(spec.preprocessing)
         (workspace / "job_spec.json").write_text(
             json.dumps(payload, sort_keys=True, indent=2),
             encoding="utf-8",
@@ -553,9 +529,7 @@ class MvdDockerExecutor:
             if getattr(engine, "name", "").startswith("apptainer")
             else None
         )
-        return ImageIdentity.sif_digest(
-            sif, built_from=built_from, built_by=built_by
-        )
+        return ImageIdentity.sif_digest(sif, built_from=built_from, built_by=built_by)
 
 
 # Sentinel returned by ``_wait_for_exit`` when execution was diverted to
@@ -590,6 +564,8 @@ class _ExecutorJobSpec:
     resource_request: ResourceRequest
     artifact_dir_name: str
     mem_limit: Optional[str]
+    gpu_requested: bool
+    preprocessing: Optional[Dict[str, Any]]
     container_command: Optional[List[str]]
     container_entrypoint: Optional[str]
     validators: ValidationLevel
@@ -659,6 +635,10 @@ class _ExecutorJobSpec:
             resource_request=request,
             artifact_dir_name=artifact_dir_name,
             mem_limit=options.get("mem_limit"),
+            gpu_requested=bool(options.get("gpu_requested", False)),
+            preprocessing=(
+                dict(options["preprocessing"]) if options.get("preprocessing") else None
+            ),
             container_command=(
                 [str(part) for part in options["container_command"]]
                 if options.get("container_command") is not None
@@ -702,6 +682,29 @@ def _resolve_identity_from_options(spec: _ExecutorJobSpec) -> ImageIdentity:
     return ImageIdentity.unverified_local(spec.model_image)
 
 
+def logical_run_id_for_spec(spec: _ExecutorJobSpec, identity: ImageIdentity) -> str:
+    """Canonical logical-run-ID for a docker job spec (STRATEGY: one identity).
+
+    Folds the behaviour-affecting runtime fields that live outside
+    ``model_params`` — seed, preprocessing, model version — into the identity
+    via ``runtime_fingerprint`` so that editing any of them produces a new
+    runnable logical run. The resume planner reuses this exact function so a
+    planned job and the executed attempt that completed it hash identically.
+    """
+    return compute_logical_run_id(
+        manifest_hash=spec.manifest_hash,
+        dataset_fingerprint=spec.dataset_fingerprint,
+        image_identity=identity,
+        params_hash=compute_params_hash(spec.params),
+        mv_contract_version=spec.contract_version,
+        runtime_fingerprint=runtime_identity_fingerprint(
+            seed=spec.seed,
+            preprocessing=spec.preprocessing,
+            model_version=spec.model_version,
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Convenience for callers building ``submit_run`` options
 # ---------------------------------------------------------------------------
@@ -722,6 +725,8 @@ def build_executor_options(
     manifest_text: str = "",
     ram_request_bytes: int = 256 * 1024 * 1024,
     mem_limit: Optional[str] = None,
+    gpu_requested: bool = False,
+    preprocessing: Optional[Mapping[str, Any]] = None,
     container_command: Optional[List[str]] = None,
     container_entrypoint: Optional[str] = None,
     validators: str = "basic",
@@ -755,6 +760,10 @@ def build_executor_options(
         out["dataset_n_vars"] = int(dataset_n_vars)
     if mem_limit:
         out["mem_limit"] = mem_limit
+    if gpu_requested:
+        out["gpu_requested"] = True
+    if preprocessing:
+        out["preprocessing"] = dict(preprocessing)
     if container_command is not None:
         out["container_command"] = [str(part) for part in container_command]
     if container_entrypoint is not None:

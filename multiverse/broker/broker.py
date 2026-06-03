@@ -106,16 +106,12 @@ class ReservationLedger:
         if gpu_index is None:
             return 0
         return sum(
-            r.vram_bytes
-            for r in self.by_attempt.values()
-            if r.gpu_index == gpu_index
+            r.vram_bytes for r in self.by_attempt.values() if r.gpu_index == gpu_index
         )
 
     def gpu_indices_in_use(self) -> set[int]:
         return {
-            r.gpu_index
-            for r in self.by_attempt.values()
-            if r.gpu_index is not None
+            r.gpu_index for r in self.by_attempt.values() if r.gpu_index is not None
         }
 
 
@@ -136,13 +132,9 @@ def _request_from_payload(payload: Dict[str, object]) -> ResourceRequest:
         ram_bytes=int(payload.get("ram_bytes", 0)),
         vram_bytes=int(payload.get("vram_bytes", 0)),
         gpu_index=(
-            int(payload["gpu_index"])
-            if payload.get("gpu_index") is not None
-            else None
+            int(payload["gpu_index"]) if payload.get("gpu_index") is not None else None
         ),
-        disk_bytes_per_path={
-            str(k): int(v) for k, v in dict(raw_disk).items()
-        },
+        disk_bytes_per_path={str(k): int(v) for k, v in dict(raw_disk).items()},
     )
 
 
@@ -348,7 +340,10 @@ class ResourceBroker:
         transitioned = mode is not self._last_mode
         self._last_mode = mode
         return ContinuousObservation(
-            metrics=metrics, mode=mode, transitioned=transitioned, pressure_events=events
+            metrics=metrics,
+            mode=mode,
+            transitioned=transitioned,
+            pressure_events=events,
         )
 
     # ---- Docker events ----

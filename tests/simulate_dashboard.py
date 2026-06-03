@@ -1,8 +1,10 @@
 import asyncio
 import random
+
+from rich.console import Console
 from rich.live import Live
 from rich.table import Table
-from rich.console import Console
+
 
 def generate_table(tasks) -> Table:
     table = Table(title="Multiverse Parallel Tasks")
@@ -10,10 +12,15 @@ def generate_table(tasks) -> Table:
     table.add_column("Status", justify="center", style="magenta")
 
     for name, status in tasks.items():
-        style = "green" if status == "Success" or status == "Ready" else "red" if "Failed" in status or "Error" in status else "yellow"
+        style = (
+            "green"
+            if status == "Success" or status == "Ready"
+            else "red" if "Failed" in status or "Error" in status else "yellow"
+        )
         table.add_row(name, f"[{style}]{status}[/{style}]")
 
     return table
+
 
 async def simulate_task(name, tasks, min_time=2, max_time=5):
     tasks[name] = "Pending"
@@ -30,6 +37,7 @@ async def simulate_task(name, tasks, min_time=2, max_time=5):
     else:
         tasks[name] = "Failed (1)"
 
+
 async def main():
     tasks = {f"Model_{i}": "Queued" for i in range(1, 6)}
 
@@ -40,6 +48,7 @@ async def main():
             live.update(generate_table(tasks))
         await asyncio.gather(*simulations)
         live.update(generate_table(tasks))
+
 
 if __name__ == "__main__":
     asyncio.run(main())

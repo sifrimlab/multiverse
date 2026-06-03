@@ -23,35 +23,22 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.doctor import (
-    BLOCKED,
-    DANGEROUS,
-    DEGRADED,
-    DoctorReport,
-    DoctorSection,
-    HEALTH_PROBE_NAMESPACES,
-    HEALTH_PROBE_TTL_SECONDS,
-    ProbeOutcome,
-    SUPPORTED,
-    SectionStatus,
-    sweep_expired_health_probes,
-)
-from multiverse.doctor.health_probes import (
-    CleanupResult,
-    LeakInventoryResult,
-    probe_workspace_directory,
-)
-from multiverse.doctor.storage_probes import (
-    StorageLevel,
-    probe_atomic_rename,
-    probe_cloud_sync_heuristic,
-    probe_free_space,
-    probe_fsync_dir,
-    probe_fsync_file,
-    probe_write_then_read,
-    run_storage_probes,
-)
-
+from multiverse.doctor import (BLOCKED, DANGEROUS, DEGRADED,
+                               HEALTH_PROBE_NAMESPACES,
+                               HEALTH_PROBE_TTL_SECONDS, SUPPORTED,
+                               DoctorReport, DoctorSection, ProbeOutcome,
+                               SectionStatus, sweep_expired_health_probes)
+from multiverse.doctor.health_probes import (CleanupResult,
+                                             LeakInventoryResult,
+                                             probe_workspace_directory)
+from multiverse.doctor.storage_probes import (StorageLevel,
+                                              probe_atomic_rename,
+                                              probe_cloud_sync_heuristic,
+                                              probe_free_space,
+                                              probe_fsync_dir,
+                                              probe_fsync_file,
+                                              probe_write_then_read,
+                                              run_storage_probes)
 
 # ---------------------------------------------------------------------------
 # 1. Storage probes on a healthy path
@@ -85,8 +72,10 @@ def test_cloud_sync_marker_yields_dangerous(tmp_path: Path) -> None:
     root.mkdir()
     result = probe_cloud_sync_heuristic(root)
     assert result.level is DANGEROUS
-    assert "cloud-sync markers" in (result.detail or "").lower() or \
-        "cloud-sync" in (result.detail or "").lower()
+    assert (
+        "cloud-sync markers" in (result.detail or "").lower()
+        or "cloud-sync" in (result.detail or "").lower()
+    )
 
 
 def test_path_name_marker_yields_dangerous(tmp_path: Path) -> None:
@@ -140,7 +129,9 @@ def test_write_then_read_blocked_on_readonly_root(tmp_path: Path) -> None:
 def test_free_space_tiers_map_to_levels(tmp_path: Path) -> None:
     # Tune thresholds so the test deterministically lands on each level.
     # Use absurdly small SUPPORTED threshold to ensure SUPPORTED on tmp.
-    supported = probe_free_space(tmp_path, min_supported_gb=0.0001, min_degraded_gb=0.00001)
+    supported = probe_free_space(
+        tmp_path, min_supported_gb=0.0001, min_degraded_gb=0.00001
+    )
     assert supported.level is SUPPORTED
 
     # Now an absurdly large threshold — tmp_path cannot have terabytes free.
@@ -246,9 +237,7 @@ def test_doctor_report_overall_status_aggregates() -> None:
         ]
     )
     assert report.overall_status is SectionStatus.WARNING
-    report.sections.append(
-        DoctorSection(name="db", status=SectionStatus.BLOCKED)
-    )
+    report.sections.append(DoctorSection(name="db", status=SectionStatus.BLOCKED))
     assert report.overall_status is SectionStatus.BLOCKED
 
 
@@ -274,7 +263,8 @@ def test_health_probe_namespaces_match_strategy() -> None:
 def test_storage_report_lists_degraded_capabilities(tmp_path: Path) -> None:
     # Force a degraded result on at least one probe by passing absurd
     # tight free-space thresholds.
-    from multiverse.doctor.storage_probes import StorageReport, StorageProbeResult
+    from multiverse.doctor.storage_probes import (StorageProbeResult,
+                                                  StorageReport)
 
     report = StorageReport(
         root=tmp_path,

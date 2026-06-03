@@ -13,26 +13,13 @@ The broker NEVER preempts running containers in local mode (R11). It only
 running work.
 """
 
-from .observer import (
-    HostMetrics,
-    HostObserver,
-    InMemoryHostObserver,
-    ResourceRequest,
-)
-from .broker import (
-    AdmissionDecision,
-    AdmissionOutcome,
-    ContinuousObservation,
-    OomEvent,
-    PressureEvent,
-    ReservationLedger,
-    ResourceBroker,
-    reconstruct_ledger_from_journal,
-)
-from .pressure import (
-    PressureMode,
-    PressureThresholds,
-)
+from .broker import (AdmissionDecision, AdmissionOutcome,
+                     ContinuousObservation, OomEvent, PressureEvent,
+                     ReservationLedger, ResourceBroker,
+                     reconstruct_ledger_from_journal)
+from .observer import (HostMetrics, HostObserver, InMemoryHostObserver,
+                       ResourceRequest)
+from .pressure import PressureMode, PressureThresholds
 
 __all__ = [
     "AdmissionDecision",

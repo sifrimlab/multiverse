@@ -39,6 +39,7 @@ def resolve_device(requested: str | None, default: str = "cpu") -> str:
         return "cpu"
     return device
 
+
 def get_device(device_str: str):
     """Creates a torch.device object based on the provided string.
 

@@ -8,11 +8,11 @@ This page documents what gets logged where, how the components are wired, and ho
 
 | Service | URL | Container | Backing store | Purpose |
 |---|---|---|---|---|
-| MLflow | `http://localhost:5000` | `mvr-mlflow` | `store/mlflow.db` (SQLite) + `store/artifacts/` | Cross-run parameter and metric comparison, artifact browser. |
-| Optuna Dashboard | `http://localhost:8080` | `mvr-optuna` | `store/optuna.db` (SQLite) | Sweep visualization, parameter importance, pruning history. |
-| Streamlit (optional, profile `gui`) | `http://localhost:8501` | `mvr-streamlit` | host bind-mount + Docker socket | Runs the GUI inside a container for shared lab installs. |
+| MLflow | `http://localhost:25000` | `mvr-mlflow` | `store/mlflow.db` (SQLite) + `store/artifacts/` | Cross-run parameter and metric comparison, artifact browser. |
+| Optuna Dashboard | `http://localhost:28080` | `mvr-optuna` | `store/optuna.db` (SQLite) | Sweep visualization, parameter importance, pruning history. |
+| Streamlit (optional, profile `gui`) | `http://localhost:28501` | `mvr-streamlit` | host bind-mount + Docker socket | Runs the GUI inside a container for shared lab installs. |
 
-Ports are configurable via `MLFLOW_PORT`, `OPTUNA_PORT`, and `STREAMLIT_PORT`. All three services bind-mount `./store` to `/data`, so they read and write the same SQLite databases as the host orchestrator.
+Host ports default to the high range in the repo-root `.env` file (`25000`, `28080`, `28501`) so they are less likely to clash with other users on a shared machine. Override `MLFLOW_PORT`, `OPTUNA_PORT`, `STREAMLIT_PORT`, or `MLFLOW_TRACKING_URI` in `.env` or your shell. All three services bind-mount `./store` to `/data`, so they read and write the same SQLite databases as the host orchestrator.
 
 ## MLflow Run Model
 
@@ -62,8 +62,8 @@ The artifact tree is therefore self-contained: even if `mlflow.db` is lost, the 
 ```bash
 make services-up
 make status                                # docker compose ps with port bindings
-curl -sf http://localhost:5000/health      # MLflow health endpoint
-curl -sf http://localhost:8080/            # Optuna Dashboard root
+curl -sf http://localhost:25000/health     # MLflow health endpoint
+curl -sf http://localhost:28080/           # Optuna Dashboard root
 ```
 
 Inside a model container, the SDK's `EpochLogger` will log a warning and fall back to JSONL-only mode if `MLFLOW_TRACKING_URI` is unset or unreachable. A run is never *failed* solely because tracking is unavailable.

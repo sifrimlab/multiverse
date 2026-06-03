@@ -11,15 +11,21 @@ logger = get_logger(__name__)
 def _sample_param(trial: Any, name: str, spec: Dict[str, Any]) -> Any:
     dist_type = spec.get("type")
     if dist_type == "int":
-        return trial.suggest_int(name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1)))
+        return trial.suggest_int(
+            name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1))
+        )
     if dist_type == "categorical":
         return trial.suggest_categorical(name, list(spec["choices"]))
     if dist_type == "loguniform":
-        return trial.suggest_float(name, float(spec["low"]), float(spec["high"]), log=True)
+        return trial.suggest_float(
+            name, float(spec["low"]), float(spec["high"]), log=True
+        )
     raise ValueError(f"Unsupported distribution type for '{name}': {dist_type}")
 
 
-def sample_hyperparameters(trial: Any, distributions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def sample_hyperparameters(
+    trial: Any, distributions: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
     sampled: Dict[str, Any] = {}
     for param_name, spec in distributions.items():
         sampled[param_name] = _sample_param(trial, param_name, spec)
@@ -35,10 +41,14 @@ def _extract_metric(metrics: Dict[str, Any], metric_name: str) -> float:
     cur: Any = metrics
     for key in metric_name.split("."):
         if not isinstance(cur, dict):
-            raise optuna.TrialPruned(f"Metric '{metric_name}' not found in metrics.json")
+            raise optuna.TrialPruned(
+                f"Metric '{metric_name}' not found in metrics.json"
+            )
         cur = cur.get(key)
         if cur is None:
-            raise optuna.TrialPruned(f"Metric '{metric_name}' not found in metrics.json")
+            raise optuna.TrialPruned(
+                f"Metric '{metric_name}' not found in metrics.json"
+            )
     if not isinstance(cur, (int, float)):
         raise optuna.TrialPruned(f"Metric '{metric_name}' is not numeric")
     return float(cur)
@@ -61,7 +71,7 @@ def _apply_wal_mode_to_optuna_db(storage_uri: str) -> None:
     prefix = "sqlite:///"
     if not storage_uri.startswith(prefix):
         return
-    db_path = storage_uri[len(prefix):]
+    db_path = storage_uri[len(prefix) :]
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -75,7 +85,12 @@ def _apply_wal_mode_to_optuna_db(storage_uri: str) -> None:
 def run_sweep(job: Dict[str, Any]) -> Dict[str, Any]:
     optuna = __import__("optuna")
 
-    study_name = str(job.get("study_name", f"sweep_{job.get('dataset_name', 'dataset')}_{job.get('model_name_orig', 'model')}"))
+    study_name = str(
+        job.get(
+            "study_name",
+            f"sweep_{job.get('dataset_name', 'dataset')}_{job.get('model_name_orig', 'model')}",
+        )
+    )
     storage_uri = str(job.get("study_storage", "sqlite:///store/optuna.db"))
     direction = str(job.get("direction", "maximize"))
     n_trials = int(job.get("n_trials", 10))

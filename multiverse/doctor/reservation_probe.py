@@ -24,13 +24,8 @@ from typing import Dict, List, Optional
 
 from ..broker import reconstruct_ledger_from_journal
 from ..journal import JournalKind, JournalLayout, JournalReader, JournalRecord
-from .health_probes import (
-    CleanupResult,
-    LeakInventoryResult,
-    ProbeOutcome,
-    ProbeReport,
-)
-
+from .health_probes import (CleanupResult, LeakInventoryResult, ProbeOutcome,
+                            ProbeReport)
 
 DEFAULT_STALE_AFTER_SECONDS = 30 * 60  # 30 minutes
 
@@ -128,7 +123,10 @@ def probe_reservation_ledger(
                 )
             )
             continue
-        if grant_record is not None and _age_seconds(grant_record, now) >= stale_after_seconds:
+        if (
+            grant_record is not None
+            and _age_seconds(grant_record, now) >= stale_after_seconds
+        ):
             stuck.append(
                 StuckReservation(
                     physical_attempt_id=attempt,
@@ -149,10 +147,7 @@ def probe_reservation_ledger(
             detail=f"in_flight={len(ledger.by_attempt)}; none stuck",
         )
 
-    pieces = [
-        f"{s.physical_attempt_id[:12]}({s.reason})"
-        for s in stuck
-    ]
+    pieces = [f"{s.physical_attempt_id[:12]}({s.reason})" for s in stuck]
     return ProbeReport(
         name="broker.reservation_ledger",
         probe=ProbeOutcome.FAIL,
@@ -177,7 +172,10 @@ def _latest_grant_by_attempt(
 ) -> Dict[str, JournalRecord]:
     out: Dict[str, JournalRecord] = {}
     for record in records:
-        if record.kind is JournalKind.RESERVATION_GRANTED and record.physical_attempt_id:
+        if (
+            record.kind is JournalKind.RESERVATION_GRANTED
+            and record.physical_attempt_id
+        ):
             out[record.physical_attempt_id] = record
     return out
 

@@ -140,12 +140,8 @@ def _decode(raw: bytes, segment: Path) -> JournalRecord:
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError as exc:
-        raise JournalCorruptError(
-            f"unparseable record in {segment}: {exc}"
-        ) from exc
+        raise JournalCorruptError(f"unparseable record in {segment}: {exc}") from exc
     try:
         return JournalRecord.from_dict(obj)
     except ValueError as exc:
-        raise JournalCorruptError(
-            f"malformed record in {segment}: {exc}"
-        ) from exc
+        raise JournalCorruptError(f"malformed record in {segment}: {exc}") from exc

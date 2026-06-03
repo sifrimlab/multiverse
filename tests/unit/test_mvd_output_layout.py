@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from multiverse.runner.mvd_entrypoint import _state_root_for_output, _store_for_output
+from multiverse.runner.mvd_entrypoint import (_state_root_for_output,
+                                              _store_for_output)
 
 
 def test_output_dir_is_promoted_artifact_root(tmp_path: Path) -> None:

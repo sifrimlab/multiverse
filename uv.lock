@@ -2264,15 +2264,6 @@ wheels = [
 ]
 
 [[package]]
-name = "louvain"
-version = "0.8.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "igraph" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/14/4bf2d8b73639ffedc8a949e6ad40cd2207e0dc4ed9720afeb3f69656c194/louvain-0.8.2.tar.gz", hash = "sha256:ce040bb0c5e349aead5a1e5e99738dcd9f2d10c22526d0633281b6ae230ee8d4", size = 4219094, upload-time = "2024-03-18T10:33:16.182Z" }
-
-[[package]]
 name = "mako"
 version = "1.3.12"
 source = { registry = "https://pypi.org/simple" }
@@ -2710,7 +2701,6 @@ ml-legacy = [
     { name = "anndata" },
     { name = "cobolt" },
     { name = "dvc" },
-    { name = "louvain" },
     { name = "matplotlib" },
     { name = "mowgli" },
     { name = "mudata" },
@@ -2746,7 +2736,6 @@ ml-legacy = [
     { name = "anndata" },
     { name = "cobolt", git = "https://github.com/epurdom/cobolt.git" },
     { name = "dvc", specifier = ">=3.67.1" },
-    { name = "louvain", specifier = "==0.8.2" },
     { name = "matplotlib" },
     { name = "mowgli", specifier = ">=0.1.0" },
     { name = "mudata" },

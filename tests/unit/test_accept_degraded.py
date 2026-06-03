@@ -21,28 +21,16 @@ import numpy as np
 import pytest
 
 from multiverse.artifact import BootContext
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    ResourceBroker,
-)
-from multiverse.docker_supervisor import (
-    DockerSupervisor,
-    InMemoryContainerEngine,
-)
+from multiverse.broker import HostMetrics, InMemoryHostObserver, ResourceBroker
+from multiverse.docker_supervisor import (DockerSupervisor,
+                                          InMemoryContainerEngine)
 from multiverse.journal import JournalLayout, JournalWriter
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    MvdSlurmExecutor,
-    PrimaryState,
-    build_executor_options,
-    build_slurm_executor_options,
-)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            MvdSlurmExecutor, PrimaryState,
+                            build_executor_options,
+                            build_slurm_executor_options)
 from multiverse.promotion import StoreLayout
 from multiverse.slurm import InMemorySlurmEngine
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -70,12 +58,14 @@ def _make_docker_producer(engine: InMemoryContainerEngine):
     executor's poll loop will spin forever unless the producer also flips
     the state to EXITED (same pattern used by test_mvd_docker_executor.py).
     """
+
     def _producer(workspace: Path, params: Mapping[str, Any]) -> None:
         _good_producer(workspace, params)
         for c in reversed(list(engine.containers.values())):
             if not c.removed and c.state.value == "running":
                 engine.simulate_natural_exit(c.container_id, exit_code=0)
                 return
+
     return _producer
 
 
@@ -119,7 +109,9 @@ def _docker_executor(
 def _docker_kernel(
     state_root: Path, store: StoreLayout, *, accept_degraded: bool
 ) -> tuple[Kernel, MvdDockerExecutor]:
-    executor, writer = _docker_executor(state_root, store, accept_degraded=accept_degraded)
+    executor, writer = _docker_executor(
+        state_root, store, accept_degraded=accept_degraded
+    )
     kernel = Kernel(
         KernelConfig(state_root=state_root, mvd_version="0.1.0-test"),
         executor=executor,
@@ -160,6 +152,7 @@ class _DrivingSlurmExecutor(MvdSlurmExecutor):
 
         def _drive() -> None:
             import time as _time
+
             _time.sleep(0.01)
             assert isinstance(self.engine, InMemorySlurmEngine)
             self.engine.simulate_running(job_id)
@@ -202,7 +195,9 @@ def _slurm_executor(
 def _slurm_kernel(
     state_root: Path, store: StoreLayout, *, accept_degraded: bool
 ) -> tuple[Kernel, _DrivingSlurmExecutor]:
-    executor, writer = _slurm_executor(state_root, store, accept_degraded=accept_degraded)
+    executor, writer = _slurm_executor(
+        state_root, store, accept_degraded=accept_degraded
+    )
     kernel = Kernel(
         KernelConfig(state_root=state_root, mvd_version="0.1.0-test"),
         executor=executor,
@@ -233,7 +228,9 @@ def _slurm_opts(*, dataset: Path, sif: Path, image_digest: str | None) -> dict:
 
 
 def _make_docker_pair(state_root, store, dataset, sif, *, accept_degraded):
-    kernel, executor = _docker_kernel(state_root, store, accept_degraded=accept_degraded)
+    kernel, executor = _docker_kernel(
+        state_root, store, accept_degraded=accept_degraded
+    )
     return kernel, executor.engine if hasattr(executor, "engine") else None, executor
 
 
@@ -293,7 +290,9 @@ def test_default_refuses_unverified_local(
         submit_count = lambda: len(executor.supervisor.engine.containers)  # type: ignore[attr-defined]
     else:
         kernel, executor = _slurm_kernel(state_root, store, accept_degraded=False)
-        opts = _slurm_opts(dataset=dataset, sif=sif, image_digest=None)  # → unverified_local
+        opts = _slurm_opts(
+            dataset=dataset, sif=sif, image_digest=None
+        )  # → unverified_local
         submit_count = lambda: executor.engine.submit_count  # type: ignore[attr-defined]
 
     async def _run() -> dict:

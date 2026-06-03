@@ -34,24 +34,15 @@ import h5py
 import numpy as np
 import pytest
 
-from multiverse.artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    ImageIdentityKind,
-    read_manifest,
-)
-from multiverse.simple import (
-    SimpleModeRunner,
-    parse_simple_manifest,
-)
-from multiverse.simple.backends.docker import (
-    CONTAINER_INPUT_DATA_PATH,
-    CONTAINER_OUTPUT_DIR,
-    JOB_SPEC_FILENAME,
-    DockerBackend,
-    DockerBackendError,
-)
+from multiverse.artifact import (ARTIFACT_MANIFEST_FILENAME, ImageIdentityKind,
+                                 read_manifest)
+from multiverse.simple import SimpleModeRunner, parse_simple_manifest
+from multiverse.simple.backends.docker import (CONTAINER_INPUT_DATA_PATH,
+                                               CONTAINER_OUTPUT_DIR,
+                                               JOB_SPEC_FILENAME,
+                                               DockerBackend,
+                                               DockerBackendError)
 from multiverse.simple.runner import JobStatus
-
 
 # ---------------------------------------------------------------------------
 # Fake Docker SDK shaped to the subset the backend actually uses.
@@ -183,20 +174,20 @@ def _make_manifest(
     text = (
         'schema_version: "1"\n'
         'globals: {mv_contract_version: "1"}\n'
-        'jobs:\n'
+        "jobs:\n"
         '  - name: "demo_pca"\n'
-        '    model:\n'
+        "    model:\n"
         '      slug: "pca"\n'
         '      version: "1.0.0"\n'
         '      image: "multiverse-pca:1.0.0"\n'
-        f'{digest_line}'
+        f"{digest_line}"
         '      contract_version: "1"\n'
-        '    dataset:\n'
+        "    dataset:\n"
         '      slug: "demo"\n'
         f'      path: "{dataset}"\n'
-        f'      n_obs: {n_obs}\n'
-        '    params:\n'
-        '      n_components: 4\n'
+        f"      n_obs: {n_obs}\n"
+        "    params:\n"
+        "      n_components: 4\n"
     )
     path = tmp_path / "manifest.yaml"
     path.write_text(text, encoding="utf-8")
@@ -211,8 +202,11 @@ def _good_producer(n_obs: int) -> Callable[[_FakeContainer], None]:
         with h5py.File(ws / "embeddings.h5", "w") as f:
             f.create_dataset(
                 "latent",
-                data=np.random.default_rng(0).standard_normal((n_obs, 4)).astype(np.float32),
+                data=np.random.default_rng(0)
+                .standard_normal((n_obs, 4))
+                .astype(np.float32),
             )
+
     return _producer
 
 
@@ -246,9 +240,7 @@ def test_backend_mounts_dataset_and_workspace_correctly(tmp_path: Path) -> None:
 def test_backend_environment_carries_mvr_contract(tmp_path: Path) -> None:
     manifest = parse_simple_manifest(_make_manifest(tmp_path))
     backend = DockerBackend(client=_FakeDockerClient())
-    backend.execute(
-        job=manifest.jobs[0], workspace_dir=tmp_path / "ws", seed=7
-    )
+    backend.execute(job=manifest.jobs[0], workspace_dir=tmp_path / "ws", seed=7)
     env = backend.client.containers.last.environment
     assert env["MVR_INPUT_DATA_PATH"] == CONTAINER_INPUT_DATA_PATH
     assert env["MVR_OUTPUT_DIR"] == CONTAINER_OUTPUT_DIR
@@ -270,11 +262,11 @@ def test_backend_writes_job_spec_before_launch(tmp_path: Path) -> None:
 
     client = _FakeDockerClient()
     client.containers.producer = _check_producer
-    DockerBackend(client=client).execute(
-        job=job, workspace_dir=workspace, seed=None
-    )
+    DockerBackend(client=client).execute(job=job, workspace_dir=workspace, seed=None)
 
-    assert written_before_start["ok"], "job_spec.json must exist before container.start()"
+    assert written_before_start[
+        "ok"
+    ], "job_spec.json must exist before container.start()"
     spec = json.loads((workspace / JOB_SPEC_FILENAME).read_text())
     assert spec["model_name"] == "pca"
     assert spec["hyperparameters"]["pca"] == {"n_components": 4}
@@ -286,7 +278,9 @@ def test_backend_writes_job_spec_before_launch(tmp_path: Path) -> None:
 
 
 def test_image_identity_uses_manifest_digest_when_present(tmp_path: Path) -> None:
-    manifest = parse_simple_manifest(_make_manifest(tmp_path, digest="sha256:" + "c" * 64))
+    manifest = parse_simple_manifest(
+        _make_manifest(tmp_path, digest="sha256:" + "c" * 64)
+    )
     backend = DockerBackend(client=_FakeDockerClient())
     result = backend.execute(
         job=manifest.jobs[0], workspace_dir=tmp_path / "ws", seed=None
@@ -419,6 +413,6 @@ def test_simple_package_does_not_load_docker_backend_eagerly() -> None:
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, (
-        f"unexpected eager import: {result.stdout.strip()!r} stderr={result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"unexpected eager import: {result.stdout.strip()!r} stderr={result.stderr}"

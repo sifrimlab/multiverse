@@ -1,7 +1,9 @@
 import torch
+
 from .logging_utils import get_logger
 
 logger = get_logger(__name__)
+
 
 def get_device(device_str: str):
     """Creates a torch.device object based on the provided string.

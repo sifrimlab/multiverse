@@ -11,12 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from .protocol import (
-    ApiError,
-    RpcRequest,
-    encode_request,
-    decode_response,
-)
+from .protocol import ApiError, RpcRequest, decode_response, encode_request
 
 
 class KernelSocketClient:
@@ -63,9 +58,7 @@ class KernelSocketClient:
         )
 
     async def cancel_run(self, *, physical_attempt_id: str) -> None:
-        await self._call(
-            "cancel_run", {"physical_attempt_id": physical_attempt_id}
-        )
+        await self._call("cancel_run", {"physical_attempt_id": physical_attempt_id})
 
     async def query_run(self, *, physical_attempt_id: str) -> Dict[str, Any]:
         return await self._call(
@@ -115,7 +108,9 @@ class KernelSocketClient:
     async def _call(self, verb: str, kwargs: Dict[str, Any]) -> Any:
         assert self._writer is not None and self._reader is not None
         req_id = uuid.uuid4().hex
-        self._writer.write(encode_request(RpcRequest(verb=verb, kwargs=kwargs, id=req_id)))
+        self._writer.write(
+            encode_request(RpcRequest(verb=verb, kwargs=kwargs, id=req_id))
+        )
         await self._writer.drain()
         line = await self._reader.readline()
         if not line:
@@ -134,7 +129,9 @@ class KernelSocketClient:
     ) -> AsyncIterator[Dict[str, Any]]:
         assert self._writer is not None and self._reader is not None
         req_id = uuid.uuid4().hex
-        self._writer.write(encode_request(RpcRequest(verb=verb, kwargs=kwargs, id=req_id)))
+        self._writer.write(
+            encode_request(RpcRequest(verb=verb, kwargs=kwargs, id=req_id))
+        )
         await self._writer.drain()
         while True:
             line = await self._reader.readline()

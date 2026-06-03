@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterator, Optional
 
-
 SCHEMA_VERSION = 1
 SIDECAR_FILENAME = "apptainer-engine.json"
 
@@ -75,20 +74,30 @@ class ApptainerContainerRecord:
             command=list(data.get("command") or []),
             name=(str(data["name"]) if data.get("name") is not None else None),
             started_at=float(data["started_at"]),
-            log_file=(str(data["log_file"]) if data.get("log_file") is not None else None),
-            exit_code=(int(data["exit_code"]) if data.get("exit_code") is not None else None),
+            log_file=(
+                str(data["log_file"]) if data.get("log_file") is not None else None
+            ),
+            exit_code=(
+                int(data["exit_code"]) if data.get("exit_code") is not None else None
+            ),
             oom_killed=bool(data.get("oom_killed", False)),
             finished_at=(
-                float(data["finished_at"]) if data.get("finished_at") is not None else None
+                float(data["finished_at"])
+                if data.get("finished_at") is not None
+                else None
             ),
             removed=bool(data.get("removed", False)),
-            sif_digest=(str(data["sif_digest"]) if data.get("sif_digest") is not None else None),
+            sif_digest=(
+                str(data["sif_digest"]) if data.get("sif_digest") is not None else None
+            ),
             source_oci_digest=(
                 str(data["source_oci_digest"])
                 if data.get("source_oci_digest") is not None
                 else None
             ),
-            mem_limit=(str(data["mem_limit"]) if data.get("mem_limit") is not None else None),
+            mem_limit=(
+                str(data["mem_limit"]) if data.get("mem_limit") is not None else None
+            ),
         )
 
 
@@ -119,9 +128,7 @@ class ApptainerSidecar:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "schema": SCHEMA_VERSION,
-            "containers": {
-                cid: rec.to_dict() for cid, rec in self.containers.items()
-            },
+            "containers": {cid: rec.to_dict() for cid, rec in self.containers.items()},
         }
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

@@ -16,28 +16,11 @@ checking ownership tokens); it does not itself perform user-visible
 deletions.
 """
 
+from .apply import GcResult, apply_plan, write_dry_run_report
+from .candidates import CandidateKind, GcCandidate, enumerate_candidates
 from .errors import GcError, GcGateError, NotOwnedError
-from .candidates import (
-    GcCandidate,
-    CandidateKind,
-    enumerate_candidates,
-)
-from .plan import (
-    GcPlan,
-    PlanReason,
-    RetentionPolicy,
-    build_plan,
-)
-from .apply import (
-    GcResult,
-    apply_plan,
-    write_dry_run_report,
-)
-from .tier1 import (
-    TIER1_PATHS,
-    Tier1Result,
-    sweep_tier1,
-)
+from .plan import GcPlan, PlanReason, RetentionPolicy, build_plan
+from .tier1 import TIER1_PATHS, Tier1Result, sweep_tier1
 
 __all__ = [
     "CandidateKind",

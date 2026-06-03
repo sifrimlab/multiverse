@@ -55,10 +55,14 @@ def classify_image_ref(image: str) -> ApptainerImageRef:
     if not s:
         raise ValueError("image reference must be a non-empty string")
     lowered = s.lower()
-    if lowered.startswith(("docker://", "oras://", "library://", "shub://", "http://", "https://")):
+    if lowered.startswith(
+        ("docker://", "oras://", "library://", "shub://", "http://", "https://")
+    ):
         return ApptainerImageRef(raw=s, kind=ApptainerImageKind.OCI_REGISTRY, locator=s)
     if lowered.startswith("docker-daemon://"):
-        return ApptainerImageRef(raw=s, kind=ApptainerImageKind.DOCKER_DAEMON, locator=s)
+        return ApptainerImageRef(
+            raw=s, kind=ApptainerImageKind.DOCKER_DAEMON, locator=s
+        )
     # Local file paths win when the file exists.
     candidate = Path(s).expanduser()
     if candidate.suffix.lower() == ".sif" or candidate.exists():

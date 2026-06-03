@@ -1,4 +1,5 @@
 """Cobolt container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+
 import os
 import random
 from typing import Union
@@ -8,21 +9,11 @@ import scipy.sparse as sp
 import torch
 from cobolt.model import Cobolt
 from cobolt.utils import MultiomicDataset, SingleData
-
-from mvr_worker import (
-    OUTPUT_DIR,
-    build_model_config,
-    get_logger,
-    load_input_mudata,
-    load_job_spec,
-    replay_history,
-    setup_container_logging,
-    series_to_float_list,
-    ModelFactory,
-    get_device,
-    anndata_concatenate,
-    preprocess_mudata,
-)
+from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
+                        build_model_config, get_device, get_logger,
+                        load_input_mudata, load_job_spec, preprocess_mudata,
+                        replay_history, resolve_preprocess_params,
+                        series_to_float_list, setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -115,7 +106,11 @@ class CoboltModel(ModelFactory):
         logger.info(f"Cobolt model initiated with {self.latent_dimensions} dimension.")
 
         self.dataset = anndata_concatenate(
-            adata_list=self.dataset["data"], selected_modalities=self.modalities, obs=self.dataset["obs"], cell_type_key=cell_type_key, batch_key=batch_key
+            adata_list=self.dataset["data"],
+            selected_modalities=self.modalities,
+            obs=self.dataset["obs"],
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
     def train(self):
@@ -174,28 +169,33 @@ def main() -> None:
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("cobolt", job_spec, OUTPUT_DIR)
-   
+
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     mudata_obj = load_input_mudata()
-    # TODO: make preprocessing not hardcoded but GUI based
     # TODO: make cell type and batch key not hardcoded
     modalities = list(mudata_obj.mod.keys())
-    config["preprocess_params"] = {
-        "n_top_genes": 1000,
-        "scale": {modality: False for modality in modalities},
-        "normalization_target_sum": None,
-        "log_normalization": False,
-    }
+    # Preprocessing is resolved from the job spec (run manifest / GUI),
+    # falling back to these built-in defaults when unspecified (issue #22).
+    config["preprocess_params"] = resolve_preprocess_params(
+        job_spec,
+        modalities,
+        {
+            "n_top_genes": 1000,
+            "scale": {modality: False for modality in modalities},
+            "normalization_target_sum": None,
+            "log_normalization": False,
+        },
+    )
     mudata_obj = preprocess_mudata(
         mudata_obj,
         config["preprocess_params"],
         cell_type_key="cell_type",
         batch_key="batch",
     )
-    
+
     dataset_name = job_spec.get("dataset_slug", "dataset")
     datasets = {
         dataset_name: {
@@ -223,5 +223,7 @@ def main() -> None:
     except Exception as e:
         logger.error(f"An error occurred during Cobolt model run: {e}")
         raise
+
+
 if __name__ == "__main__":
     main()

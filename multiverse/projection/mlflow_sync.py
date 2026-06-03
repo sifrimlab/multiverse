@@ -18,15 +18,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from ..artifact import (
-    ArtifactManifest,
-    ChecksumMismatchError,
-    ManifestCorruptError,
-    ManifestMissingError,
-    read_manifest,
-)
+from ..artifact import (ArtifactManifest, ChecksumMismatchError,
+                        ManifestCorruptError, ManifestMissingError,
+                        read_manifest)
 from .base import MLflowTarget, SyncOutcome, SyncResult
-
 
 DEFAULT_PROJECTION_PLUGIN = "mlflow"
 _TERMINAL_STATUS_FROM_PRIMARY = {
@@ -136,9 +131,7 @@ def _resolve_artifact_path(bundle: Path, artifact_name: str) -> Optional[Path]:
     return None
 
 
-def _maybe_load_metrics(
-    bundle: Path, manifest: ArtifactManifest
-) -> Dict[str, float]:
+def _maybe_load_metrics(bundle: Path, manifest: ArtifactManifest) -> Dict[str, float]:
     """Parse ``metrics.json`` if it is one of the declared artifacts.
 
     Looks in both the export-bundle ``outputs/`` subdir and the bundle
@@ -202,9 +195,7 @@ def _should_skip_artifact(name: str) -> bool:
     return False
 
 
-def _log_bundle_artifacts(
-    target: MLflowTarget, *, run_id: str, bundle: Path
-) -> int:
+def _log_bundle_artifacts(target: MLflowTarget, *, run_id: str, bundle: Path) -> int:
     """Log every declared artifact plus the manifest itself.
 
     Supports both bundle layouts: the export-bundle ``outputs/`` subdir

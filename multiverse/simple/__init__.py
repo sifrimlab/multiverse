@@ -9,23 +9,12 @@ consumes. It is the *user* of ``multiverse.artifact`` and the *producer* of
 the bundle layout that ``multiverse export-run`` will later mirror.
 """
 
-from .manifest import (
-    SimpleManifestError,
-    SimpleJob,
-    SimpleManifest,
-    parse_simple_manifest,
-)
-from .runner import (
-    JobOutcome,
-    SimpleModeRunner,
-    SimpleModeResult,
-    StrictModeViolation,
-)
-from .backends.base import (
-    ExecutionBackend,
-    ExecutionResult,
-)
+from .backends.base import ExecutionBackend, ExecutionResult
 from .backends.synthetic import SyntheticBackend
+from .manifest import (SimpleJob, SimpleManifest, SimpleManifestError,
+                       parse_simple_manifest)
+from .runner import (JobOutcome, SimpleModeResult, SimpleModeRunner,
+                     StrictModeViolation)
 
 __all__ = [
     "ExecutionBackend",

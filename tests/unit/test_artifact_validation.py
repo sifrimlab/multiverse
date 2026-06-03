@@ -19,31 +19,16 @@ import h5py
 import numpy as np
 import pytest
 
-from multiverse.artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    ArtifactManifest,
-    BootContext,
-    BundleInputs,
-    ExpectedArtifact,
-    ExpectedArtifactRole,
-    ImageIdentity,
-    IssueSeverity,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    RunAttemptManifest,
-    ValidationLevel,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    new_physical_attempt_id,
-    produced_at_now,
-    read_manifest,
-    validate_output_bundle,
-    write_bundle,
-    write_run_attempt_manifest,
-)
-
+from multiverse.artifact import (ARTIFACT_MANIFEST_FILENAME, ArtifactManifest,
+                                 BootContext, BundleInputs, ExpectedArtifact,
+                                 ExpectedArtifactRole, ImageIdentity,
+                                 IssueSeverity, ModelOutputContract,
+                                 ProducedAt, ProducedBy, RunAttemptManifest,
+                                 ValidationLevel, compute_logical_run_id,
+                                 compute_manifest_hash, compute_params_hash,
+                                 new_physical_attempt_id, produced_at_now,
+                                 read_manifest, validate_output_bundle,
+                                 write_bundle, write_run_attempt_manifest)
 
 # ---------------------------------------------------------------------------
 # Workspace fixture builders
@@ -58,8 +43,13 @@ _TINY_PNG = bytes.fromhex(
 )
 
 
-def _write_embedding(ws: Path, n_obs: int = 4, fill: str = "random",
-                     dtype: np.dtype = np.float32, top_key: str = "latent") -> Path:
+def _write_embedding(
+    ws: Path,
+    n_obs: int = 4,
+    fill: str = "random",
+    dtype: np.dtype = np.float32,
+    top_key: str = "latent",
+) -> Path:
     ws.mkdir(parents=True, exist_ok=True)
     path = ws / "embeddings.h5"
     if fill == "random":
@@ -76,16 +66,18 @@ def _write_embedding(ws: Path, n_obs: int = 4, fill: str = "random",
     return path
 
 
-def _write_metrics(ws: Path, *, content: dict | None = None,
-                   filename: str = "metrics.json") -> Path:
+def _write_metrics(
+    ws: Path, *, content: dict | None = None, filename: str = "metrics.json"
+) -> Path:
     path = ws / filename
     payload = content if content is not None else {"asw": 0.7, "ari": 0.6}
     path.write_text(json.dumps(payload), encoding="utf-8")
     return path
 
 
-def _write_umap(ws: Path, *, valid_header: bool = True,
-                size_bytes: int | None = None) -> Path:
+def _write_umap(
+    ws: Path, *, valid_header: bool = True, size_bytes: int | None = None
+) -> Path:
     path = ws / "umap.png"
     if valid_header:
         body = _TINY_PNG
@@ -343,7 +335,9 @@ def test_bundle_round_trip(tmp_path: Path, good_workspace: Path) -> None:
     }
 
 
-def test_bundle_input_index_records_checksums(tmp_path: Path, good_workspace: Path) -> None:
+def test_bundle_input_index_records_checksums(
+    tmp_path: Path, good_workspace: Path
+) -> None:
     boot = BootContext.new(mvd_version="0.1.0-test")
     contract = ModelOutputContract.default(expected_n_obs=4)
     report = validate_output_bundle(good_workspace, contract)

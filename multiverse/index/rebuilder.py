@@ -23,13 +23,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    ChecksumMismatchError,
-    ManifestCorruptError,
-    ManifestMissingError,
-    read_manifest,
-)
+from ..artifact import (ARTIFACT_MANIFEST_FILENAME, ChecksumMismatchError,
+                        ManifestCorruptError, ManifestMissingError,
+                        read_manifest)
 from ..docker_supervisor.client import ContainerEngine, ContainerState
 from ..docker_supervisor.labels import LABEL_RUN_ID, label_query
 from ..journal import JournalKind, JournalLayout, JournalReader
@@ -200,23 +196,27 @@ class _AttemptFacts:
             self.user_id = record.user_id
 
         if record.kind is JournalKind.RESERVATION_GRANTED:
-            self.reservation_events.append({
-                "seq": record.seq,
-                "kind": "granted",
-                "wall_iso": record.wall_iso,
-                "ram_bytes": record.payload.get("ram_bytes"),
-                "gpu_index": record.payload.get("gpu_index"),
-                "release_reason": None,
-            })
+            self.reservation_events.append(
+                {
+                    "seq": record.seq,
+                    "kind": "granted",
+                    "wall_iso": record.wall_iso,
+                    "ram_bytes": record.payload.get("ram_bytes"),
+                    "gpu_index": record.payload.get("gpu_index"),
+                    "release_reason": None,
+                }
+            )
         elif record.kind is JournalKind.RESERVATION_RELEASED:
-            self.reservation_events.append({
-                "seq": record.seq,
-                "kind": "released",
-                "wall_iso": record.wall_iso,
-                "ram_bytes": None,
-                "gpu_index": None,
-                "release_reason": record.payload.get("reason"),
-            })
+            self.reservation_events.append(
+                {
+                    "seq": record.seq,
+                    "kind": "released",
+                    "wall_iso": record.wall_iso,
+                    "ram_bytes": None,
+                    "gpu_index": None,
+                    "release_reason": record.payload.get("reason"),
+                }
+            )
         elif record.kind is JournalKind.JOB_INTENT:
             self.manifest_path = record.payload.get("manifest_path")
             self.options = dict(record.payload.get("options") or {})

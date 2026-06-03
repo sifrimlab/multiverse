@@ -33,35 +33,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
-from ..logging_utils import resolve_log_level
-
-from ..artifact import (
-    ArtifactManifest,
-    BootContext,
-    ImageIdentity,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    ValidationLevel,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    produced_at_now,
-    verify_runtime_identity_matches_source,
-)
+from ..artifact import (ArtifactManifest, BootContext, ImageIdentity,
+                        ModelOutputContract, ProducedAt, ProducedBy,
+                        ValidationLevel, compute_logical_run_id,
+                        compute_manifest_hash, compute_params_hash,
+                        produced_at_now, runtime_identity_fingerprint,
+                        verify_runtime_identity_matches_source)
 from ..broker import ResourceBroker, ResourceRequest
 from ..journal import JournalKind, JournalWriter
-from ..promotion import (
-    PromotionOutcome,
-    PromotionSaga,
-    StoreLayout,
-)
-from ..slurm import (
-    SlurmEngine,
-    SlurmEngineError,
-    SlurmJobSpec,
-    SlurmJobState,
-)
+from ..logging_utils import resolve_log_level
+from ..promotion import PromotionOutcome, PromotionSaga, StoreLayout
+from ..slurm import SlurmEngine, SlurmEngineError, SlurmJobSpec, SlurmJobState
 from .runs import RunRecord
 from .state import PrimaryState
 
@@ -113,13 +95,7 @@ class MvdSlurmExecutor:
             return
 
         identity = _resolve_identity_from_options(spec)
-        logical_run_id = compute_logical_run_id(
-            manifest_hash=spec.manifest_hash,
-            dataset_fingerprint=spec.dataset_fingerprint,
-            image_identity=identity,
-            params_hash=compute_params_hash(spec.params),
-            mv_contract_version=spec.contract_version,
-        )
+        logical_run_id = logical_run_id_for_spec(spec, identity)
         record.logical_run_id = logical_run_id
 
         admission = self.broker.admit(
@@ -655,6 +631,27 @@ def _resolve_identity_from_options(spec: _SlurmJobSpec) -> ImageIdentity:
     if spec.image_digest:
         return ImageIdentity.registry_digest(spec.image_digest)
     return ImageIdentity.unverified_local(str(spec.image_sif))
+
+
+def logical_run_id_for_spec(spec: _SlurmJobSpec, identity: ImageIdentity) -> str:
+    """Canonical logical-run-ID for a Slurm job spec (STRATEGY: one identity).
+
+    Mirrors the docker executor: seed, preprocessing, and model version are
+    folded into the identity via ``runtime_fingerprint`` so the resume planner
+    matches a planned job against the attempt that completed it.
+    """
+    return compute_logical_run_id(
+        manifest_hash=spec.manifest_hash,
+        dataset_fingerprint=spec.dataset_fingerprint,
+        image_identity=identity,
+        params_hash=compute_params_hash(spec.params),
+        mv_contract_version=spec.contract_version,
+        runtime_fingerprint=runtime_identity_fingerprint(
+            seed=spec.seed,
+            preprocessing=getattr(spec, "preprocessing", None),
+            model_version=spec.model_version,
+        ),
+    )
 
 
 def _failure_reason(info) -> str:

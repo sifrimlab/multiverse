@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-
 ARTIFACTS_SUBDIR = "artifacts"
 WORKSPACES_SUBDIR = "workspaces"
 QUARANTINE_SUBDIR = "quarantine"

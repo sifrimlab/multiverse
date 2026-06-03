@@ -24,17 +24,11 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.registration import (
-    PathEscapeError,
-    PrivilegedRegistrationError,
-    TrustLevel,
-    audit_docker_flags,
-    classify_trust,
-    safe_under_root,
-    validate_model_manifest,
-    validate_paths_in_mapping,
-)
-
+from multiverse.registration import (PathEscapeError,
+                                     PrivilegedRegistrationError, TrustLevel,
+                                     audit_docker_flags, classify_trust,
+                                     safe_under_root, validate_model_manifest,
+                                     validate_paths_in_mapping)
 
 # ---------------------------------------------------------------------------
 # 1-2. Path escape detection
@@ -126,9 +120,7 @@ def test_privilege_audit_flags_sys_admin_cap() -> None:
 
 
 def test_privilege_audit_flags_unauthorised_volume() -> None:
-    audit = audit_docker_flags(
-        {"docker": {"volumes": ["/etc:/etc:ro"]}}
-    )
+    audit = audit_docker_flags({"docker": {"volumes": ["/etc:/etc:ro"]}})
     assert audit.elevated is True
 
 
@@ -166,9 +158,7 @@ def test_validate_model_manifest_accepts_with_allow_elevated(tmp_path: Path) -> 
     store.mkdir()
     manifest_path = store / "model.yaml"
     manifest_path.write_text(
-        "name: special\n"
-        "docker:\n"
-        "  privileged: true\n",
+        "name: special\n" "docker:\n" "  privileged: true\n",
         encoding="utf-8",
     )
     report = validate_model_manifest(

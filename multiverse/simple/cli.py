@@ -146,7 +146,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"manifest error: {exc}", file=sys.stderr)
         return 2
 
-    validators = ValidationLevel(args.validators) if args.validators else ValidationLevel.BASIC
+    validators = (
+        ValidationLevel(args.validators) if args.validators else ValidationLevel.BASIC
+    )
 
     backend = _build_backend(args.no_image_pull)
 

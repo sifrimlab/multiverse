@@ -98,7 +98,9 @@ def build_plan(
     """
     plan = GcPlan()
     for candidate in candidates:
-        plan.entries.append(_decide(candidate, policy, require_export, apply_to_promoted))
+        plan.entries.append(
+            _decide(candidate, policy, require_export, apply_to_promoted)
+        )
     return plan
 
 

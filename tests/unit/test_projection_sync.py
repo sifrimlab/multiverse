@@ -23,32 +23,18 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from multiverse.artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    BundleInputs,
-    BootContext,
-    ImageIdentity,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    ValidationLevel,
-    ArtifactManifest,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    new_physical_attempt_id,
-    produced_at_now,
-    validate_output_bundle,
-    write_bundle,
-)
-from multiverse.mvd import Kernel, KernelConfig, PrimaryState, SyntheticRunExecutor
-from multiverse.projection import (
-    DEFAULT_PROJECTION_PLUGIN,
-    MLflowSyncPlugin,
-    SyncOutcome,
-)
+from multiverse.artifact import (ARTIFACT_MANIFEST_FILENAME, ArtifactManifest,
+                                 BootContext, BundleInputs, ImageIdentity,
+                                 ModelOutputContract, ProducedAt, ProducedBy,
+                                 ValidationLevel, compute_logical_run_id,
+                                 compute_manifest_hash, compute_params_hash,
+                                 new_physical_attempt_id, produced_at_now,
+                                 validate_output_bundle, write_bundle)
+from multiverse.mvd import (Kernel, KernelConfig, PrimaryState,
+                            SyntheticRunExecutor)
+from multiverse.projection import (DEFAULT_PROJECTION_PLUGIN, MLflowSyncPlugin,
+                                   SyncOutcome)
 from multiverse.projection.base import InMemoryMLflowTarget
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

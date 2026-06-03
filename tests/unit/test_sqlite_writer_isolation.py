@@ -30,11 +30,11 @@ _MULTIVERSE_ROOT = Path(__file__).parent.parent.parent / "multiverse"
 
 # Modules allowed to contain raw SQL mutations.
 _ALLOWED_WRITER_PATTERNS = {
-    "index",            # multiverse/index/ package
-    "index_projection", # multiverse/index_projection.py
-    "asset_registry",   # multiverse/asset_registry.py
-    "registry_db",      # multiverse/registry_db.py (legacy shim)
-    "models_ingest",    # multiverse/models_ingest.py — model registration (user asset)
+    "index",  # multiverse/index/ package
+    "index_projection",  # multiverse/index_projection.py
+    "asset_registry",  # multiverse/asset_registry.py
+    "registry_db",  # multiverse/registry_db.py (legacy shim)
+    "models_ingest",  # multiverse/models_ingest.py — model registration (user asset)
 }
 
 # SQL mutation keywords that must not appear in disallowed files.

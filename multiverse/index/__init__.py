@@ -8,18 +8,10 @@ query for the GUI, fully rebuildable from the other two surfaces.
 ``multiverse doctor`` and the GUI can surface partial-success states.
 """
 
-from .rebuilder import (
-    RebuildClassification,
-    RebuildOutcome,
-    RebuildResult,
-    rebuild_index,
-)
-from .sqlite_index import (
-    SCHEMA_VERSION,
-    INDEX_FILENAME,
-    SqliteIndex,
-    open_index,
-)
+from .rebuilder import (RebuildClassification, RebuildOutcome, RebuildResult,
+                        rebuild_index)
+from .sqlite_index import (INDEX_FILENAME, SCHEMA_VERSION, SqliteIndex,
+                           open_index)
 
 __all__ = [
     "INDEX_FILENAME",

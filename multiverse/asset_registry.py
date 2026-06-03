@@ -36,7 +36,9 @@ def _asset_registry_path(state_root: Optional[Path] = None) -> Path:
     return root / ASSET_REGISTRY_FILENAME
 
 
-def get_asset_registry_connection(state_root: Optional[Path] = None) -> sqlite3.Connection:
+def get_asset_registry_connection(
+    state_root: Optional[Path] = None,
+) -> sqlite3.Connection:
     """Return a WAL-mode connection to the asset registry DB."""
     db_path = _asset_registry_path(state_root)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +59,8 @@ def init_asset_registry(state_root: Optional[Path] = None) -> None:
     conn = get_asset_registry_connection(state_root)
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS datasets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             slug TEXT,
@@ -70,7 +73,8 @@ def init_asset_registry(state_root: Optional[Path] = None) -> None:
             manifest_hash TEXT,
             status TEXT NOT NULL
         )
-    """)
+    """
+    )
     _ensure_dataset_columns(cursor)
     cursor.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_datasets_slug_unique ON datasets(slug)"
@@ -243,7 +247,9 @@ def insert_dataset(
     return int(dataset_id)
 
 
-def get_dataset_by_slug(slug: str, *, state_root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+def get_dataset_by_slug(
+    slug: str, *, state_root: Optional[Path] = None
+) -> Optional[Dict[str, Any]]:
     conn = get_asset_registry_connection(state_root)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -383,9 +389,7 @@ def mark_model_inactive(
             (slug, version),
         )
     else:
-        cursor.execute(
-            "UPDATE models SET status = 'INACTIVE' WHERE slug = ?", (slug,)
-        )
+        cursor.execute("UPDATE models SET status = 'INACTIVE' WHERE slug = ?", (slug,))
     changed = cursor.rowcount > 0
     conn.commit()
     conn.close()
@@ -442,7 +446,9 @@ def migrate_from_legacy_db(
         dst.close()
         src.close()
         if "datasets" in tables:
-            copied["datasets"] = src.execute("SELECT COUNT(*) FROM datasets").fetchone()[0]
+            copied["datasets"] = src.execute(
+                "SELECT COUNT(*) FROM datasets"
+            ).fetchone()[0]
         if "models" in tables:
             copied["models"] = src.execute("SELECT COUNT(*) FROM models").fetchone()[0]
         return copied

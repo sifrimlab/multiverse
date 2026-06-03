@@ -18,23 +18,15 @@ Run execution is delegated to a pluggable ``RunExecutor`` so the kernel itself
 contains no Docker, scvi-tools, or model-specific code.
 """
 
-from .api import KernelAPI, KERNEL_VERBS
+from .api import KERNEL_VERBS, KernelAPI
 from .docker_executor import MvdDockerExecutor, build_executor_options
-from .events import KernelEvent, EventKind
-from .slurm_executor import MvdSlurmExecutor, build_slurm_executor_options
-from .executor import (
-    NullRunExecutor,
-    RunExecutor,
-    SyntheticRunExecutor,
-)
+from .events import EventKind, KernelEvent
+from .executor import NullRunExecutor, RunExecutor, SyntheticRunExecutor
 from .kernel import Kernel, KernelConfig
 from .runs import RunRecord, RunRegistry
-from .state import (
-    PrimaryState,
-    PROJECTION_STATUSES,
-    STATE_TRANSITIONS,
-    assert_valid_transition,
-)
+from .slurm_executor import MvdSlurmExecutor, build_slurm_executor_options
+from .state import (PROJECTION_STATUSES, STATE_TRANSITIONS, PrimaryState,
+                    assert_valid_transition)
 
 __all__ = [
     "EventKind",

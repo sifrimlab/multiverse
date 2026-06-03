@@ -36,26 +36,14 @@ import numpy as np
 import pytest
 
 from multiverse.artifact import BootContext
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    PressureThresholds,
-    ResourceBroker,
-)
-from multiverse.docker_supervisor import (
-    DockerSupervisor,
-    InMemoryContainerEngine,
-)
+from multiverse.broker import (HostMetrics, InMemoryHostObserver,
+                               PressureThresholds, ResourceBroker)
+from multiverse.docker_supervisor import (DockerSupervisor,
+                                          InMemoryContainerEngine)
 from multiverse.journal import JournalLayout, JournalWriter
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    PrimaryState,
-    build_executor_options,
-)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            PrimaryState, build_executor_options)
 from multiverse.promotion import StoreLayout
-
 
 # ---------------------------------------------------------------------------
 # helpers / fixtures
@@ -107,10 +95,11 @@ def _good_producer(n_obs: int):
         with h5py.File(workspace / "embeddings.h5", "w") as f:
             f.create_dataset(
                 "latent",
-                data=np.random.default_rng(0).standard_normal((n_obs, 4)).astype(
-                    np.float32
-                ),
+                data=np.random.default_rng(0)
+                .standard_normal((n_obs, 4))
+                .astype(np.float32),
             )
+
     return _producer
 
 
@@ -121,6 +110,7 @@ def _bad_n_obs_producer(actual_n_obs: int):
                 "latent",
                 data=np.zeros((actual_n_obs, 4), dtype=np.float32),
             )
+
     return _producer
 
 
@@ -290,7 +280,11 @@ def test_non_zero_exit_marks_failed(
                 return
 
     executor, _, _ = _executor(
-        state_root, store, engine=engine, broker=_broker_with_capacity(), producer=_producer
+        state_root,
+        store,
+        engine=engine,
+        broker=_broker_with_capacity(),
+        producer=_producer,
     )
     kernel = _kernel(state_root, executor)
 
@@ -321,7 +315,11 @@ def test_oom_kill_marks_failed_with_oom_reason(
                 return
 
     executor, _, _ = _executor(
-        state_root, store, engine=engine, broker=_broker_with_capacity(), producer=_producer
+        state_root,
+        store,
+        engine=engine,
+        broker=_broker_with_capacity(),
+        producer=_producer,
     )
     kernel = _kernel(state_root, executor)
 
@@ -442,9 +440,9 @@ def test_docker_executor_does_not_load_docker_sdk() -> None:
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, (
-        f"docker_executor leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"docker_executor leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
 
 
 # ---------------------------------------------------------------------------
@@ -468,7 +466,11 @@ def test_success_promotes_container_and_orchestrator_logs(
                 return
 
     executor, _, _ = _executor(
-        state_root, store, engine=engine, broker=_broker_with_capacity(), producer=_producer
+        state_root,
+        store,
+        engine=engine,
+        broker=_broker_with_capacity(),
+        producer=_producer,
     )
     kernel = _kernel(state_root, executor)
 
@@ -508,7 +510,11 @@ def test_failed_run_keeps_logs_in_workspace(
                 return
 
     executor, _, _ = _executor(
-        state_root, store, engine=engine, broker=_broker_with_capacity(), producer=_producer
+        state_root,
+        store,
+        engine=engine,
+        broker=_broker_with_capacity(),
+        producer=_producer,
     )
     kernel = _kernel(state_root, executor)
 

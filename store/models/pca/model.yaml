@@ -5,7 +5,7 @@ supported_omics:
   - rna
 runtime:
   image: multiverse-pca:1.0.0
-hyperparameters_schema: schemas/models/pca.hyperparameters.schema.json
+hyperparameters_schema: store/models/pca/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/pca/container/Dockerfile

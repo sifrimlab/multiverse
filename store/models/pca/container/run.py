@@ -1,25 +1,18 @@
 """PCA container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+
 import random
 from typing import Union
 
+import anndata as ad
 import numpy as np
 import scanpy as sc
-import anndata as ad
-
-
-from mvr_worker import (
-    OUTPUT_DIR,
-    anndata_concatenate,
-    build_model_config,
-    get_logger,
-    load_input_mudata,
-    load_job_spec,
-    setup_container_logging,
-    ModelFactory,
-    preprocess_mudata,
-)
+from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
+                        build_model_config, get_logger, load_input_mudata,
+                        load_job_spec, preprocess_mudata,
+                        resolve_preprocess_params, setup_container_logging)
 
 logger = get_logger(__name__)
+
 
 class PCAModel(ModelFactory):
     """Principal Component Analysis (PCA) model wrapper.
@@ -54,19 +47,26 @@ class PCAModel(ModelFactory):
         """
         logger.info("Initializing PCA Model")
 
-        super().__init__(dataset, dataset_name, config_path=config_path,
-                         model_name="pca", is_gridsearch=is_gridsearch)
+        super().__init__(
+            dataset,
+            dataset_name,
+            config_path=config_path,
+            model_name="pca",
+            is_gridsearch=is_gridsearch,
+        )
 
         # Check if model-specific params are present
         if self.model_name not in self.model_params:
-            raise ValueError(f"'{self.model_name}' configuration not found in the model parameters.")
+            raise ValueError(
+                f"'{self.model_name}' configuration not found in the model parameters."
+            )
 
         pca_params = self.model_params.get(self.model_name)
 
         # PCA parameters from config file
         self.n_components = pca_params.get("n_components")
         self.device = pca_params.get("device")
-        self.gpu_mode = False # Cpu default mode
+        self.gpu_mode = False  # Cpu default mode
         self.umap_random_state = pca_params.get("umap_random_state")
         self.umap_color_type = pca_params.get("umap_color_type")
 
@@ -90,7 +90,6 @@ class PCAModel(ModelFactory):
 
         logger.info(f"Training PCA completed with {self.n_components} components")
         logger.info(f"Total variance explained: {sum(self.variance_ratio)}")
-
 
     def evaluate_model(self):
         """Evaluates the PCA model by calculating the total explained variance.
@@ -119,7 +118,7 @@ def main() -> None:
     logger.info("PCA container run script started.")
     job_spec = load_job_spec()
     config = build_model_config("pca", job_spec, OUTPUT_DIR)
-    
+
     seed = config.get("seed") or 42
     random.seed(seed)
     np.random.seed(seed)
@@ -130,13 +129,20 @@ def main() -> None:
 
         mudata_obj = load_input_mudata()
         modalities = list(mudata_obj.mod.keys())
-        #TODO: make preprocessing not hardcoded but GUI based
-        config["preprocess_params"] = {
-            "n_top_genes": 1000,
-            "scale": {mod: False for mod in modalities},  # Skip scaling to preserve count-based nature of the data
-            "normalization_target_sum": 1e4,
-            "log_normalization": True,
-        }
+        # Preprocessing is resolved from the job spec (run manifest / GUI),
+        # falling back to these built-in defaults when unspecified (issue #22).
+        config["preprocess_params"] = resolve_preprocess_params(
+            job_spec,
+            modalities,
+            {
+                "n_top_genes": 1000,
+                "scale": {
+                    mod: False for mod in modalities
+                },  # Skip scaling to preserve count-based nature of the data
+                "normalization_target_sum": 1e4,
+                "log_normalization": True,
+            },
+        )
         mudata_obj = preprocess_mudata(
             mudata_obj,
             config["preprocess_params"],
@@ -145,10 +151,10 @@ def main() -> None:
         )
         dataset_name = job_spec.get("dataset_slug", "dataset")
         data_concat = anndata_concatenate(
-       mdata=mudata_obj,
-         selected_modalities=modalities,
-       cell_type_key="cell_type",
-       batch_key="batch",
+            mdata=mudata_obj,
+            selected_modalities=modalities,
+            cell_type_key="cell_type",
+            batch_key="batch",
         )
     except Exception as e:
         logger.error(f"Failed to load and concatenate input data: {e}")
@@ -170,6 +176,7 @@ def main() -> None:
     except Exception as e:
         logger.error(f"An error occurred during PCA model run: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()

@@ -4,15 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from multiverse.apptainer import (
-    InMemoryApptainerEngine,
-    classify_image_ref,
-    compute_sif_digest,
-)
+from multiverse.apptainer import (InMemoryApptainerEngine, classify_image_ref,
+                                  compute_sif_digest)
 from multiverse.apptainer.images import ApptainerImageKind
 from multiverse.docker_supervisor.client import ContainerEngine, ContainerState
 from multiverse.docker_supervisor.errors import NoSuchContainerError
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -133,6 +129,10 @@ def test_oom_simulation():
 def test_sif_digest_deterministic_across_engines():
     a = InMemoryApptainerEngine()
     b = InMemoryApptainerEngine()
-    ia = a.launch(image="docker://foo", labels={"multiverse.image_digest": "sha256:xyz"})
-    ib = b.launch(image="docker://foo", labels={"multiverse.image_digest": "sha256:xyz"})
+    ia = a.launch(
+        image="docker://foo", labels={"multiverse.image_digest": "sha256:xyz"}
+    )
+    ib = b.launch(
+        image="docker://foo", labels={"multiverse.image_digest": "sha256:xyz"}
+    )
     assert a.sif_digest_for(ia.container_id) == b.sif_digest_for(ib.container_id)

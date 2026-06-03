@@ -6,7 +6,6 @@ import pytest
 
 from multiverse.slurm import SlurmJobState, from_sacct_state
 
-
 pytestmark = pytest.mark.control_plane
 
 

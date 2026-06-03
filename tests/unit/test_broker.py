@@ -14,16 +14,10 @@ Coverage:
 
 from __future__ import annotations
 
-from multiverse.broker import (
-    AdmissionOutcome,
-    HostMetrics,
-    InMemoryHostObserver,
-    PressureMode,
-    PressureThresholds,
-    ResourceBroker,
-    ResourceRequest,
-)
-
+from multiverse.broker import (AdmissionOutcome, HostMetrics,
+                               InMemoryHostObserver, PressureMode,
+                               PressureThresholds, ResourceBroker,
+                               ResourceRequest)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -154,9 +148,7 @@ def test_oom_exit_emits_oom_event() -> None:
 def test_non_oom_exit_releases_without_event() -> None:
     broker = _broker(_metrics())
     broker.ledger.reserve("ok", ResourceRequest(ram_bytes=1024))
-    ev = broker.classify_exit(
-        physical_attempt_id="ok", exit_code=0, oom_killed=False
-    )
+    ev = broker.classify_exit(physical_attempt_id="ok", exit_code=0, oom_killed=False)
     assert ev is None
     assert "ok" not in broker.ledger.by_attempt
 
@@ -223,7 +215,9 @@ def test_vram_request_refused_when_insufficient() -> None:
 
 
 def test_observe_records_transition_on_mode_change() -> None:
-    observer = InMemoryHostObserver(_metrics(ram_free=8 * 1024**3, ram_total=16 * 1024**3))
+    observer = InMemoryHostObserver(
+        _metrics(ram_free=8 * 1024**3, ram_total=16 * 1024**3)
+    )
     broker = ResourceBroker(observer=observer)
 
     a = broker.observe()

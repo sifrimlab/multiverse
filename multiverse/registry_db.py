@@ -25,11 +25,9 @@ import os
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from .state_paths import (
-    PACKAGE_DIR as _PACKAGE_DIR,
-    find_legacy_db as _find_legacy_db,
-    resolve_state_root as _resolve_state_root,
-)
+from .state_paths import PACKAGE_DIR as _PACKAGE_DIR
+from .state_paths import find_legacy_db as _find_legacy_db
+from .state_paths import resolve_state_root as _resolve_state_root
 
 # ``BASE_DIR`` historically meant "the package install directory" *and*
 # "the state directory" — that conflation was the M1 bug. Kept so
@@ -43,6 +41,12 @@ _DEFAULT_STATE_ROOT = str(_resolve_state_root())
 DB_NAME = os.path.join(_DEFAULT_STATE_ROOT, "mvexp_state.db")
 STORE_DIR = os.path.join(_DEFAULT_STATE_ROOT, "store")
 DATASETS_DIR = os.path.join(STORE_DIR, "datasets")
+# Legacy/backwards-compatible scaffolding (issue #23): the current dataset
+# contract keeps each dataset's files under its own ``store/datasets/<slug>/``
+# folder, and model runs consume the processed ``.h5mu`` only. This global
+# ``datasets/raw`` directory is no longer an active run input; it is still
+# created by ``init_db`` for compatibility with older state layouts and tests
+# that monkeypatch it. Do not add new code that depends on it.
 RAW_DATASETS_DIR = os.path.join(DATASETS_DIR, "raw")
 MODELS_DIR = os.path.join(STORE_DIR, "models")
 ARTIFACTS_DIR = os.path.join(STORE_DIR, "artifacts")
@@ -108,7 +112,8 @@ def init_db() -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS datasets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             slug TEXT,
@@ -121,7 +126,8 @@ def init_db() -> None:
             manifest_hash TEXT,
             status TEXT NOT NULL
         )
-    """)
+    """
+    )
     _ensure_dataset_columns(cursor)
     cursor.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_datasets_slug_unique ON datasets(slug)"
@@ -130,7 +136,8 @@ def init_db() -> None:
 
     # Legacy runs/run_metrics stubs — kept so callers that rely on
     # init_db() existing and creating these tables don't crash.
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS runs (
             run_id INTEGER PRIMARY KEY AUTOINCREMENT,
             dataset_id INTEGER,
@@ -144,8 +151,10 @@ def init_db() -> None:
             manifest_run_id TEXT,
             params_hash TEXT
         )
-    """)
-    cursor.execute("""
+    """
+    )
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS run_metrics (
             run_id INTEGER NOT NULL,
             metric_name TEXT NOT NULL,
@@ -153,7 +162,8 @@ def init_db() -> None:
             metric_kind TEXT,
             PRIMARY KEY (run_id, metric_name)
         )
-    """)
+    """
+    )
 
     conn.commit()
     conn.close()
@@ -233,9 +243,16 @@ def _migrate_models_table(conn: sqlite3.Connection) -> None:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(name), "0.0.0", str(name), image, None,
+                    str(name),
+                    "0.0.0",
+                    str(name),
+                    image,
+                    None,
                     omics if isinstance(omics, str) else json.dumps(omics),
-                    f"legacy://{name}", "legacy", None, "LEGACY",
+                    f"legacy://{name}",
+                    "legacy",
+                    None,
+                    "LEGACY",
                 ),
             )
         cursor.execute("DROP TABLE models_legacy")
@@ -285,8 +302,15 @@ def upsert_dataset_from_manifest(
     cursor.execute("SELECT id FROM datasets WHERE slug = ? LIMIT 1", (slug,))
     row = cursor.fetchone()
     payload = (
-        name, path, json.dumps(omics_available), batch_key, cell_type_key,
-        manifest_path, manifest_hash, status, slug,
+        name,
+        path,
+        json.dumps(omics_available),
+        batch_key,
+        cell_type_key,
+        manifest_path,
+        manifest_hash,
+        status,
+        slug,
     )
     if row:
         dataset_id = int(row[0])
@@ -376,9 +400,40 @@ def mark_model_inactive(slug: str, version: Optional[str] = None) -> bool:
             (slug, version),
         )
     else:
-        cursor.execute(
-            "UPDATE models SET status = 'INACTIVE' WHERE slug = ?", (slug,)
-        )
+        cursor.execute("UPDATE models SET status = 'INACTIVE' WHERE slug = ?", (slug,))
+    changed = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    # Keep deletion symmetric across both registries (issue #29): the legacy
+    # DB and the canonical asset_registry must not diverge, otherwise a later
+    # re-registration that only reconciles one DB reports success while the
+    # model stays hidden. Best-effort: a missing/empty asset registry is fine.
+    try:
+        from .asset_registry import mark_model_inactive as _ar_mark_inactive
+
+        if _ar_mark_inactive(slug, version):
+            changed = True
+    except Exception:
+        pass
+
+    return changed
+
+
+def delete_run_by_id(run_id: int) -> bool:
+    """Permanently remove a run record (and its metrics) from the legacy DB.
+
+    Kept for old installations and legacy bookkeeping. Note that
+    ``generate_execution_plan_from_manifest`` no longer consults the legacy
+    ``runs`` table at all (STRATEGY: MVD Manifest Resume and Dedupe), so a row
+    here never suppresses a manifest job; mvd-backed resume keys on durable
+    ``ARTIFACT_SUCCESS`` state instead. Artifact files on disk are NOT removed —
+    only the registry row is deleted.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM run_metrics WHERE run_id = ?", (run_id,))
+    cursor.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
     changed = cursor.rowcount > 0
     conn.commit()
     conn.close()
@@ -390,6 +445,7 @@ __all__ = [
     "DB_NAME",
     "LegacyStateDirError",
     "STORE_DIR",
+    "delete_run_by_id",
     "get_all_datasets",
     "get_all_models",
     "get_dataset_by_slug",

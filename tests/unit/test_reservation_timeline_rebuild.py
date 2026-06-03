@@ -19,25 +19,18 @@ import numpy as np
 import pytest
 
 from multiverse.artifact import BootContext
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    ResourceBroker,
-)
-from multiverse.docker_supervisor import DockerSupervisor, InMemoryContainerEngine
+from multiverse.broker import HostMetrics, InMemoryHostObserver, ResourceBroker
+from multiverse.docker_supervisor import (DockerSupervisor,
+                                          InMemoryContainerEngine)
 from multiverse.index.rebuilder import rebuild_index
 from multiverse.index.sqlite_index import open_index
-from multiverse.index_projection import reservation_events_for, verify_projection_against_journal
-from multiverse.journal import JournalKind, JournalLayout, JournalReader, JournalWriter
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    PrimaryState,
-    build_executor_options,
-)
+from multiverse.index_projection import (reservation_events_for,
+                                         verify_projection_against_journal)
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            PrimaryState, build_executor_options)
 from multiverse.promotion import StoreLayout
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -55,16 +48,19 @@ def _producer_and_exit(engine: InMemoryContainerEngine):
             if not c.removed and c.state.value == "running":
                 engine.simulate_natural_exit(c.container_id, exit_code=0)
                 return
+
     return _p
 
 
 def _producer_fail(engine: InMemoryContainerEngine):
     """Producer that writes nothing and exits non-zero → FAILED state."""
+
     def _p(workspace: Path, _params: Any) -> None:
         for c in reversed(list(engine.containers.values())):
             if not c.removed and c.state.value == "running":
                 engine.simulate_natural_exit(c.container_id, exit_code=1)
                 return
+
     return _p
 
 
@@ -79,7 +75,9 @@ def _build_kernel(
     config = KernelConfig(state_root=state_root)
     layout = JournalLayout.at(state_root / "journal").ensure()
     journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
-    supervisor = DockerSupervisor(engine=engine, journal=journal, mvd_version="0.1.0-test")
+    supervisor = DockerSupervisor(
+        engine=engine, journal=journal, mvd_version="0.1.0-test"
+    )
     broker = ResourceBroker(
         observer=InMemoryHostObserver(
             HostMetrics(ram_free_bytes=8 * 1024**3, ram_total_bytes=16 * 1024**3)
@@ -98,7 +96,9 @@ def _build_kernel(
         max_poll_iterations=200,
         accept_degraded=False,
     )
-    kernel = Kernel(config, executor=executor, journal=journal, boot=boot, broker=broker)
+    kernel = Kernel(
+        config, executor=executor, journal=journal, boot=boot, broker=broker
+    )
     return kernel, journal
 
 
@@ -127,10 +127,14 @@ def test_grant_release_produces_two_rows(tmp_path: Path) -> None:
     dataset.write_bytes(b"placeholder")
     engine = InMemoryContainerEngine()
 
-    kernel, _ = _build_kernel(state_root, store, engine, producer=_producer_and_exit(engine))
+    kernel, _ = _build_kernel(
+        state_root, store, engine, producer=_producer_and_exit(engine)
+    )
 
     async def _run() -> str:
-        attempt = await kernel.submit_run(manifest_path="/m.yaml", options=_opts(dataset))
+        attempt = await kernel.submit_run(
+            manifest_path="/m.yaml", options=_opts(dataset)
+        )
         task = kernel._execution_tasks.get(attempt)  # type: ignore[attr-defined]
         if task:
             await task
@@ -205,7 +209,9 @@ def test_grant_without_release_produces_one_row_no_drift(tmp_path: Path) -> None
     # as a projection drift (the projection accurately mirrors the journal).
     report = verify_projection_against_journal(state_root)
     drift_ids = {d.physical_attempt_id for d in report.drifts}
-    assert attempt_id not in drift_ids, f"unexpected drift for {attempt_id}: {report.drifts}"
+    assert (
+        attempt_id not in drift_ids
+    ), f"unexpected drift for {attempt_id}: {report.drifts}"
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +298,15 @@ def test_full_rebuild_restores_timeline_for_three_attempts(tmp_path: Path) -> No
         rebuild_index(index=idx, state_root=state_root, store=store, truncate=True)
 
     # Verify via the facade.
-    success_events = reservation_events_for(state_root, physical_attempt_id=attempt_success)
-    failed_events = reservation_events_for(state_root, physical_attempt_id=attempt_failed)
-    crashed_events = reservation_events_for(state_root, physical_attempt_id=attempt_crashed)
+    success_events = reservation_events_for(
+        state_root, physical_attempt_id=attempt_success
+    )
+    failed_events = reservation_events_for(
+        state_root, physical_attempt_id=attempt_failed
+    )
+    crashed_events = reservation_events_for(
+        state_root, physical_attempt_id=attempt_crashed
+    )
 
     # Success and failure both got grant + release.
     assert len(success_events) == 2, success_events

@@ -18,7 +18,6 @@ from ..artifact.checksums import atomic_write_bytes
 from .errors import GcGateError, NotOwnedError
 from .plan import GcPlan, PlanEntry, PlanReason
 
-
 GC_REPORTS_SUBDIR = "gc_reports"
 
 
@@ -100,9 +99,7 @@ def write_dry_run_report(
         lines.append("_nothing_")
     else:
         for entry in plan.to_delete:
-            lines.append(
-                f"- `{entry.candidate.path}` ({entry.candidate.kind.value})"
-            )
+            lines.append(f"- `{entry.candidate.path}` ({entry.candidate.kind.value})")
     lines += ["", "## Kept"]
     if not plan.to_keep:
         lines.append("_nothing_")

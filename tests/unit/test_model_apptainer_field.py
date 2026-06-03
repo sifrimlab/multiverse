@@ -1,5 +1,7 @@
 """Tests for H1: ApptainerSpec in ModelManifest and asset_registry query surface."""
+
 from __future__ import annotations
+
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -7,22 +9,31 @@ from pathlib import Path
 import pytest
 import yaml
 
-from multiverse.models_ingest import ModelManifest, ApptainerSpec, load_model_manifest
-from multiverse.asset_registry import (
-    init_asset_registry,
-    get_asset_registry_connection,
-    get_model_sif_path,
-    get_model_gpu_flag,
-    set_model_sif_path,
-)
+from multiverse.asset_registry import (get_asset_registry_connection,
+                                       get_model_gpu_flag, get_model_sif_path,
+                                       init_asset_registry, set_model_sif_path)
+from multiverse.models_ingest import (ApptainerSpec, ModelManifest,
+                                      load_model_manifest)
 
 
-def _insert_model(conn, slug, version, sif_path=None, gpu_required=0, docker_image="img:1.0"):
+def _insert_model(
+    conn, slug, version, sif_path=None, gpu_required=0, docker_image="img:1.0"
+):
     conn.execute(
         """INSERT OR REPLACE INTO models
         (slug, version, name, docker_image, supported_omics, manifest_path, manifest_hash, status, sif_path, gpu_required)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)""",
-        (slug, version, slug, docker_image, '["any"]', f"/{slug}/model.yaml", "hash", sif_path, gpu_required),
+        (
+            slug,
+            version,
+            slug,
+            docker_image,
+            '["any"]',
+            f"/{slug}/model.yaml",
+            "hash",
+            sif_path,
+            gpu_required,
+        ),
     )
     conn.commit()
 
@@ -116,7 +127,9 @@ def test_set_model_sif_path():
         conn = get_asset_registry_connection(state_root)
         _insert_model(conn, "pca", "1.0.0", sif_path=None)
         conn.close()
-        updated = set_model_sif_path("pca", "1.0.0", "/hpc/pca-1.0.0.sif", state_root=state_root)
+        updated = set_model_sif_path(
+            "pca", "1.0.0", "/hpc/pca-1.0.0.sif", state_root=state_root
+        )
         assert updated is True
         conn2 = get_asset_registry_connection(state_root)
         assert get_model_sif_path(conn2, "pca", "1.0.0") == "/hpc/pca-1.0.0.sif"

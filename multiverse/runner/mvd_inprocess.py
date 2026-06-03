@@ -22,13 +22,8 @@ from ..index.sqlite_index import INDEX_FILENAME, open_index
 from ..journal import JournalKind, JournalLayout, JournalReader, JournalWriter
 from ..logging_utils import get_logger
 from ..mvd import Kernel, KernelConfig, MvdDockerExecutor, PrimaryState
-from .mvd_entrypoint import (
-    _build_engine,
-    _job_name,
-    _observer,
-    _options_for_job,
-    _store_for_output,
-)
+from .mvd_entrypoint import (_build_engine, _job_name, _observer,
+                             _options_for_job, _store_for_output)
 
 logger = get_logger(__name__)
 
@@ -60,14 +55,10 @@ class SubmittedRun:
 class InProcessMvdController:
     """Thread-safe synchronous facade around one in-process kernel."""
 
-    def __init__(
-        self, *, state_root: Path, artifact_root: Path | None = None
-    ) -> None:
+    def __init__(self, *, state_root: Path, artifact_root: Path | None = None) -> None:
         self.state_root = state_root.expanduser().resolve()
         self.artifact_root = (
-            artifact_root.expanduser().resolve()
-            if artifact_root is not None
-            else None
+            artifact_root.expanduser().resolve() if artifact_root is not None else None
         )
         if self.artifact_root is not None:
             self.artifact_root.mkdir(parents=True, exist_ok=True)
@@ -210,7 +201,9 @@ class InProcessMvdController:
             )
             env_extra: Dict[str, str] = {}
             if tracking_uri:
-                env_extra["MLFLOW_TRACKING_URI"] = _rewrite_tracking_uri_for_docker(tracking_uri)
+                env_extra["MLFLOW_TRACKING_URI"] = _rewrite_tracking_uri_for_docker(
+                    tracking_uri
+                )
             if experiment_name:
                 env_extra["MLFLOW_EXPERIMENT_NAME"] = experiment_name
             if parent_run_id:
@@ -229,7 +222,9 @@ class InProcessMvdController:
                 SubmittedRun(
                     attempt_id=attempt_id,
                     job_name=_job_name(job),
-                    dataset=str(job.get("dataset_name") or job.get("dataset_slug") or "?"),
+                    dataset=str(
+                        job.get("dataset_name") or job.get("dataset_slug") or "?"
+                    ),
                     model=str(job.get("model_slug") or job.get("model_name") or "?"),
                 )
             )
@@ -440,15 +435,11 @@ def snapshots_from_journal(
             plugin = record.payload.get("plugin")
             projection_state = record.payload.get("status")
             if plugin and projection_state:
-                snap.setdefault("projections", {})[str(plugin)] = str(
-                    projection_state
-                )
+                snap.setdefault("projections", {})[str(plugin)] = str(projection_state)
     out = list(records.values())
     if state is not None:
         out = [snap for snap in out if snap.get("primary_state") == state]
-    out.sort(
-        key=lambda snap: submitted_order.get(str(snap["physical_attempt_id"]), 0)
-    )
+    out.sort(key=lambda snap: submitted_order.get(str(snap["physical_attempt_id"]), 0))
     return out
 
 
@@ -495,7 +486,9 @@ def _build_real_mlflow_target():
         logger.warning("mlflow SDK unavailable; skipping sync. (%s)", exc)
         return None
 
-    uri = _mlflow_tracking_uri() or "http://localhost:5000"
+    from multiverse.ports import default_mlflow_tracking_uri
+
+    uri = _mlflow_tracking_uri() or default_mlflow_tracking_uri()
 
     class _RealAdapter:
         name = "mlflow"
@@ -533,7 +526,9 @@ def _build_real_mlflow_target():
 
 def _mlflow_tracking_uri() -> Optional[str]:
     """Return the configured MLflow tracking URI, or None to skip MLflow."""
-    return os.environ.get("MLFLOW_TRACKING_URI") or "http://localhost:5000"
+    from multiverse.ports import default_mlflow_tracking_uri
+
+    return os.environ.get("MLFLOW_TRACKING_URI") or default_mlflow_tracking_uri()
 
 
 def _rewrite_tracking_uri_for_docker(uri: str) -> str:
@@ -615,10 +610,7 @@ def _experiment_name_from_manifest(manifest_text: str) -> Optional[str]:
     if not isinstance(data, dict):
         return None
     globals_block = data.get("globals") if isinstance(data.get("globals"), dict) else {}
-    name = (
-        globals_block.get("experiment_name")
-        or data.get("experiment_name")
-    )
+    name = globals_block.get("experiment_name") or data.get("experiment_name")
     return str(name) if name else None
 
 
@@ -637,6 +629,8 @@ def get_controller(
     with _CONTROLLERS_LOCK:
         controller = _CONTROLLERS.get(key)
         if controller is None:
-            controller = InProcessMvdController(state_root=root, artifact_root=artifacts)
+            controller = InProcessMvdController(
+                state_root=root, artifact_root=artifacts
+            )
             _CONTROLLERS[key] = controller
         return controller

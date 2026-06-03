@@ -32,7 +32,9 @@ def _now_iso() -> str:
     local tz cannot be resolved. The string is always offset-aware.
     """
     try:
-        return datetime.now(tz=datetime.now(timezone.utc).astimezone().tzinfo).isoformat()
+        return datetime.now(
+            tz=datetime.now(timezone.utc).astimezone().tzinfo
+        ).isoformat()
     except (ValueError, OSError):  # pragma: no cover — defensive
         return datetime.now(tz=timezone.utc).isoformat()
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import streamlit as st
 
-
 TAB_LABELS: dict[str, str] = {
     "registry": "Registry",
     "configure": "Configure",
@@ -51,7 +50,9 @@ def render_top_nav() -> str:
         label = TAB_LABELS[slug]
         button_type = "primary" if slug == current else "secondary"
         with col:
-            if st.button(label, key=f"top_nav_{slug}", type=button_type, width="stretch"):
+            if st.button(
+                label, key=f"top_nav_{slug}", type=button_type, width="stretch"
+            ):
                 if slug != current:
                     st.query_params["tab"] = slug
                     st.rerun()

@@ -19,32 +19,17 @@ import pytest
 
 from multiverse.apptainer import InMemoryApptainerEngine
 from multiverse.artifact import BootContext
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    ReservationLedger,
-    ResourceBroker,
-    ResourceRequest,
-    reconstruct_ledger_from_journal,
-)
-from multiverse.docker_supervisor import (
-    DockerSupervisor,
-    InMemoryContainerEngine,
-)
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalReader,
-    JournalWriter,
-)
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    build_executor_options,
-)
+from multiverse.broker import (HostMetrics, InMemoryHostObserver,
+                               ReservationLedger, ResourceBroker,
+                               ResourceRequest,
+                               reconstruct_ledger_from_journal)
+from multiverse.docker_supervisor import (DockerSupervisor,
+                                          InMemoryContainerEngine)
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            build_executor_options)
 from multiverse.promotion import StoreLayout
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -70,9 +55,7 @@ def _metrics(ram_free: int = 8 * 1024**3) -> HostMetrics:
 
 def test_admit_writes_reservation_granted(tmp_path: Path) -> None:
     journal = _writer(tmp_path)
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     request = ResourceRequest(ram_bytes=1024 * 1024 * 512)
     decision = broker.admit(physical_attempt_id="r1", request=request)
     assert decision.admitted
@@ -107,9 +90,7 @@ def test_failed_admission_does_not_write_grant(tmp_path: Path) -> None:
 
 def test_release_writes_reservation_released(tmp_path: Path) -> None:
     journal = _writer(tmp_path)
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     broker.admit(
         physical_attempt_id="r1",
         request=ResourceRequest(ram_bytes=1024),
@@ -128,9 +109,7 @@ def test_release_is_idempotent_on_journal(tmp_path: Path) -> None:
     executor's finally) must not produce two RELEASE records — the
     second call is a no-op because the in-memory ledger is empty."""
     journal = _writer(tmp_path)
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     broker.admit(
         physical_attempt_id="r1",
         request=ResourceRequest(ram_bytes=1024),
@@ -140,9 +119,7 @@ def test_release_is_idempotent_on_journal(tmp_path: Path) -> None:
     journal.close()
 
     records = _replay(tmp_path)
-    assert (
-        sum(1 for r in records if r.kind is JournalKind.RESERVATION_RELEASED) == 1
-    )
+    assert sum(1 for r in records if r.kind is JournalKind.RESERVATION_RELEASED) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +129,7 @@ def test_release_is_idempotent_on_journal(tmp_path: Path) -> None:
 
 def test_reconstruct_picks_up_in_flight_grants(tmp_path: Path) -> None:
     journal = _writer(tmp_path)
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     broker.admit(
         physical_attempt_id="r1",
         request=ResourceRequest(ram_bytes=1234),
@@ -173,9 +148,7 @@ def test_reconstruct_picks_up_in_flight_grants(tmp_path: Path) -> None:
 
 def test_reconstruct_empty_when_all_released(tmp_path: Path) -> None:
     journal = _writer(tmp_path)
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     broker.admit(physical_attempt_id="r1", request=ResourceRequest(ram_bytes=1))
     broker.release("r1")
     journal.close()
@@ -196,6 +169,7 @@ def _good_producer(n_obs: int):
                 "latent",
                 data=np.zeros((n_obs, 4), dtype=np.float32),
             )
+
     return _producer
 
 
@@ -214,7 +188,9 @@ def _build_executor_kernel(state_root: Path, engine, dataset_file: Path):
     layout = JournalLayout.at(state_root / "journal").ensure()
     journal = JournalWriter(layout, boot_id=boot.boot_id)
     store = StoreLayout(root=state_root / "store").ensure()
-    supervisor = DockerSupervisor(engine=engine, journal=journal, mvd_version="0.1.0-test")
+    supervisor = DockerSupervisor(
+        engine=engine, journal=journal, mvd_version="0.1.0-test"
+    )
     broker = ResourceBroker(
         observer=InMemoryHostObserver(_metrics()),
         journal=journal,
@@ -317,12 +293,21 @@ def test_crash_after_grant_before_dispatch_recovers(
     )
     writer.append(
         JournalKind.RESERVATION_GRANTED,
-        payload={"ram_bytes": 1024, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+        payload={
+            "ram_bytes": 1024,
+            "vram_bytes": 0,
+            "gpu_index": None,
+            "disk_bytes_per_path": {},
+        },
         physical_attempt_id="r-crash",
     )
     writer.append(
         JournalKind.STATE_TRANSITION,
-        payload={"from_state": "PENDING", "to_state": "FAILED", "reason": "kernel crashed"},
+        payload={
+            "from_state": "PENDING",
+            "to_state": "FAILED",
+            "reason": "kernel crashed",
+        },
         physical_attempt_id="r-crash",
     )
     writer.commit()
@@ -330,9 +315,7 @@ def test_crash_after_grant_before_dispatch_recovers(
 
     # Boot a fresh kernel + broker; replay reconstructs and reconciles.
     journal = JournalWriter(layout, boot_id="boot-recover")
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     kernel = Kernel(
         KernelConfig(state_root=state_root, mvd_version="0.1.0-test"),
         journal=journal,
@@ -346,7 +329,8 @@ def test_crash_after_grant_before_dispatch_recovers(
     asyncio.run(kernel.shutdown())
     records = JournalReader(layout).replay().records
     releases = [
-        r for r in records
+        r
+        for r in records
         if r.kind is JournalKind.RESERVATION_RELEASED
         and r.physical_attempt_id == "r-crash"
     ]
@@ -370,7 +354,12 @@ def test_crash_with_non_terminal_run_keeps_reservation(tmp_path: Path) -> None:
     )
     writer.append(
         JournalKind.RESERVATION_GRANTED,
-        payload={"ram_bytes": 4096, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+        payload={
+            "ram_bytes": 4096,
+            "vram_bytes": 0,
+            "gpu_index": None,
+            "disk_bytes_per_path": {},
+        },
         physical_attempt_id="r-live",
     )
     writer.append(
@@ -382,9 +371,7 @@ def test_crash_with_non_terminal_run_keeps_reservation(tmp_path: Path) -> None:
     writer.close()
 
     journal = JournalWriter(layout, boot_id="boot-recover")
-    broker = ResourceBroker(
-        observer=InMemoryHostObserver(_metrics()), journal=journal
-    )
+    broker = ResourceBroker(observer=InMemoryHostObserver(_metrics()), journal=journal)
     kernel = Kernel(
         KernelConfig(state_root=state_root, mvd_version="0.1.0-test"),
         journal=journal,

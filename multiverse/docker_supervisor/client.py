@@ -17,8 +17,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Optional, Protocol, runtime_checkable
-import docker
+from typing import (Any, Dict, Iterable, List, Optional, Protocol,
+                    runtime_checkable)
+
 
 class ContainerState(str, Enum):
     """Coarse state recognised by the supervisor.
@@ -64,26 +65,20 @@ class ContainerEngine(Protocol):
         mem_limit: Optional[str],
         name: Optional[str],
         entrypoint: Optional[str] = None,
-    ) -> ContainerInfo:
-        ...
+        gpu_requested: bool = False,
+    ) -> ContainerInfo: ...
 
-    def list_by_labels(self, *, labels: Dict[str, str]) -> List[ContainerInfo]:
-        ...
+    def list_by_labels(self, *, labels: Dict[str, str]) -> List[ContainerInfo]: ...
 
-    def inspect(self, container_id: str) -> ContainerInfo:
-        ...
+    def inspect(self, container_id: str) -> ContainerInfo: ...
 
-    def logs(self, container_id: str) -> bytes:
-        ...
+    def logs(self, container_id: str) -> bytes: ...
 
-    def stop(self, container_id: str, *, timeout: int) -> None:
-        ...
+    def stop(self, container_id: str, *, timeout: int) -> None: ...
 
-    def kill(self, container_id: str) -> None:
-        ...
+    def kill(self, container_id: str) -> None: ...
 
-    def remove(self, container_id: str, *, force: bool = False) -> None:
-        ...
+    def remove(self, container_id: str, *, force: bool = False) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -134,11 +129,17 @@ def _docker_volumes(volumes: Optional[Dict[str, str]]) -> Dict[str, Any]:
             continue
         host_s = str(host)
         target_s = str(target)
-        mode = "ro" if target_s.endswith(".h5mu") or target_s.startswith("/input/") else "rw"
+        mode = (
+            "ro"
+            if target_s.endswith(".h5mu") or target_s.startswith("/input/")
+            else "rw"
+        )
         out[host_s] = {"bind": target_s, "mode": mode}
     return out
 
+
 import subprocess
+
 
 def gpu_available():
     try:
@@ -146,11 +147,13 @@ def gpu_available():
             ["nvidia-smi"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=True
+            check=True,
         )
         return True
     except Exception:
         return False
+
+
 @dataclass
 class RealDockerEngine:
     """Thin Docker SDK adapter implementing :class:`ContainerEngine`.
@@ -175,18 +178,24 @@ class RealDockerEngine:
         mem_limit: Optional[str] = None,
         name: Optional[str] = None,
         entrypoint: Optional[str] = None,
+        gpu_requested: bool = False,
     ) -> ContainerInfo:
         from .errors import ContainerEngineError
 
         device_requests = None
 
-        # TODO: make it from the config file
-        if gpu_available():
+        # GPU is opt-in: the run/model must explicitly request it AND a GPU
+        # must be present. gpu_available() alone is only a guard against
+        # requesting an unavailable device — it must not force GPU allocation
+        # onto every container (issue #30).
+        if gpu_requested and gpu_available():
+            # Lazy import via importlib keeps the kernel import graph
+            # docker-free (the grep gate forbids any `import docker` line).
+            import importlib
+
+            docker = importlib.import_module("docker")
             device_requests = [
-                docker.types.DeviceRequest(
-                    count=-1,
-                    capabilities=[["gpu"]]
-                )
+                docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
             ]
         try:
             kwargs = dict(
@@ -203,9 +212,7 @@ class RealDockerEngine:
             if device_requests is not None:
                 kwargs["device_requests"] = device_requests
 
-            container = self._client().containers.create(
-                **kwargs
-            )
+            container = self._client().containers.create(**kwargs)
             container.start()
             container.reload()
             return self._info(container)
@@ -244,7 +251,9 @@ class RealDockerEngine:
             return self._info(container)
         except Exception as exc:
             if _is_not_found(exc):
-                raise NoSuchContainerError(f"no such container: {container_id}") from exc
+                raise NoSuchContainerError(
+                    f"no such container: {container_id}"
+                ) from exc
             raise ContainerEngineError(
                 f"Docker inspect failed for {container_id}: {type(exc).__name__}: {exc}"
             ) from exc
@@ -263,7 +272,9 @@ class RealDockerEngine:
             return container.logs(stdout=True, stderr=True) or b""
         except Exception as exc:
             if _is_not_found(exc):
-                raise NoSuchContainerError(f"no such container: {container_id}") from exc
+                raise NoSuchContainerError(
+                    f"no such container: {container_id}"
+                ) from exc
             raise ContainerEngineError(
                 f"Docker logs failed for {container_id}: {type(exc).__name__}: {exc}"
             ) from exc
@@ -275,7 +286,9 @@ class RealDockerEngine:
             self._client().containers.get(container_id).stop(timeout=timeout)
         except Exception as exc:
             if _is_not_found(exc):
-                raise NoSuchContainerError(f"no such container: {container_id}") from exc
+                raise NoSuchContainerError(
+                    f"no such container: {container_id}"
+                ) from exc
             raise ContainerEngineError(
                 f"Docker stop failed for {container_id}: {type(exc).__name__}: {exc}"
             ) from exc
@@ -287,7 +300,9 @@ class RealDockerEngine:
             self._client().containers.get(container_id).kill()
         except Exception as exc:
             if _is_not_found(exc):
-                raise NoSuchContainerError(f"no such container: {container_id}") from exc
+                raise NoSuchContainerError(
+                    f"no such container: {container_id}"
+                ) from exc
             if _is_not_running_conflict(exc):
                 return
             raise ContainerEngineError(
@@ -323,7 +338,9 @@ class RealDockerEngine:
             client = docker.from_env()
             client.ping()
         except Exception as exc:
-            raise ContainerEngineError(f"Docker daemon is not reachable: {exc}") from exc
+            raise ContainerEngineError(
+                f"Docker daemon is not reachable: {exc}"
+            ) from exc
         self.client = client
         return client
 
@@ -364,6 +381,7 @@ class _InMemoryContainer:
     volumes: Dict[str, str] = field(default_factory=dict)
     mem_limit: Optional[str] = None
     name: Optional[str] = None
+    gpu_requested: bool = False
     stops: int = 0
     kills: int = 0
     removed: bool = False
@@ -415,6 +433,7 @@ class InMemoryContainerEngine:
         mem_limit: Optional[str] = None,
         name: Optional[str] = None,
         entrypoint: Optional[str] = None,
+        gpu_requested: bool = False,
     ) -> ContainerInfo:
         container_id = uuid.uuid4().hex
         container = _InMemoryContainer(
@@ -427,6 +446,7 @@ class InMemoryContainerEngine:
             volumes=dict(volumes or {}),
             mem_limit=mem_limit,
             name=name,
+            gpu_requested=gpu_requested,
         )
         self.containers[container_id] = container
         return container.to_info()

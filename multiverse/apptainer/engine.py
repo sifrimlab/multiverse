@@ -34,11 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..docker_supervisor.client import ContainerInfo, ContainerState
-from .images import (
-    classify_image_ref,
-    compute_sif_digest,
-    sif_cache_path_for,
-)
+from .images import classify_image_ref, compute_sif_digest, sif_cache_path_for
 from .state import ApptainerContainerRecord, ApptainerSidecar
 
 
@@ -89,7 +85,9 @@ class RealApptainerEngine:
     # In-memory Popen cache keyed by container_id — enables accurate exit-code
     # capture and OOM heuristics for containers launched in the current process.
     # Entries survive only for the lifetime of this engine instance.
-    _procs: Dict[str, subprocess.Popen] = field(default_factory=dict, init=False, repr=False)
+    _procs: Dict[str, subprocess.Popen] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.state_dir = Path(self.state_dir).expanduser().resolve()
@@ -109,15 +107,16 @@ class RealApptainerEngine:
     @classmethod
     def available(cls, bin_name: str = "apptainer") -> bool:
         """True iff the ``apptainer`` binary is on PATH. Does not invoke it."""
-        return shutil.which(bin_name) is not None or shutil.which("singularity") is not None
+        return (
+            shutil.which(bin_name) is not None
+            or shutil.which("singularity") is not None
+        )
 
     # ------------------------------------------------------------------
     # image acquisition
     # ------------------------------------------------------------------
 
-    def acquire_image(
-        self, image: str, *, oci_digest: Optional[str] = None
-    ) -> Path:
+    def acquire_image(self, image: str, *, oci_digest: Optional[str] = None) -> Path:
         """Return a path to a SIF for ``image``.
 
         ``image`` may be a SIF path or any reference Apptainer can pull
@@ -135,9 +134,7 @@ class RealApptainerEngine:
         # ``apptainer pull <target> <ref>`` writes the SIF atomically when
         # the target does not exist; the binary handles its own tmp file.
         cmd = [self.apptainer_bin, "pull", str(target), ref.locator]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, check=False
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             from ..docker_supervisor.errors import ContainerEngineError
 
@@ -162,6 +159,7 @@ class RealApptainerEngine:
         mem_limit: Optional[str] = None,
         name: Optional[str] = None,
         entrypoint: Optional[str] = None,
+        gpu_requested: bool = False,
     ) -> ContainerInfo:
         from ..docker_supervisor.errors import ContainerEngineError
 
@@ -191,6 +189,7 @@ class RealApptainerEngine:
             volumes=volumes,
             mem_limit=mem_limit,
             entrypoint=entrypoint,
+            gpu_requested=gpu_requested,
         )
         container_id = uuid.uuid4().hex
         log_path = self._logs_dir / f"{container_id}.log"
@@ -361,9 +360,15 @@ class RealApptainerEngine:
         volumes: Optional[Dict[str, str]],
         mem_limit: Optional[str],
         entrypoint: Optional[str],
+        gpu_requested: bool = False,
     ) -> List[str]:
-        bin_name = self.apptainer_bin if shutil.which(self.apptainer_bin) else "singularity"
+        bin_name = (
+            self.apptainer_bin if shutil.which(self.apptainer_bin) else "singularity"
+        )
         argv: List[str] = [bin_name, "exec"]
+        # GPU is opt-in (issue #30): only pass --nv when the run requests it.
+        if gpu_requested:
+            argv.append("--nv")
         for host, target in (volumes or {}).items():
             target_path = target if isinstance(target, str) else target.get("bind", "")
             argv.extend(["--bind", f"{host}:{target_path}"])

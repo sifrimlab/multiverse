@@ -64,9 +64,7 @@ class InMemorySlurmEngine:
         script_dir.mkdir(parents=True, exist_ok=True)
         script_path = script_dir / f"{spec.job_name}.sbatch"
         script_path.write_text(render_sbatch_script(spec), encoding="utf-8")
-        self.jobs[job_id] = _Job(
-            job_id=job_id, spec=spec, script_path=script_path
-        )
+        self.jobs[job_id] = _Job(job_id=job_id, spec=spec, script_path=script_path)
         return SlurmSubmission(job_id=job_id, script_path=script_path)
 
     def query(self, job_id: str) -> SlurmJobInfo:
@@ -75,9 +73,7 @@ class InMemorySlurmEngine:
             # The real engine would surface as PENDING for an unknown
             # accounting entry; mirror that here so the executor's
             # polling loop doesn't crash on a missing job.
-            return SlurmJobInfo(
-                job_id=str(job_id), state=SlurmJobState.PENDING
-            )
+            return SlurmJobInfo(job_id=str(job_id), state=SlurmJobState.PENDING)
         return SlurmJobInfo(
             job_id=job.job_id,
             state=job.state,

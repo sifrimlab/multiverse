@@ -34,10 +34,10 @@ from multiverse.docker_supervisor import DockerSupervisor, RealDockerEngine
 from multiverse.index import open_index, rebuild_index
 from multiverse.index.sqlite_index import INDEX_FILENAME
 from multiverse.journal import JournalLayout, JournalWriter
-from multiverse.mvd import Kernel, KernelConfig, MvdDockerExecutor, PrimaryState, build_executor_options
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            PrimaryState, build_executor_options)
 from multiverse.promotion import StoreLayout
 from multiverse.promotion.saga import PromotionSaga
-
 
 CANDIDATE_BASE_IMAGES = (
     "busybox:latest",
@@ -97,7 +97,9 @@ def _docker_client_and_python_base_image():
                 entrypoint="sh",
                 remove=True,
             )
-            python_path = output.decode("utf-8", errors="replace").strip().splitlines()[-1]
+            python_path = (
+                output.decode("utf-8", errors="replace").strip().splitlines()[-1]
+            )
             if python_path:
                 return client, image, python_path
         except Exception:
@@ -121,6 +123,7 @@ def _cleanup_real_it_containers(client) -> None:
         except Exception:
             pass
 
+
 def _build_shell_image(client, tmp_path: Path, *, base_image: str, command: str) -> str:
     tag = f"mvd-real-path-{uuid4().hex[:12]}:latest"
     context = tmp_path / tag.replace(":", "_")
@@ -130,7 +133,7 @@ def _build_shell_image(client, tmp_path: Path, *, base_image: str, command: str)
             [
                 f"FROM {base_image}",
                 "RUN mkdir -p /input /output",
-                f"CMD [\"sh\", \"-c\", {json.dumps(command)}]",
+                f'CMD ["sh", "-c", {json.dumps(command)}]',
                 "",
             ]
         ),
@@ -170,9 +173,7 @@ _OOM_FIXTURE_BASE_CANDIDATES = (
 # process being killed by something other than the memory limit)
 # leaves a forensic signal behind.
 _OOM_FIXTURE_COMMAND = (
-    "set +e; "
-    "echo started > /output/oom-heartbeat; "
-    "x=A; while :; do x=$x$x; done"
+    "set +e; " "echo started > /output/oom-heartbeat; " "x=A; while :; do x=$x$x; done"
 )
 
 
@@ -181,7 +182,7 @@ def _oom_fixture_dockerfile(base: str) -> str:
         [
             f"FROM {base}",
             "RUN mkdir -p /input /output",
-            f"CMD [\"sh\", \"-c\", {json.dumps(_OOM_FIXTURE_COMMAND)}]",
+            f'CMD ["sh", "-c", {json.dumps(_OOM_FIXTURE_COMMAND)}]',
             "",
         ]
     )
@@ -266,7 +267,9 @@ def _dataset_file(tmp_path: Path, *, n_obs: int = 4) -> Path:
     with h5py.File(dataset, "w") as f:
         f.create_dataset(
             "latent",
-            data=np.random.default_rng(0).standard_normal((n_obs, 4)).astype(np.float32),
+            data=np.random.default_rng(0)
+            .standard_normal((n_obs, 4))
+            .astype(np.float32),
         )
     return dataset
 
@@ -338,7 +341,9 @@ def _opts(
     )
 
 
-async def _wait_for_state(kernel: Kernel, attempt: str, state: str, timeout: float = 10.0) -> dict:
+async def _wait_for_state(
+    kernel: Kernel, attempt: str, state: str, timeout: float = 10.0
+) -> dict:
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
@@ -386,7 +391,12 @@ def test_real_mvd_happy_path_promotes_and_rebuilds_index(tmp_path: Path) -> None
         if index_path.exists():
             index_path.unlink()
         with open_index(index_path) as index:
-            result = rebuild_index(index=index, state_root=state_root, store=store, engine=RealDockerEngine(client=client))
+            result = rebuild_index(
+                index=index,
+                state_root=state_root,
+                store=store,
+                engine=RealDockerEngine(client=client),
+            )
             row = index.get_run(attempt_id)
         assert result.artifact_success == 1
         assert row is not None
@@ -533,7 +543,12 @@ def test_real_mvd_crash_after_promotion_stage_rebuilds_recovery_pending(
     try:
         attempt_id = asyncio.run(_scenario())
         with open_index(state_root / INDEX_FILENAME) as index:
-            result = rebuild_index(index=index, state_root=state_root, store=store, engine=RealDockerEngine(client=client))
+            result = rebuild_index(
+                index=index,
+                state_root=state_root,
+                store=store,
+                engine=RealDockerEngine(client=client),
+            )
             row = index.get_run(attempt_id)
         assert result.recovery_pending == 1
         assert row is not None

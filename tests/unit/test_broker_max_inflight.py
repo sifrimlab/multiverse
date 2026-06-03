@@ -12,20 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.broker import (
-    AdmissionOutcome,
-    HostMetrics,
-    InMemoryHostObserver,
-    ResourceBroker,
-    ResourceRequest,
-)
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalReader,
-    JournalWriter,
-)
-
+from multiverse.broker import (AdmissionOutcome, HostMetrics,
+                               InMemoryHostObserver, ResourceBroker,
+                               ResourceRequest)
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
 
 pytestmark = pytest.mark.control_plane
 
@@ -64,7 +55,9 @@ def test_release_frees_a_slot() -> None:
     broker = _broker(max_inflight=1)
     a = broker.admit(physical_attempt_id="r1", request=ResourceRequest(ram_bytes=1))
     assert a.admitted
-    refused = broker.admit(physical_attempt_id="r2", request=ResourceRequest(ram_bytes=1))
+    refused = broker.admit(
+        physical_attempt_id="r2", request=ResourceRequest(ram_bytes=1)
+    )
     assert not refused.admitted
     broker.release("r1")
     again = broker.admit(physical_attempt_id="r2", request=ResourceRequest(ram_bytes=1))

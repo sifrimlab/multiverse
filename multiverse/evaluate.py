@@ -1,20 +1,25 @@
 import argparse
-import os
 import json
-import h5py
-import anndata as ad
-import numpy as np
+import os
 from typing import Union
-from scib_metrics.benchmark import BioConservation, BatchCorrection, Benchmarker
+
+import anndata as ad
+import h5py
+import numpy as np
+from scib_metrics.benchmark import (BatchCorrection, Benchmarker,
+                                    BioConservation)
+
 from .config import load_config
-from .data_utils import load_datasets, dataset_select
+from .data_utils import dataset_select, load_datasets
 from .logging_utils import get_logger, setup_logging
 from .tracking import sanitize_nan_inf
 
 logger = get_logger(__name__)
 
 
-def _warn_unrequested_result_columns(results_df, requested_metrics: dict | None) -> None:
+def _warn_unrequested_result_columns(
+    results_df, requested_metrics: dict | None
+) -> None:
     if not requested_metrics:
         return
     requested = set()
@@ -27,9 +32,13 @@ def _warn_unrequested_result_columns(results_df, requested_metrics: dict | None)
     extra = returned - requested
     missing = requested - returned
     if extra:
-        logger.warning("Benchmark returned unrequested metric columns: %s", sorted(extra))
+        logger.warning(
+            "Benchmark returned unrequested metric columns: %s", sorted(extra)
+        )
     if missing:
-        logger.warning("Benchmark did not return requested metric columns: %s", sorted(missing))
+        logger.warning(
+            "Benchmark did not return requested metric columns: %s", sorted(missing)
+        )
 
 
 def determine_valid_metrics(
@@ -51,14 +60,23 @@ def determine_valid_metrics(
     """
     if requested_metrics is None:
         requested_metrics = {
-            "bio_conservation": ["isolated_labels", "nmi_ari_cluster_labels_leiden", "nmi_ari_cluster_labels_kmeans", "silhouette_label", "clisi_knn"],
-            "batch_correction": ["bras", "ilisi_knn", "kbet_per_label", "graph_connectivity", "pcr_comparison"]
+            "bio_conservation": [
+                "isolated_labels",
+                "nmi_ari_cluster_labels_leiden",
+                "nmi_ari_cluster_labels_kmeans",
+                "silhouette_label",
+                "clisi_knn",
+            ],
+            "batch_correction": [
+                "bras",
+                "ilisi_knn",
+                "kbet_per_label",
+                "graph_connectivity",
+                "pcr_comparison",
+            ],
         }
 
-    valid_metrics = {
-        "bio_conservation": [],
-        "batch_correction": []
-    }
+    valid_metrics = {"bio_conservation": [], "batch_correction": []}
 
     batch_key = config.get("batch_key", "batch")
     label_key = config.get("cell_type_key")
@@ -67,11 +85,14 @@ def determine_valid_metrics(
     if label_key and label_key in dataset.obs.columns:
         valid_metrics["bio_conservation"] = requested_metrics["bio_conservation"]
     else:
-        logger.warning(f"Label key {label_key} not found or not provided. Skipping supervised metrics.")
+        logger.warning(
+            f"Label key {label_key} not found or not provided. Skipping supervised metrics."
+        )
         # Remove metrics that strictly require labels.
         supervised_keywords = ["nmi", "ari", "isolated_labels", "clisi", "label"]
         valid_metrics["bio_conservation"] = [
-            m for m in requested_metrics["bio_conservation"]
+            m
+            for m in requested_metrics["bio_conservation"]
             if not any(kw in m.lower() for kw in supervised_keywords)
         ]
 
@@ -81,10 +102,14 @@ def determine_valid_metrics(
         if num_batches > 1:
             valid_metrics["batch_correction"] = requested_metrics["batch_correction"]
         else:
-            logger.warning(f"Only one batch found ({num_batches}). Skipping batch-correction metrics.")
+            logger.warning(
+                f"Only one batch found ({num_batches}). Skipping batch-correction metrics."
+            )
             valid_metrics["batch_correction"] = []
     else:
-        logger.warning(f"Batch key {batch_key} not found. Skipping batch-correction metrics.")
+        logger.warning(
+            f"Batch key {batch_key} not found. Skipping batch-correction metrics."
+        )
         valid_metrics["batch_correction"] = []
 
     return valid_metrics
@@ -114,11 +139,22 @@ def aggregate_results(model_status: dict, output_dir: str):
                 if isinstance(loaded, dict) and loaded:
                     final_results[model_name] = sanitize_nan_inf(loaded)
                 else:
-                    logger.warning("Metrics for %s were empty or not a JSON object; omitting.", model_name)
+                    logger.warning(
+                        "Metrics for %s were empty or not a JSON object; omitting.",
+                        model_name,
+                    )
             except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed reading metrics for %s from %s: %s", model_name, model_metrics_path, exc)
+                logger.warning(
+                    "Failed reading metrics for %s from %s: %s",
+                    model_name,
+                    model_metrics_path,
+                    exc,
+                )
         else:
-            final_results[model_name] = {"status": "success", "info": "Metrics file not found, but model succeeded."}
+            final_results[model_name] = {
+                "status": "success",
+                "info": "Metrics file not found, but model succeeded.",
+            }
 
     results_file = os.path.join(output_dir, "results.json")
     with open(results_file, "w", encoding="utf-8") as f:
@@ -287,10 +323,14 @@ def _mudata_to_evaluation_anndata(
         for mod_adata in mdata.mod.values():
             if key in mod_adata.obs.columns:
                 obs[key] = mod_adata.obs[key].reindex(obs.index)
-                logger.info("Promoted obs key '%s' from modality to top-level obs.", key)
+                logger.info(
+                    "Promoted obs key '%s' from modality to top-level obs.", key
+                )
                 break
         else:
-            logger.warning("Key '%s' not found in any modality obs; it will be absent.", key)
+            logger.warning(
+                "Key '%s' not found in any modality obs; it will be absent.", key
+            )
     return ad.AnnData(obs=obs)
 
 
@@ -308,20 +348,25 @@ def evaluate_single_run(
     """
     embeddings_path = os.path.join(output_dir, "embeddings.h5")
     if not os.path.exists(embeddings_path):
-        logger.warning("No embeddings.h5 in %s; skipping per-job evaluation.", output_dir)
+        logger.warning(
+            "No embeddings.h5 in %s; skipping per-job evaluation.", output_dir
+        )
         return {}
 
     embedding_only = False
     if dataset_path.endswith(".h5mu"):
         try:
             import mudata as md
+
             mdata = md.read_h5mu(dataset_path)
             adata = _mudata_to_evaluation_anndata(
                 mdata, batch_key=batch_key, label_key=label_key
             )
             embedding_only = True
         except Exception as exc:
-            logger.warning("Failed to load/convert MuData from %s: %s", dataset_path, exc)
+            logger.warning(
+                "Failed to load/convert MuData from %s: %s", dataset_path, exc
+            )
             return {}
     elif dataset_path.endswith(".h5ad"):
         adata = ad.read_h5ad(dataset_path)
@@ -344,7 +389,9 @@ def evaluate_single_run(
     latent_key = "X_model"
     adata.obsm[latent_key] = latent
 
-    effective_batch_key = batch_key if (batch_key and batch_key in adata.obs.columns) else None
+    effective_batch_key = (
+        batch_key if (batch_key and batch_key in adata.obs.columns) else None
+    )
     if not effective_batch_key:
         logger.warning(
             "batch_key '%s' not found in obs; batch-correction metrics will be disabled.",
@@ -355,10 +402,13 @@ def evaluate_single_run(
         # creating artificial batch-correction scores.
         adata.obs["_batch_unavailable"] = "batch_unavailable"
 
-    effective_label_key = label_key if (label_key and label_key in adata.obs.columns) else None
+    effective_label_key = (
+        label_key if (label_key and label_key in adata.obs.columns) else None
+    )
     if label_key and not effective_label_key:
         logger.warning(
-            "label_key '%s' not found in obs; supervised metrics will be skipped.", label_key
+            "label_key '%s' not found in obs; supervised metrics will be skipped.",
+            label_key,
         )
 
     have_labels = bool(effective_label_key)
@@ -389,7 +439,9 @@ def evaluate_single_run(
 
     bm.benchmark()
     results_df = bm.get_results(min_max_scale=False)
-    evaluation_metrics = sanitize_nan_inf(results_df.to_dict("dict")) if not results_df.empty else {}
+    evaluation_metrics = (
+        sanitize_nan_inf(results_df.to_dict("dict")) if not results_df.empty else {}
+    )
 
     out_path = os.path.join(output_dir, "metrics.json")
     existing_metrics = {}
@@ -400,9 +452,13 @@ def evaluate_single_run(
             if isinstance(loaded, dict):
                 existing_metrics = loaded
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Could not merge existing metrics from %s: %s", out_path, exc)
+            logger.warning(
+                "Could not merge existing metrics from %s: %s", out_path, exc
+            )
 
-    merged_metrics = sanitize_nan_inf({**existing_metrics, "evaluation": evaluation_metrics})
+    merged_metrics = sanitize_nan_inf(
+        {**existing_metrics, "evaluation": evaluation_metrics}
+    )
     with open(out_path, "w", encoding="utf-8") as fp:
         json.dump(merged_metrics, fp, indent=4)
     logger.info("Per-job evaluation metrics merged into %s", out_path)

@@ -17,12 +17,8 @@ Public surface:
 
 from __future__ import annotations
 
-from .engine import (
-    RealSlurmEngine,
-    SlurmEngine,
-    SlurmEngineError,
-    SlurmSubmission,
-)
+from .engine import (RealSlurmEngine, SlurmEngine, SlurmEngineError,
+                     SlurmSubmission)
 from .fake import InMemorySlurmEngine
 from .state import SlurmJobInfo, SlurmJobState, from_sacct_state
 from .template import SlurmJobSpec, render_sbatch_script

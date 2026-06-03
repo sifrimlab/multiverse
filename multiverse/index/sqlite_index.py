@@ -214,9 +214,7 @@ class SqliteIndex:
         if limit is not None:
             sql += f" LIMIT {int(limit)}"
         cur = self.conn.execute(sql, params)
-        return [
-            _row_to_dict(row, cur.description) for row in cur.fetchall()
-        ]
+        return [_row_to_dict(row, cur.description) for row in cur.fetchall()]
 
     def projections_for(self, physical_attempt_id: str) -> Dict[str, str]:
         cur = self.conn.execute(
@@ -255,9 +253,7 @@ class SqliteIndex:
                 ),
             )
 
-    def list_reservation_events(
-        self, physical_attempt_id: str
-    ) -> List[Dict[str, Any]]:
+    def list_reservation_events(self, physical_attempt_id: str) -> List[Dict[str, Any]]:
         cur = self.conn.execute(
             "SELECT * FROM reservation_events WHERE physical_attempt_id = ? "
             "ORDER BY seq ASC",
@@ -291,6 +287,21 @@ class SqliteIndex:
                     json.dumps(report.get("notes") or [], sort_keys=True),
                 ),
             )
+
+    def delete_run(self, physical_attempt_id: str) -> bool:
+        """Remove a single run from the index.
+
+        The FK ``ON DELETE CASCADE`` constraint automatically removes the
+        associated rows in ``run_projections`` and ``reservation_events``.
+        Artifact files on disk are NOT removed. Returns True if a row was
+        deleted.
+        """
+        with self.conn:
+            cur = self.conn.execute(
+                "DELETE FROM runs WHERE physical_attempt_id = ?",
+                (physical_attempt_id,),
+            )
+        return cur.rowcount > 0
 
     def truncate_runs(self) -> None:
         """Used by ``rebuild_index`` before replaying the journal in
@@ -333,9 +344,7 @@ def open_index(
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA_SQL)
-    cur = conn.execute(
-        "SELECT value FROM schema_meta WHERE key = 'schema_version'"
-    )
+    cur = conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'")
     row = cur.fetchone()
     if row is None:
         with conn:

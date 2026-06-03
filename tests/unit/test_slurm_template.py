@@ -13,7 +13,6 @@ import pytest
 
 from multiverse.slurm import SlurmJobSpec, render_sbatch_script
 
-
 pytestmark = pytest.mark.control_plane
 
 
@@ -40,9 +39,7 @@ def test_minimal_script_has_required_directives() -> None:
 
 
 def test_partition_account_qos_emitted_when_set() -> None:
-    script = render_sbatch_script(
-        _spec(partition="gpu", account="lab1", qos="premium")
-    )
+    script = render_sbatch_script(_spec(partition="gpu", account="lab1", qos="premium"))
     assert "#SBATCH --partition=gpu" in script
     assert "#SBATCH --account=lab1" in script
     assert "#SBATCH --qos=premium" in script

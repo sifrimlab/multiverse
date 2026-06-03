@@ -5,15 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from multiverse.artifact import (
-    ArtifactManifest,
-    ImageIdentity,
-    ImageIdentityKind,
-    ProducedAt,
-    ProducedBy,
-    verify_runtime_identity_matches_source,
-)
-
+from multiverse.artifact import (ArtifactManifest, ImageIdentity,
+                                 ImageIdentityKind, ProducedAt, ProducedBy,
+                                 verify_runtime_identity_matches_source)
 
 pytestmark = pytest.mark.control_plane
 
@@ -40,9 +34,7 @@ def test_sif_without_built_from_is_not_strict_acceptable():
 
 
 def test_sif_round_trips_through_dict():
-    rt = ImageIdentity.sif_digest(
-        "sha256:fff", built_from="sha256:src", built_by="ci"
-    )
+    rt = ImageIdentity.sif_digest("sha256:fff", built_from="sha256:src", built_by="ci")
     again = ImageIdentity.from_dict(rt.to_dict())
     assert again == rt
 
@@ -60,7 +52,12 @@ def test_pre_m2_manifest_without_runtime_field_still_loads():
         "image_identity": src.to_dict(),
         "params_hash": "p",
         "mv_contract_version": "v",
-        "produced_at": {"wall": "2026-05-28T00:00:00+00:00", "monotonic_ns": 0, "tz": "UTC", "mvd_boot_id": "b"},
+        "produced_at": {
+            "wall": "2026-05-28T00:00:00+00:00",
+            "monotonic_ns": 0,
+            "tz": "UTC",
+            "mvd_boot_id": "b",
+        },
         "produced_by": {"mvd_version": "0.1.0-mvd", "git_commit": None},
         "artifacts": [],
         "state_transitions": [],
@@ -126,7 +123,9 @@ def _make_manifest(
         image_identity=image,
         params_hash="p",
         mv_contract_version="v",
-        produced_at=ProducedAt(wall="2026-05-28T00:00:00+00:00", monotonic_ns=0, tz="UTC", mvd_boot_id="b"),
+        produced_at=ProducedAt(
+            wall="2026-05-28T00:00:00+00:00", monotonic_ns=0, tz="UTC", mvd_boot_id="b"
+        ),
         produced_by=ProducedBy(mvd_version="0.1.0-mvd", git_commit=None),
         runtime_image_identity=runtime,
     )

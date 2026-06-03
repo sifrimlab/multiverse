@@ -14,12 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..index_projection import verify_projection_against_journal
-from .health_probes import (
-    CleanupResult,
-    LeakInventoryResult,
-    ProbeOutcome,
-    ProbeReport,
-)
+from .health_probes import (CleanupResult, LeakInventoryResult, ProbeOutcome,
+                            ProbeReport)
 
 
 def probe_projection_consistency(state_root: Path) -> ProbeReport:

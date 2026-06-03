@@ -20,7 +20,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List
 
-
 # Closed list of *relative* paths under the state root (or the store root)
 # Tier-1 GC is permitted to operate on. Format is
 # ``(root_kind, relative_path, max_age_seconds)``.

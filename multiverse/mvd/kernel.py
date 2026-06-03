@@ -14,24 +14,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from ..state_paths import resolve_user_id
-
-from ..artifact import (
-    BootContext,
-    compute_params_hash,
-    new_physical_attempt_id,
-)
+from ..artifact import (BootContext, compute_params_hash,
+                        new_physical_attempt_id)
 from ..broker import ResourceBroker, reconstruct_ledger_from_journal
 from ..journal import JournalKind, JournalLayout, JournalReader, JournalWriter
+from ..state_paths import resolve_user_id
 from .api import KERNEL_VERBS, KernelAPI
 from .events import EventKind, KernelEvent
 from .executor import NullRunExecutor, RunExecutor
-from .runs import (
-    RunRecord,
-    RunRegistry,
-    assert_projection_status_valid,
-    new_run_record,
-)
+from .runs import (RunRecord, RunRegistry, assert_projection_status_valid,
+                   new_run_record)
 from .state import PrimaryState, assert_valid_transition
 
 
@@ -223,8 +215,11 @@ class Kernel:  # implements KernelAPI
         )
         seqs = self._journal.commit()
         record.primary_state = to_state
-        if reason and to_state in (PrimaryState.FAILED, PrimaryState.PROMOTION_FAILED,
-                                   PrimaryState.EVALUATION_FAILED):
+        if reason and to_state in (
+            PrimaryState.FAILED,
+            PrimaryState.PROMOTION_FAILED,
+            PrimaryState.EVALUATION_FAILED,
+        ):
             record.failure_reason = reason
         await self._broadcast(
             KernelEvent(
@@ -250,9 +245,7 @@ class Kernel:  # implements KernelAPI
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
         if self._config.paused:
-            raise RuntimeError(
-                "kernel is paused for maintenance; refuses submit_run"
-            )
+            raise RuntimeError("kernel is paused for maintenance; refuses submit_run")
         options = dict(options or {})
 
         # Idempotency: derive a key if the caller did not supply one.

@@ -7,20 +7,11 @@ from pathlib import Path
 import pytest
 
 from multiverse.index import INDEX_FILENAME, open_index
-from multiverse.index_projection import (
-    ProjectionDrift,
-    ProjectionVerifyReport,
-    get_run,
-    list_runs,
-    projections_for,
-    verify_projection_against_journal,
-)
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalWriter,
-)
-
+from multiverse.index_projection import (ProjectionDrift,
+                                         ProjectionVerifyReport, get_run,
+                                         list_runs, projections_for,
+                                         verify_projection_against_journal)
+from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 
 pytestmark = pytest.mark.control_plane
 
@@ -181,7 +172,11 @@ def test_verify_orphan_in_projection(tmp_path: Path) -> None:
     # Journal has no records at all for r-orphan.
     layout = JournalLayout.at(tmp_path / "journal").ensure()
     writer = JournalWriter(layout, boot_id="boot-test")
-    writer.append(JournalKind.JOB_INTENT, payload={"manifest_path": "/m"}, physical_attempt_id="r-real")
+    writer.append(
+        JournalKind.JOB_INTENT,
+        payload={"manifest_path": "/m"},
+        physical_attempt_id="r-real",
+    )
     writer.commit()
     writer.close()
     with open_index(tmp_path / INDEX_FILENAME) as idx:
@@ -204,6 +199,44 @@ def test_verify_orphan_in_projection(tmp_path: Path) -> None:
     assert "orphan_in_projection" in drift_kinds
     orphan = next(d for d in report.drifts if d.kind == "orphan_in_projection")
     assert orphan.physical_attempt_id == "r-orphan"
+
+
+def test_delete_run_removes_row_and_cascade(tmp_path: Path) -> None:
+    """delete_run must remove the run row and cascade to child tables."""
+    db_path = tmp_path / INDEX_FILENAME
+    with open_index(db_path) as idx:
+        idx.upsert_run(
+            {
+                "physical_attempt_id": "r-del",
+                "logical_run_id": "lr-del",
+                "primary_state": "ARTIFACT_SUCCESS",
+                "failure_reason": None,
+                "artifact_dir": "/store/a",
+                "workspace_dir": "/store/w",
+                "manifest_path": "/m.yaml",
+                "cancel_requested": False,
+                "submitted_wall_iso": "2026-01-01T00:00:00+00:00",
+                "last_seq": 1,
+                "options": {},
+            }
+        )
+        idx.set_projection(physical_attempt_id="r-del", plugin="mlflow", status="ok")
+        assert idx.delete_run("r-del") is True
+
+    # Row is gone from the index.
+    with open_index(db_path) as idx:
+        assert idx.get_run("r-del") is None
+        # Cascade removes the projection row.
+        rows = idx.conn.execute(
+            "SELECT 1 FROM run_projections WHERE physical_attempt_id = 'r-del'"
+        ).fetchall()
+        assert rows == []
+
+
+def test_delete_run_returns_false_for_missing(tmp_path: Path) -> None:
+    db_path = tmp_path / INDEX_FILENAME
+    with open_index(db_path) as idx:
+        assert idx.delete_run("nonexistent") is False
 
 
 def test_drift_to_dict_round_trips() -> None:

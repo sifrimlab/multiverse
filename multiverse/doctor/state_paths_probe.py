@@ -16,13 +16,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from ..state_paths import PACKAGE_DIR, REPO_ROOT_GUESS, find_legacy_db, is_inside_package_dir
-from .health_probes import CleanupResult, LeakInventoryResult, ProbeOutcome, ProbeReport
+from ..state_paths import (PACKAGE_DIR, REPO_ROOT_GUESS, find_legacy_db,
+                           is_inside_package_dir)
+from .health_probes import (CleanupResult, LeakInventoryResult, ProbeOutcome,
+                            ProbeReport)
 
 
-def probe_state_root(
-    state_root: Path, *, explicit: bool = False
-) -> ProbeReport:
+def probe_state_root(state_root: Path, *, explicit: bool = False) -> ProbeReport:
     """Verify the configured state root is outside the package directory
     and (when ``state_root`` was *not* explicitly chosen) that no legacy
     ``mvexp_state.db`` is being orphaned.

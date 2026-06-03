@@ -6,7 +6,7 @@ supported_omics:
   - atac
 runtime:
   image: multiverse-cobolt:1.0.0
-hyperparameters_schema: schemas/models/cobolt.hyperparameters.schema.json
+hyperparameters_schema: store/models/cobolt/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/cobolt/container/Dockerfile

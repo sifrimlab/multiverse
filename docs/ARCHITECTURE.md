@@ -52,6 +52,9 @@ multiverse/
   docker_supervisor/       Container engine protocol, RealDockerEngine, labels, leases, cancel saga
   slurm/                   SlurmEngine Protocol, RealSlurmEngine, InMemorySlurmEngine (fake)
   apptainer/               ApptainerEngine Protocol, RealApptainerEngine (with OOM detection)
+  simple/                  Simple-mode runner: contract-only execution without mvd/SQLite/MLflow
+  client/                  Line-delimited JSON protocol for kernel ↔ client RPC
+  builder.py               Docker image build helper (NFS-safe tar, used by register-model --build)
   promotion/               Validation/promotion saga and quarantine helpers
   artifact/                Artifact manifest, checksums, validators, bundle writer
   journal/                 Append-only journal writer/reader

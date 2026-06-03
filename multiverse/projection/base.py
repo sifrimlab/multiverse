@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Mapping, Optional, Protocol, runtime_checkable
+from typing import (Any, Dict, List, Mapping, Optional, Protocol,
+                    runtime_checkable)
 
 
 class SyncOutcome(str, Enum):
@@ -44,14 +45,11 @@ class MLflowTarget(Protocol):
         """Create or upsert a run; return its target-side run id."""
         ...
 
-    def log_params(self, *, run_id: str, params: Mapping[str, Any]) -> None:
-        ...
+    def log_params(self, *, run_id: str, params: Mapping[str, Any]) -> None: ...
 
-    def log_metrics(self, *, run_id: str, metrics: Mapping[str, float]) -> None:
-        ...
+    def log_metrics(self, *, run_id: str, metrics: Mapping[str, float]) -> None: ...
 
-    def log_artifact(self, *, run_id: str, path: str) -> None:
-        ...
+    def log_artifact(self, *, run_id: str, path: str) -> None: ...
 
     def set_terminal_status(
         self,

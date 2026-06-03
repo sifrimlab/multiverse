@@ -22,7 +22,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional
 
-
 HEALTH_PROBE_TTL_SECONDS = 3600
 
 HEALTH_PROBE_NAMESPACES = {
@@ -111,11 +110,7 @@ def probe_workspace_directory(workspaces_root: Path) -> ProbeReport:
 
     # Leak inventory — count older sibling entries.
     leak_count = _count_expired_under(probe_root)
-    leak = (
-        LeakInventoryResult.LEAKS
-        if leak_count > 0
-        else LeakInventoryResult.NONE
-    )
+    leak = LeakInventoryResult.LEAKS if leak_count > 0 else LeakInventoryResult.NONE
     return ProbeReport(
         name="workspace_dir",
         probe=probe_outcome,

@@ -9,7 +9,6 @@ import pytest
 
 from multiverse import cli_entrypoints
 
-
 pytestmark = pytest.mark.control_plane
 
 
@@ -34,9 +33,7 @@ def test_dry_run_reports_plan_without_moving(tmp_path, capsys):
     dst = tmp_path / "new"
     _seed_legacy(src)
 
-    rc = cli_entrypoints.migrate_state_dir_main(
-        ["--from", str(src), "--to", str(dst)]
-    )
+    rc = cli_entrypoints.migrate_state_dir_main(["--from", str(src), "--to", str(dst)])
     out = capsys.readouterr().out
     assert rc == 0
     assert (src / "mvexp_state.db").is_file()

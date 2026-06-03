@@ -48,12 +48,13 @@ def setup_logging(log_dir: str, log_level=None):
         root_logger.removeHandler(handler)
 
     # Create file handler
-    file_handler = logging.FileHandler(log_file, mode='a') # Append mode
+    file_handler = logging.FileHandler(log_file, mode="a")  # Append mode
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)
+
 
 def get_logger(name: str):
     """Returns a logger instance with the given name.

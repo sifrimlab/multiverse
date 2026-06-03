@@ -113,9 +113,7 @@ class RealSlurmEngine:
             )
         job_id = _parse_sbatch_output(result.stdout)
         if job_id is None:
-            raise SlurmEngineError(
-                f"could not parse sbatch output: {result.stdout!r}"
-            )
+            raise SlurmEngineError(f"could not parse sbatch output: {result.stdout!r}")
         return SlurmSubmission(job_id=job_id, script_path=script_path)
 
     def query(self, job_id: str) -> SlurmJobInfo:
@@ -223,9 +221,7 @@ def _parse_sacct_output(job_id: str, stdout: str) -> SlurmJobInfo:
             exit_code=exit_code,
             reason=reason or None,
         )
-    return SlurmJobInfo(
-        job_id=str(job_id), state=SlurmJobState.PENDING, exit_code=None
-    )
+    return SlurmJobInfo(job_id=str(job_id), state=SlurmJobState.PENDING, exit_code=None)
 
 
 def _parse_exit_code(raw: str) -> Optional[int]:

@@ -6,7 +6,7 @@ supported_omics:
   - adt
 runtime:
   image: multiverse-totalvi:1.0.0
-hyperparameters_schema: schemas/models/totalvi.hyperparameters.schema.json
+hyperparameters_schema: store/models/totalvi/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/totalvi/container/Dockerfile

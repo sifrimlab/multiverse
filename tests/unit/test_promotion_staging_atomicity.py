@@ -23,29 +23,15 @@ import h5py
 import numpy as np
 import pytest
 
-from multiverse.artifact import (
-    ArtifactManifest,
-    BootContext,
-    ImageIdentity,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    ValidationLevel,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    new_physical_attempt_id,
-    produced_at_now,
-    read_manifest,
-)
+from multiverse.artifact import (ArtifactManifest, BootContext, ImageIdentity,
+                                 ModelOutputContract, ProducedAt, ProducedBy,
+                                 ValidationLevel, compute_logical_run_id,
+                                 compute_manifest_hash, compute_params_hash,
+                                 new_physical_attempt_id, produced_at_now,
+                                 read_manifest)
 from multiverse.journal import JournalLayout, JournalWriter
-from multiverse.promotion import (
-    PromotionOutcome,
-    PromotionSaga,
-    PromotionStep,
-    StoreLayout,
-)
-
+from multiverse.promotion import (PromotionOutcome, PromotionSaga,
+                                  PromotionStep, StoreLayout)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -70,7 +56,9 @@ def _workspace(tmp_path: Path, n_obs: int = 4) -> Path:
     with h5py.File(ws / "embeddings.h5", "w") as f:
         f.create_dataset(
             "latent",
-            data=np.random.default_rng(0).standard_normal((n_obs, 4)).astype(np.float32),
+            data=np.random.default_rng(0)
+            .standard_normal((n_obs, 4))
+            .astype(np.float32),
         )
     # A nested subdir to verify the staging copy preserves structure.
     sub = ws / "logs"
@@ -160,7 +148,9 @@ def test_final_path_absent_until_commit_manifest(
         store=store,
         workspace=ws,
         manifest=manifest,
-        after_step_hook=lambda s: (_ for _ in ()).throw(_Abort) if s is kill_after else None,
+        after_step_hook=lambda s: (
+            (_ for _ in ()).throw(_Abort) if s is kill_after else None
+        ),
     )
     with pytest.raises(_Abort):
         saga.run()
@@ -168,9 +158,9 @@ def test_final_path_absent_until_commit_manifest(
     # Cardinal invariant: final artifact path never exists before
     # PROMOTE_COMMIT_MANIFEST's atomic swap.
     final = store.artifacts / "demo_pca"
-    assert not final.exists(), (
-        f"final path {final} must not exist after crash post-{kill_after.value}"
-    )
+    assert (
+        not final.exists()
+    ), f"final path {final} must not exist after crash post-{kill_after.value}"
     # Staging dir is the saga's recognisable scratch.
     staging = _staging_for(store, "demo_pca", manifest.physical_attempt_id)
     assert staging.is_dir()
@@ -193,9 +183,9 @@ def test_stage_crash_does_not_split_truth(
         store=store,
         workspace=ws,
         manifest=manifest,
-        after_step_hook=lambda s: (_ for _ in ()).throw(_Abort)
-        if s is PromotionStep.STAGE
-        else None,
+        after_step_hook=lambda s: (
+            (_ for _ in ()).throw(_Abort) if s is PromotionStep.STAGE else None
+        ),
     )
     with pytest.raises(_Abort):
         saga.run()
@@ -206,7 +196,9 @@ def test_stage_crash_does_not_split_truth(
 
     # Files live in staging; none escaped into the final artifact path.
     staging = _staging_for(store, "demo_pca", manifest.physical_attempt_id)
-    staged_files = sorted(p.relative_to(staging).as_posix() for p in staging.rglob("*") if p.is_file())
+    staged_files = sorted(
+        p.relative_to(staging).as_posix() for p in staging.rglob("*") if p.is_file()
+    )
     assert "embeddings.h5" in staged_files
     assert "logs/model.log" in staged_files
     assert ".mvd_owner" in staged_files

@@ -1,13 +1,15 @@
 import json
 import os
 from typing import Any, Dict, Union
-import numpy as np
-import scanpy as sc
+
 import h5py
 import matplotlib.pyplot as plt
-from .logging import get_logger
-from .io import load_config
+import numpy as np
+import scanpy as sc
+
 from .epoch_logger import sanitize_nan_inf
+from .io import load_config
+from .logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -82,7 +84,6 @@ class ModelFactory:
             model_specific_params = self.model_params.get(self.model_name)
             self.umap_color_type = model_specific_params.get("umap_color_type")
 
-        
     def train(self):
         """Abstract method for training the model. Subclasses must implement this."""
         logger.info("Training the model.")
@@ -106,7 +107,9 @@ class ModelFactory:
 
         tmp_filepath = f"{self.latent_filepath}.tmp"
         try:
-            logger.info(f"Saving latent embedding matrix to temporary file: {tmp_filepath}")
+            logger.info(
+                f"Saving latent embedding matrix to temporary file: {tmp_filepath}"
+            )
             with h5py.File(tmp_filepath, "w") as f:
                 f.create_dataset("latent", data=latent)
 

@@ -24,7 +24,7 @@ import logging
 import math
 import os
 import time
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +114,17 @@ class EpochLogger:
 
         ts_ms = int(time.time() * 1000)
         if self._fp is not None:
-            self._fp.write(json.dumps({"step": int(step), "timestamp": ts_ms, **clean}) + "\n")
+            self._fp.write(
+                json.dumps({"step": int(step), "timestamp": ts_ms, **clean}) + "\n"
+            )
             self._fp.flush()
 
         if self._mlflow is not None:
             for name, value in clean.items():
                 try:
-                    self._mlflow.log_metric(name, value, step=int(step), timestamp=ts_ms)
+                    self._mlflow.log_metric(
+                        name, value, step=int(step), timestamp=ts_ms
+                    )
                 except Exception as exc:
                     logger.warning("MLflow log_metric failed for %s: %s", name, exc)
 
@@ -186,6 +190,7 @@ def replay_history(
                 ep.log(step=step, **row)
     return cleaned
 
+
 def sanitize_nan_inf(obj: Any) -> Any:
     """Recursively replace NaN and +/-Inf float values with None, and convert non-serializable numeric types to Python natives."""
     if isinstance(obj, float):
@@ -209,6 +214,7 @@ def sanitize_nan_inf(obj: Any) -> Any:
     if isinstance(obj, tuple):
         return tuple(sanitize_nan_inf(value) for value in obj)
     return obj
+
 
 def series_to_float_list(values: Any) -> List[float]:
     """Convert training history (Series, ndarray, list) to a list of floats."""

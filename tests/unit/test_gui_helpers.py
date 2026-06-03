@@ -1,6 +1,46 @@
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
-from multiverse.gui import build_run_manifest, slugify_experiment_name
+import yaml
+
+from multiverse.gui import (_committed_job_memory, _host_gpu_status,
+                            build_run_manifest, slugify_experiment_name)
+
+
+def test_committed_job_memory_prefers_user_override(tmp_path):
+    # The Resource Ledger must reflect the RAM the user allocated in Configure,
+    # not just each model's model.yaml default (issue #28).
+    model_yaml = tmp_path / "model.yaml"
+    model_yaml.write_text(yaml.safe_dump({"resources": {"memory_limit": "16g"}}))
+    planned = [{"Dataset": "ds", "Model": "pca"}]
+
+    # User overrode to 64g in the Configure tab.
+    out = _committed_job_memory(
+        planned,
+        {("ds", "pca"): "64g"},
+        {"pca": str(model_yaml)},
+    )
+    assert out == {"ds_pca": 64.0}
+
+
+def test_committed_job_memory_falls_back_to_model_yaml(tmp_path):
+    model_yaml = tmp_path / "model.yaml"
+    model_yaml.write_text(yaml.safe_dump({"resources": {"memory_limit": "48g"}}))
+    out = _committed_job_memory(
+        [{"Dataset": "ds", "Model": "pca"}],
+        {},
+        {"pca": str(model_yaml)},
+    )
+    assert out == {"ds_pca": 48.0}
+
+
+def test_committed_job_memory_defaults_to_16g_when_unknown():
+    out = _committed_job_memory(
+        [{"Dataset": "ds", "Model": "pca"}],
+        {},
+        {"pca": None},
+    )
+    assert out == {"ds_pca": 16.0}
 
 
 def test_build_run_manifest_ignores_stale_pair_params():
@@ -35,7 +75,6 @@ def test_slugify_experiment_name_rejects_empty_value():
         raise AssertionError("Expected ValueError")
 
 
-
 def test_shared_state_migrates_old_gui_keys(monkeypatch):
     from multiverse import gui_state
 
@@ -58,8 +97,7 @@ def test_shared_state_migrates_old_gui_keys(monkeypatch):
 
 
 def test_fetch_runs_includes_dataset_name(tmp_path, monkeypatch):
-    from multiverse import gui
-    from multiverse import registry_db
+    from multiverse import gui, registry_db
 
     db_path = tmp_path / "state.db"
     for attr, path in {
@@ -97,7 +135,12 @@ def test_arrow_safe_summary_df_coerces_display_columns():
     df = gui.pd.DataFrame(
         [
             {"Run ID": 27, "Dataset": "PBMC10K", "Model": "pca", "Status": "FAILED"},
-            {"Run ID": "3801ed44-a927", "Dataset": 3, "Model": None, "Status": "ARTIFACT_SUCCESS"},
+            {
+                "Run ID": "3801ed44-a927",
+                "Dataset": 3,
+                "Model": None,
+                "Status": "ARTIFACT_SUCCESS",
+            },
         ]
     )
 
@@ -121,7 +164,9 @@ def test_selected_run_defaults_to_first_row(monkeypatch):
         {"run_id": 1, "status": "FAILED"},
     ]
 
-    selected = gui._selected_run_from_summary(gui.pd.DataFrame([{"Run ID": 2}, {"Run ID": 1}]), rows)
+    selected = gui._selected_run_from_summary(
+        gui.pd.DataFrame([{"Run ID": 2}, {"Run ID": 1}]), rows
+    )
 
     assert selected["run_id"] == 2
 
@@ -154,7 +199,9 @@ def test_run_configuration_renders_visible_shared_values(monkeypatch):
     monkeypatch.setattr(gui.st, "subheader", lambda label: subheaders.append(label))
     monkeypatch.setattr(gui.st, "text_input", lambda _label, value, **_kwargs: value)
     monkeypatch.setattr(gui.st, "number_input", lambda _label, value, **_kwargs: value)
-    monkeypatch.setattr(gui.st, "radio", lambda _label, options, index, **_kwargs: options[index])
+    monkeypatch.setattr(
+        gui.st, "radio", lambda _label, options, index, **_kwargs: options[index]
+    )
 
     config = gui._render_run_configuration()
 
@@ -182,12 +229,14 @@ def test_get_state_does_not_rewrite_widget_backed_shared_keys(monkeypatch):
                 raise AssertionError(f"unexpected rewrite of {key}")
             super().__setitem__(key, value)
 
-    fake_state = GuardedState({
-        "shared_run_mode": "Run Gridsearch",
-        "shared_experiment_name": "exp",
-        "shared_seed": 3,
-        "shared_manifest_path": "manifest.yaml",
-    })
+    fake_state = GuardedState(
+        {
+            "shared_run_mode": "Run Gridsearch",
+            "shared_experiment_name": "exp",
+            "shared_seed": 3,
+            "shared_manifest_path": "manifest.yaml",
+        }
+    )
     monkeypatch.setattr(gui_state.st, "session_state", fake_state)
 
     state = gui_state.get_state()
@@ -199,12 +248,30 @@ def test_get_state_does_not_rewrite_widget_backed_shared_keys(monkeypatch):
 def test_configure_job_matrix_key_does_not_call_get_state_after_widgets(monkeypatch):
     from multiverse import gui
 
-    monkeypatch.setattr(gui, "fetch_registry_data", lambda: ([{"name": "Dataset A", "slug": "dataset-a"}], [{"name": "pca"}]))
-    monkeypatch.setattr(gui, "generate_compatibility_matrix", lambda datasets, models: gui.pd.DataFrame({"pca": ["Compatible"]}, index=["Dataset A"]))
+    monkeypatch.setattr(
+        gui,
+        "fetch_registry_data",
+        lambda: ([{"name": "Dataset A", "slug": "dataset-a"}], [{"name": "pca"}]),
+    )
+    monkeypatch.setattr(
+        gui,
+        "generate_compatibility_matrix",
+        lambda datasets, models: gui.pd.DataFrame(
+            {"pca": ["Compatible"]}, index=["Dataset A"]
+        ),
+    )
     monkeypatch.setattr(gui, "_render_load_manifest_panel", lambda: None)
     monkeypatch.setattr(gui, "_render_manifest_load_notice", lambda: None)
-    monkeypatch.setattr(gui, "_render_run_configuration", lambda: ("exp", 42, "Use User Params", "run_manifest.yaml"))
-    monkeypatch.setattr(gui, "get_state", lambda: (_ for _ in ()).throw(AssertionError("late get_state call")))
+    monkeypatch.setattr(
+        gui,
+        "_render_run_configuration",
+        lambda: ("exp", 42, "Use User Params", "run_manifest.yaml"),
+    )
+    monkeypatch.setattr(
+        gui,
+        "get_state",
+        lambda: (_ for _ in ()).throw(AssertionError("late get_state call")),
+    )
 
     fake_state = {
         "selected_datasets": ["Dataset A"],
@@ -218,16 +285,22 @@ def test_configure_job_matrix_key_does_not_call_get_state_after_widgets(monkeypa
     monkeypatch.setattr(gui.st, "caption", lambda *args, **kwargs: None)
     monkeypatch.setattr(gui.st, "info", lambda *args, **kwargs: None)
     monkeypatch.setattr(gui.st, "warning", lambda *args, **kwargs: None)
-    monkeypatch.setattr(gui.st, "multiselect", lambda label, options, default, key: default)
+    monkeypatch.setattr(
+        gui.st, "multiselect", lambda label, options, default, key: default
+    )
 
     def fake_data_editor(_df, **kwargs):
         assert kwargs["key"] == "job_matrix_editor_v5"
-        return gui.pd.DataFrame([{
-            "Selected": False,
-            "Dataset": "Dataset A",
-            "Model": "pca",
-            "Compatibility": "Compatible",
-        }])
+        return gui.pd.DataFrame(
+            [
+                {
+                    "Selected": False,
+                    "Dataset": "Dataset A",
+                    "Model": "pca",
+                    "Compatibility": "Compatible",
+                }
+            ]
+        )
 
     monkeypatch.setattr(gui.st, "data_editor", fake_data_editor)
 
@@ -242,10 +315,22 @@ def test_stage_loaded_manifest_imports_jobs_and_params(monkeypatch):
 
     gui._stage_loaded_manifest(
         {
-            "globals": {"experiment_name": "exp", "random_seed": 9, "run_user_params": True},
+            "globals": {
+                "experiment_name": "exp",
+                "random_seed": 9,
+                "run_user_params": True,
+            },
             "jobs": [
-                {"dataset_slug": "pbmc10k", "model_name": "PCA", "model_params": {"n_components": 2}},
-                {"dataset_slug": "pbmc10k", "model_name": "MOFA", "model_params": {"n_factors": 3}},
+                {
+                    "dataset_slug": "pbmc10k",
+                    "model_name": "PCA",
+                    "model_params": {"n_components": 2},
+                },
+                {
+                    "dataset_slug": "pbmc10k",
+                    "model_name": "MOFA",
+                    "model_params": {"n_factors": 3},
+                },
             ],
         },
         "run_manifest.yaml",
@@ -258,7 +343,9 @@ def test_stage_loaded_manifest_imports_jobs_and_params(monkeypatch):
         {"dataset_slug": "pbmc10k", "model_name": "PCA"},
         {"dataset_slug": "pbmc10k", "model_name": "MOFA"},
     ]
-    assert fake_state["_pending_manifest_pair_params"][("pbmc10k", "PCA")] == {"n_components": 2}
+    assert fake_state["_pending_manifest_pair_params"][("pbmc10k", "PCA")] == {
+        "n_components": 2
+    }
     assert fake_state["_manifest_load_notice"] == "Manifest settings loaded (2 jobs)."
 
 
@@ -321,12 +408,16 @@ def test_find_umap_images_returns_only_supported_umap_images(tmp_path):
     (tmp_path / "plot.png").write_bytes(b"png")
     (tmp_path / "umap.txt").write_text("not an image")
 
-    found = [path.relative_to(tmp_path).as_posix() for path in find_umap_images(tmp_path)]
+    found = [
+        path.relative_to(tmp_path).as_posix() for path in find_umap_images(tmp_path)
+    ]
 
     assert found == ["nested/rna_umap.jpeg", "umap.png"]
 
 
-def test_render_artifact_tree_expands_umap_image_with_preview_and_download(tmp_path, monkeypatch):
+def test_render_artifact_tree_expands_umap_image_with_preview_and_download(
+    tmp_path, monkeypatch
+):
     from multiverse import gui_artifacts
 
     image = tmp_path / "umap.png"
@@ -345,9 +436,21 @@ def test_render_artifact_tree_expands_umap_image_with_preview_and_download(tmp_p
         return Expander()
 
     monkeypatch.setattr(gui_artifacts.st, "expander", fake_expander)
-    monkeypatch.setattr(gui_artifacts.st, "image", lambda *args, **kwargs: calls["image"].append((args, kwargs)))
-    monkeypatch.setattr(gui_artifacts.st, "download_button", lambda *args, **kwargs: calls["download"].append((args, kwargs)) or False)
-    monkeypatch.setattr(gui_artifacts.st, "dataframe", lambda *args, **kwargs: calls["dataframe"].append((args, kwargs)))
+    monkeypatch.setattr(
+        gui_artifacts.st,
+        "image",
+        lambda *args, **kwargs: calls["image"].append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        gui_artifacts.st,
+        "download_button",
+        lambda *args, **kwargs: calls["download"].append((args, kwargs)) or False,
+    )
+    monkeypatch.setattr(
+        gui_artifacts.st,
+        "dataframe",
+        lambda *args, **kwargs: calls["dataframe"].append((args, kwargs)),
+    )
 
     gui_artifacts.render_artifact_tree(tmp_path)
 
@@ -356,3 +459,67 @@ def test_render_artifact_tree_expands_umap_image_with_preview_and_download(tmp_p
     assert calls["image"][0][0][0] == str(image)
     assert calls["download"]
     assert calls["download"][0][1]["file_name"] == "umap.png"
+
+
+# ---------------------------------------------------------------------------
+# _host_gpu_status — GPU preflight checks
+# ---------------------------------------------------------------------------
+
+
+def test_host_gpu_status_no_driver():
+    """nvidia-smi failure → no_driver, even if Docker is fine."""
+    with patch("multiverse.docker_supervisor.client.gpu_available", return_value=False):
+        status, msg = _host_gpu_status()
+    assert status == "no_driver"
+    assert msg is not None
+    assert "nvidia-smi" in msg.lower()
+
+
+def test_host_gpu_status_no_runtime():
+    """nvidia-smi OK but Docker runtime list has no 'nvidia' entry."""
+    mock_client = MagicMock()
+    mock_client.info.return_value = {"Runtimes": {"runc": {}}}  # no nvidia
+    mock_docker = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+
+    with (
+        patch("multiverse.docker_supervisor.client.gpu_available", return_value=True),
+        patch("importlib.import_module", return_value=mock_docker),
+    ):
+        status, msg = _host_gpu_status()
+
+    assert status == "no_runtime"
+    assert msg is not None
+    assert "nvidia-container-toolkit" in msg.lower()
+
+
+def test_host_gpu_status_docker_unavailable():
+    """nvidia-smi OK but Docker daemon raises on from_env()."""
+    mock_docker = MagicMock()
+    mock_docker.from_env.side_effect = Exception("daemon not running")
+
+    with (
+        patch("multiverse.docker_supervisor.client.gpu_available", return_value=True),
+        patch("importlib.import_module", return_value=mock_docker),
+    ):
+        status, msg = _host_gpu_status()
+
+    assert status == "docker_unavailable"
+    assert msg is not None
+
+
+def test_host_gpu_status_ok():
+    """Both nvidia-smi and Docker nvidia runtime present → ok."""
+    mock_client = MagicMock()
+    mock_client.info.return_value = {"Runtimes": {"nvidia": {}, "runc": {}}}
+    mock_docker = MagicMock()
+    mock_docker.from_env.return_value = mock_client
+
+    with (
+        patch("multiverse.docker_supervisor.client.gpu_available", return_value=True),
+        patch("importlib.import_module", return_value=mock_docker),
+    ):
+        status, msg = _host_gpu_status()
+
+    assert status == "ok"
+    assert msg is None

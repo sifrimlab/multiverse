@@ -1,4 +1,5 @@
 """Tests for the pre-flight validation gate in cli.py."""
+
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -55,10 +56,17 @@ def _write_h5mu_modality_obs_only(path, batch_values, cell_type_values):
     """Write just enough h5mu structure for preflight HDF5 peeking."""
     with h5py.File(path, "w") as f:
         obs = f.create_group("obs")
-        obs.create_dataset("cells", data=np.array([f"cell{i}".encode() for i in range(len(batch_values))]))
+        obs.create_dataset(
+            "cells",
+            data=np.array([f"cell{i}".encode() for i in range(len(batch_values))]),
+        )
         mod_obs = f.create_group("mod").create_group("rna").create_group("obs")
-        mod_obs.create_dataset("batch", data=np.array([str(v).encode() for v in batch_values]))
-        mod_obs.create_dataset("cell_type", data=np.array([str(v).encode() for v in cell_type_values]))
+        mod_obs.create_dataset(
+            "batch", data=np.array([str(v).encode() for v in batch_values])
+        )
+        mod_obs.create_dataset(
+            "cell_type", data=np.array([str(v).encode() for v in cell_type_values])
+        )
 
 
 class TestValidatePendingJobs:
@@ -79,7 +87,9 @@ class TestValidatePendingJobs:
 
         path = str(tmp_path / "data.h5ad")
         _write_h5mu(path, batch_values=["b1", "b2"])
-        job = _make_job(model_slug="multivi", omics_available=["rna", "atac"], dataset_path=path)
+        job = _make_job(
+            model_slug="multivi", omics_available=["rna", "atac"], dataset_path=path
+        )
         validated, warnings = validate_pending_jobs([job])
 
         runnable = [j for j in validated if not j.get("_skipped")]
@@ -117,7 +127,9 @@ class TestValidatePendingJobs:
 
         runnable = [j for j in validated if not j.get("_skipped")]
         assert len(runnable) == 1, "Job should NOT be skipped for missing cell_type"
-        assert any("cell_type" in w for w in warnings), "Warning about missing cell_type expected"
+        assert any(
+            "cell_type" in w for w in warnings
+        ), "Warning about missing cell_type expected"
 
     def test_single_batch_warning_issued_but_job_not_skipped(self, tmp_path):
         from multiverse.runner.cli import validate_pending_jobs
@@ -137,10 +149,13 @@ class TestValidatePendingJobs:
 
         runnable = [j for j in validated if not j.get("_skipped")]
         assert len(runnable) == 1, "Job should NOT be skipped for single batch"
-        assert any("1 batch" in w for w in warnings), "Warning about single batch expected"
+        assert any(
+            "1 batch" in w for w in warnings
+        ), "Warning about single batch expected"
 
     def test_dataset_file_opened_once_for_multiple_jobs(self, tmp_path):
-        from multiverse.runner.cli import validate_pending_jobs, _read_obs_columns
+        from multiverse.runner.cli import (_read_obs_columns,
+                                           validate_pending_jobs)
 
         path = str(tmp_path / "data.h5ad")
         _write_h5mu(path, batch_values=["b1", "b2"])
@@ -149,7 +164,9 @@ class TestValidatePendingJobs:
             _make_job(dataset_id=1, dataset_path=path, model_slug="pca"),
             _make_job(dataset_id=1, dataset_path=path, model_slug="mofa"),
         ]
-        with patch("multiverse.runner.cli._read_obs_columns", wraps=_read_obs_columns) as mock_read:
+        with patch(
+            "multiverse.runner.cli._read_obs_columns", wraps=_read_obs_columns
+        ) as mock_read:
             validate_pending_jobs(jobs)
             # Same dataset_id → file should be read only once
             assert mock_read.call_count == 1
@@ -179,7 +196,6 @@ class TestValidatePendingJobs:
         validated, warnings = validate_pending_jobs([job])
         runnable = [j for j in validated if not j.get("_skipped")]
         assert len(runnable) == 1
-
 
     def test_empty_anndata_is_skipped(self, tmp_path):
         from multiverse.runner.cli import validate_pending_jobs
@@ -228,4 +244,3 @@ class TestValidatePendingJobs:
 
         assert not [j for j in validated if j.get("_skipped")]
         assert any("only 1 batch" in w for w in warnings)
-

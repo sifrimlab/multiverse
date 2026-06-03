@@ -87,11 +87,11 @@ def doctor_main(argv: Optional[List[str]] = None) -> int:
 
     from .doctor import run_storage_probes, sweep_expired_health_probes
     from .doctor.engines_probe import probe_container_engines
-    from .doctor.slurm_probe import probe_slurm_deep
     from .doctor.health_probes import probe_workspace_directory
     from .doctor.projection_probe import probe_projection_consistency
     from .doctor.report import DoctorReport, DoctorSection, SectionStatus
     from .doctor.reservation_probe import probe_reservation_ledger
+    from .doctor.slurm_probe import probe_slurm_deep
     from .doctor.state_paths_probe import probe_state_root
 
     explicit = args.state_root is not None or args.root is not None
@@ -354,12 +354,8 @@ def gc_main(argv: Optional[List[str]] = None) -> int:
         print("--apply and --dry-run are mutually exclusive", file=sys.stderr)
         return 2
 
-    from .gc import (
-        RetentionPolicy,
-        apply_plan,
-        build_plan,
-        enumerate_candidates,
-    )
+    from .gc import (RetentionPolicy, apply_plan, build_plan,
+                     enumerate_candidates)
     from .promotion import StoreLayout
 
     store_root = args.store_root or _default_store_root()
@@ -376,9 +372,7 @@ def gc_main(argv: Optional[List[str]] = None) -> int:
         require_export=not args.no_export_required,
         apply_to_promoted=args.apply_to_promoted,
     )
-    result = apply_plan(
-        plan, store_root=store.root, apply=bool(args.apply)
-    )
+    result = apply_plan(plan, store_root=store.root, apply=bool(args.apply))
     print(
         f"gc {'apply' if args.apply else 'dry-run'}: "
         f"would-delete={len(plan.to_delete)} kept={len(plan.to_keep)}; "
@@ -469,7 +463,13 @@ def _build_mlflow_target(tracking_uri: Optional[str]):
             "ml-legacy extra"
         ) from exc
 
-    uri = tracking_uri or os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    from multiverse.ports import default_mlflow_tracking_uri
+
+    uri = (
+        tracking_uri
+        or os.environ.get("MLFLOW_TRACKING_URI")
+        or default_mlflow_tracking_uri()
+    )
 
     # Defer to a thin adapter living alongside the projection module.
     from .projection.base import MLflowTarget  # for typing only
@@ -543,6 +543,7 @@ def migrate_state_dir_main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     import shutil
+
     from .state_paths import REPO_ROOT_GUESS, find_legacy_db
 
     legacy_db = find_legacy_db()
@@ -560,7 +561,9 @@ def migrate_state_dir_main(argv: Optional[List[str]] = None) -> int:
     dst = (args.dst or _default_state_root()).expanduser().resolve()
 
     if src == dst:
-        print(f"migrate-state-dir: source and destination are the same ({src!r}); nothing to do.")
+        print(
+            f"migrate-state-dir: source and destination are the same ({src!r}); nothing to do."
+        )
         return 0
 
     src_db = src / "mvexp_state.db"
@@ -724,13 +727,8 @@ def slurm_submit_main(argv: Optional[List[str]] = None) -> int:
     from .artifact import BootContext
     from .broker import HostMetrics, InMemoryHostObserver, ResourceBroker
     from .journal import JournalLayout, JournalWriter
-    from .mvd import (
-        Kernel,
-        KernelConfig,
-        MvdSlurmExecutor,
-        PrimaryState,
-        build_slurm_executor_options,
-    )
+    from .mvd import (Kernel, KernelConfig, MvdSlurmExecutor, PrimaryState,
+                      build_slurm_executor_options)
     from .promotion import StoreLayout
     from .slurm import RealSlurmEngine
 
@@ -814,7 +812,9 @@ def slurm_submit_main(argv: Optional[List[str]] = None) -> int:
         snap = await kernel.query_run(physical_attempt_id=attempt)
         print(json.dumps(snap, indent=2, sort_keys=True, default=str))
         await kernel.shutdown()
-        return 0 if snap.get("primary_state") == PrimaryState.ARTIFACT_SUCCESS.value else 1
+        return (
+            0 if snap.get("primary_state") == PrimaryState.ARTIFACT_SUCCESS.value else 1
+        )
 
     return _asyncio.run(_drive())
 
@@ -842,9 +842,9 @@ def _resolve_def_file(def_file_ref: str, manifest_path: Path):
 
     repo_root = _Path(MODELS_DIR).parent.parent  # <repo>/store/models -> <repo>
     candidates = [
-        _Path.cwd() / ref,            # repo-root-relative when run from checkout
-        repo_root / ref,              # repo-root-relative, location-independent
-        manifest_path.parent / ref,   # manifest-dir-relative
+        _Path.cwd() / ref,  # repo-root-relative when run from checkout
+        repo_root / ref,  # repo-root-relative, location-independent
+        manifest_path.parent / ref,  # manifest-dir-relative
     ]
     for cand in candidates:
         if cand.is_file():
@@ -892,8 +892,8 @@ def build_sif_main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    from .models_ingest import load_model_manifest, resolve_model_manifest_path
     from .asset_registry import set_model_sif_path
+    from .models_ingest import load_model_manifest, resolve_model_manifest_path
     from .state_paths import resolve_state_root
 
     state_root = args.state_root or resolve_state_root()
@@ -926,17 +926,26 @@ def build_sif_main(argv=None):
         elif manifest.apptainer and manifest.apptainer.def_file:
             method = "def-file"
         else:
-            print("error: cannot determine build method; specify --method docker-daemon or --method def-file", file=sys.stderr)
+            print(
+                "error: cannot determine build method; specify --method docker-daemon or --method def-file",
+                file=sys.stderr,
+            )
             return 1
 
     # --- Preflight checks ---
     apptainer_bin = shutil.which("apptainer") or shutil.which("singularity")
     if apptainer_bin is None:
-        print("error: 'apptainer' (or 'singularity') not found on PATH; install Apptainer first", file=sys.stderr)
+        print(
+            "error: 'apptainer' (or 'singularity') not found on PATH; install Apptainer first",
+            file=sys.stderr,
+        )
         return 1
 
     if output_path.exists() and not args.force:
-        print(f"error: output file already exists: {output_path}; use --force to overwrite", file=sys.stderr)
+        print(
+            f"error: output file already exists: {output_path}; use --force to overwrite",
+            file=sys.stderr,
+        )
         return 1
 
     # --force also passes through to `apptainer build --force` (and removes any
@@ -949,12 +958,18 @@ def build_sif_main(argv=None):
         try:
             output_path.unlink(missing_ok=True)
         except OSError as exc:
-            print(f"error: could not remove existing output {output_path}: {exc}", file=sys.stderr)
+            print(
+                f"error: could not remove existing output {output_path}: {exc}",
+                file=sys.stderr,
+            )
             return 1
 
     if method == "docker-daemon":
         if manifest.runtime is None:
-            print("error: --method docker-daemon requires 'runtime.image' in model.yaml", file=sys.stderr)
+            print(
+                "error: --method docker-daemon requires 'runtime.image' in model.yaml",
+                file=sys.stderr,
+            )
             return 1
         image_ref = manifest.runtime.image
         # Check Docker image exists locally
@@ -964,13 +979,19 @@ def build_sif_main(argv=None):
             text=True,
         )
         if check.returncode != 0:
-            print(f"error: Docker image '{image_ref}' not found locally; build it first with 'make build-{args.slug}'", file=sys.stderr)
+            print(
+                f"error: Docker image '{image_ref}' not found locally; build it first with 'make build-{args.slug}'",
+                file=sys.stderr,
+            )
             return 1
         build_cmd = [*build_prefix, str(output_path), f"docker-daemon://{image_ref}"]
 
     elif method == "def-file":
         if manifest.apptainer is None or not manifest.apptainer.def_file:
-            print("error: --method def-file requires 'apptainer.def_file' in model.yaml", file=sys.stderr)
+            print(
+                "error: --method def-file requires 'apptainer.def_file' in model.yaml",
+                file=sys.stderr,
+            )
             return 1
         def_file = _resolve_def_file(manifest.apptainer.def_file, Path(manifest_path))
         if def_file is None:
@@ -999,7 +1020,10 @@ def build_sif_main(argv=None):
     proc.wait()
 
     if proc.returncode != 0:
-        print(f"error: apptainer build exited with code {proc.returncode}", file=sys.stderr)
+        print(
+            f"error: apptainer build exited with code {proc.returncode}",
+            file=sys.stderr,
+        )
         return proc.returncode
 
     print(f"SIF built: {output_path}")
@@ -1009,7 +1033,9 @@ def build_sif_main(argv=None):
     # row carries its path. If the model is not yet registered, register it
     # from the manifest first (idempotent) so the update lands on a real row
     # rather than silently no-op'ing.
-    updated = set_model_sif_path(args.slug, version, str(output_path), state_root=state_root)
+    updated = set_model_sif_path(
+        args.slug, version, str(output_path), state_root=state_root
+    )
     if not updated:
         from .models_ingest import register_model_from_manifest
 
@@ -1026,7 +1052,9 @@ def build_sif_main(argv=None):
                 file=sys.stderr,
             )
             return 1
-        updated = set_model_sif_path(args.slug, version, str(output_path), state_root=state_root)
+        updated = set_model_sif_path(
+            args.slug, version, str(output_path), state_root=state_root
+        )
 
     if updated:
         print(f"Recorded sif_path in asset registry: {output_path}")

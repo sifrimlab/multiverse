@@ -16,12 +16,9 @@ from typing import Optional
 
 import yaml
 
-from .state_paths import (
-    CONFIG_FILENAME,
-    REPO_ROOT_GUESS as _REPO_ROOT_GUESS,
-    find_config_file,
-    resolve_state_root,
-)
+from .state_paths import CONFIG_FILENAME
+from .state_paths import REPO_ROOT_GUESS as _REPO_ROOT_GUESS
+from .state_paths import find_config_file, resolve_state_root
 
 
 def _default_user_config_path() -> Path:

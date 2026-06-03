@@ -36,15 +36,12 @@ from .index import INDEX_FILENAME, SqliteIndex, open_index
 from .journal import JournalKind, JournalLayout, JournalReader
 from .mvd.state import PrimaryState
 
-
 # ---------------------------------------------------------------------------
 # Read API
 # ---------------------------------------------------------------------------
 
 
-def get_run(
-    state_root: Path, *, physical_attempt_id: str
-) -> Optional[Dict[str, Any]]:
+def get_run(state_root: Path, *, physical_attempt_id: str) -> Optional[Dict[str, Any]]:
     """Return the projection's view of one attempt, or ``None`` if the
     projection has not seen it yet.
 
@@ -77,9 +74,7 @@ def list_runs(
         )
 
 
-def projections_for(
-    state_root: Path, *, physical_attempt_id: str
-) -> Dict[str, str]:
+def projections_for(state_root: Path, *, physical_attempt_id: str) -> Dict[str, str]:
     db_path = Path(state_root) / INDEX_FILENAME
     if not db_path.is_file():
         return {}

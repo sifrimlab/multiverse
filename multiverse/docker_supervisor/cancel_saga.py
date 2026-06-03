@@ -30,20 +30,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from ..artifact import (
-    BootContext,
-    ProducedBy,
-    RunAttemptManifest,
-    produced_at_now,
-    write_run_attempt_manifest,
-)
+from ..artifact import (BootContext, ProducedBy, RunAttemptManifest,
+                        produced_at_now, write_run_attempt_manifest)
 from ..artifact.checksums import fsync_path
 from ..journal import JournalKind, JournalWriter
 from ..promotion.layout import StoreLayout
 from .client import ContainerEngine
 from .errors import NoSuchContainerError
 from .leases import ContainerLease
-
 
 DEFAULT_CANCEL_GRACE_SECONDS = 10
 

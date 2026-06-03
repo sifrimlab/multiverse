@@ -21,32 +21,17 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    BootContext,
-    ImageIdentity,
-    ProducedAt,
-    ProducedBy,
-    ArtifactManifest,
-    compute_manifest_hash,
-    compute_params_hash,
-    produced_at_now,
-    write_manifest,
-)
-from multiverse.docker_supervisor import (
-    InMemoryContainerEngine,
-)
-from multiverse.index import (
-    INDEX_FILENAME,
-    RebuildOutcome,
-    SCHEMA_VERSION,
-    open_index,
-    rebuild_index,
-)
+from multiverse.artifact import (ARTIFACT_MANIFEST_FILENAME, ArtifactManifest,
+                                 BootContext, ImageIdentity, ProducedAt,
+                                 ProducedBy, compute_manifest_hash,
+                                 compute_params_hash, produced_at_now,
+                                 write_manifest)
+from multiverse.docker_supervisor import InMemoryContainerEngine
+from multiverse.index import (INDEX_FILENAME, SCHEMA_VERSION, RebuildOutcome,
+                              open_index, rebuild_index)
 from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 from multiverse.mvd.state import PrimaryState
 from multiverse.promotion import StoreLayout
-
 
 # ---------------------------------------------------------------------------
 # fixtures

@@ -25,7 +25,6 @@ from pathlib import Path
 
 import pytest
 
-
 CONTROL_PLANE_TEST_MODULES = (
     "tests.unit.test_artifact_contract",
     "tests.unit.test_artifact_validation",

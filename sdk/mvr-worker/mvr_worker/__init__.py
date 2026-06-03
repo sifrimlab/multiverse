@@ -1,24 +1,11 @@
-from .device import resolve_device, get_device
-from .epoch_logger import (
-    EpochLogger,
-    replay_history,
-    scvi_history_to_dict,
-    series_to_float_list,
-)
-from .io import (
-    INPUT_DATA_PATH,
-    JOB_SPEC_PATH,
-    OUTPUT_DIR,
-    anndata_concatenate,
-    build_model_config,
-    preprocess_mudata,
-    load_input_mudata,
-    load_job_spec,
-    save_embeddings,
-    save_umap,
-    setup_container_logging,
-)
 from .base import ModelFactory
+from .device import get_device, resolve_device
+from .epoch_logger import (EpochLogger, replay_history, scvi_history_to_dict,
+                           series_to_float_list)
+from .io import (INPUT_DATA_PATH, JOB_SPEC_PATH, OUTPUT_DIR,
+                 anndata_concatenate, build_model_config, load_input_mudata,
+                 load_job_spec, preprocess_mudata, resolve_preprocess_params,
+                 save_embeddings, save_umap, setup_container_logging)
 from .logging import get_logger, setup_logging
 
 __all__ = [
@@ -33,6 +20,7 @@ __all__ = [
     "load_input_mudata",
     "preprocess_mudata",
     "load_job_spec",
+    "resolve_preprocess_params",
     "resolve_device",
     "save_embeddings",
     "save_umap",
@@ -42,4 +30,3 @@ __all__ = [
     "get_device",
     "scvi_history_to_dict",
 ]
-

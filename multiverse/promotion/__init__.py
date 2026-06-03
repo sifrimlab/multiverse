@@ -19,36 +19,15 @@ There is no ``os.unlink`` / ``os.rmdir`` / ``shutil.rmtree`` anywhere in this
 package — enforced in CI by ``tests/unit/test_promotion_no_rmtree.py``.
 """
 
-from .errors import (
-    OwnershipMismatchError,
-    PromotionError,
-    SymlinkPolicyError,
-)
-from .fsutil import (
-    StoreRoot,
-    is_same_filesystem,
-    open_dir_fd,
-    safe_relative_path,
-)
+from .errors import OwnershipMismatchError, PromotionError, SymlinkPolicyError
+from .fsutil import (StoreRoot, is_same_filesystem, open_dir_fd,
+                     safe_relative_path)
 from .layout import StoreLayout
-from .quarantine import (
-    QUARANTINE_REPORT_FILENAME,
-    TOMBSTONE_SUFFIX,
-    QuarantineReport,
-    quarantine_directory,
-)
-from .saga import (
-    PromotionOutcome,
-    PromotionResult,
-    PromotionSaga,
-    PromotionStep,
-    OwnerToken,
-)
-from .tokens import (
-    OWNER_TOKEN_FILENAME,
-    read_owner_token,
-    write_owner_token,
-)
+from .quarantine import (QUARANTINE_REPORT_FILENAME, TOMBSTONE_SUFFIX,
+                         QuarantineReport, quarantine_directory)
+from .saga import (OwnerToken, PromotionOutcome, PromotionResult,
+                   PromotionSaga, PromotionStep)
+from .tokens import OWNER_TOKEN_FILENAME, read_owner_token, write_owner_token
 
 __all__ = [
     "OWNER_TOKEN_FILENAME",

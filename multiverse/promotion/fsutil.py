@@ -117,9 +117,7 @@ def safe_relative_path(base: PathLike, candidate: PathLike) -> Path:
     try:
         resolved.relative_to(base_resolved)
     except ValueError as exc:
-        raise ValueError(
-            f"path {candidate!r} escapes managed root {base!r}"
-        ) from exc
+        raise ValueError(f"path {candidate!r} escapes managed root {base!r}") from exc
     return resolved
 
 
@@ -188,9 +186,7 @@ def staged_copy_directory(
     staging.mkdir(parents=True, exist_ok=False)
     for src_file in src_path.rglob("*"):
         if src_file.is_symlink():
-            raise SymlinkPolicyError(
-                f"symlink in promotion source: {src_file}"
-            )
+            raise SymlinkPolicyError(f"symlink in promotion source: {src_file}")
         rel = src_file.relative_to(src_path)
         dst_file = staging / rel
         if src_file.is_dir():

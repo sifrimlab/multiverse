@@ -17,7 +17,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional
 
-
 DEFAULT_LEASE_TTL_SECONDS = 60
 
 
@@ -97,7 +96,9 @@ class LeaseLedger:
     def active(self) -> List[ContainerLease]:
         return [l for l in self.leases.values() if not l.closed]
 
-    def expired(self, *, now_monotonic_ns: Optional[int] = None) -> List[ContainerLease]:
+    def expired(
+        self, *, now_monotonic_ns: Optional[int] = None
+    ) -> List[ContainerLease]:
         return [
             l
             for l in self.leases.values()

@@ -21,48 +21,41 @@ import h5py
 import numpy as np
 import pytest
 
-from multiverse.artifact import (
-    ARTIFACT_MANIFEST_FILENAME,
-    ImageIdentity,
-    read_manifest,
-)
-from multiverse.simple import (
-    JobOutcome,
-    SimpleModeRunner,
-    SyntheticBackend,
-    parse_simple_manifest,
-)
+from multiverse.artifact import (ARTIFACT_MANIFEST_FILENAME, ImageIdentity,
+                                 read_manifest)
+from multiverse.simple import (JobOutcome, SimpleModeRunner, SyntheticBackend,
+                               parse_simple_manifest)
 from multiverse.simple.cli import build_parser
 from multiverse.simple.runner import JobStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _write_manifest_file(tmp_path: Path, n_obs: int = 4,
-                         digest: str | None = "sha256:" + "a" * 64) -> Path:
+def _write_manifest_file(
+    tmp_path: Path, n_obs: int = 4, digest: str | None = "sha256:" + "a" * 64
+) -> Path:
     digest_line = f'      image_digest: "{digest}"\n' if digest else ""
     text = (
         'schema_version: "1"\n'
-        'globals:\n'
+        "globals:\n"
         '  mv_contract_version: "1"\n'
-        'jobs:\n'
+        "jobs:\n"
         '  - name: "demo_pca"\n'
-        '    model:\n'
+        "    model:\n"
         '      slug: "pca"\n'
         '      version: "1.0.0"\n'
         '      image: "multiverse-pca:1.0.0"\n'
-        f'{digest_line}'
+        f"{digest_line}"
         '      contract_version: "1"\n'
-        '    dataset:\n'
+        "    dataset:\n"
         '      slug: "demo"\n'
         '      path: "/tmp/nonexistent/demo.h5mu"\n'
-        f'      n_obs: {n_obs}\n'
-        '      n_vars: 32\n'
-        '    params:\n'
-        '      n_components: 4\n'
+        f"      n_obs: {n_obs}\n"
+        "      n_vars: 32\n"
+        "    params:\n"
+        "      n_components: 4\n"
     )
     path = tmp_path / "manifest.yaml"
     path.write_text(text, encoding="utf-8")
@@ -74,8 +67,8 @@ def _good_producer(n_obs: int):
 
     def _producer(workspace: Path, job: Any) -> None:
         with h5py.File(workspace / "embeddings.h5", "w") as f:
-            arr = np.random.default_rng(0).standard_normal((n_obs, 4)).astype(
-                np.float32
+            arr = (
+                np.random.default_rng(0).standard_normal((n_obs, 4)).astype(np.float32)
             )
             f.create_dataset("latent", data=arr)
 
@@ -166,6 +159,9 @@ def test_wrong_n_obs_produces_failed_attempt_with_preserved_workspace(
     # Preserved workspace under failure_dir/workspace/ (S5).
     preserved = outcome.failure_dir / "workspace" / "embeddings.h5"
     assert preserved.is_file()
+    # The canonical failed artifact is _failed/<job>/workspace; the original
+    # _workspaces/<job> is removed after the copy to avoid a duplicate (#24).
+    assert not (out / "_workspaces" / "demo_pca").exists()
     attempt = json.loads(
         (outcome.failure_dir / "run_attempt_manifest.json").read_text()
     )
@@ -226,8 +222,7 @@ def test_strict_mode_refuses_unverified_local(tmp_path: Path) -> None:
 
 
 def test_strict_mode_accepts_registry_digest(tmp_path: Path) -> None:
-    manifest_path = _write_manifest_file(tmp_path, n_obs=4,
-                                         digest="sha256:" + "b" * 64)
+    manifest_path = _write_manifest_file(tmp_path, n_obs=4, digest="sha256:" + "b" * 64)
     manifest = parse_simple_manifest(manifest_path)
     runner = SimpleModeRunner(
         backend=SyntheticBackend(producer=_good_producer(4)),
@@ -237,9 +232,10 @@ def test_strict_mode_accepts_registry_digest(tmp_path: Path) -> None:
     result = runner.run(manifest)
     assert result.all_succeeded
     loaded = read_manifest(result.outcomes[0].bundle_path)
-    assert loaded.image_identity.kind == ImageIdentity.registry_digest(
-        "sha256:" + "b" * 64
-    ).kind
+    assert (
+        loaded.image_identity.kind
+        == ImageIdentity.registry_digest("sha256:" + "b" * 64).kind
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -248,8 +244,7 @@ def test_strict_mode_accepts_registry_digest(tmp_path: Path) -> None:
 
 
 def test_logical_run_id_is_stable_across_runs(tmp_path: Path) -> None:
-    manifest_path = _write_manifest_file(tmp_path, n_obs=4,
-                                         digest="sha256:" + "d" * 64)
+    manifest_path = _write_manifest_file(tmp_path, n_obs=4, digest="sha256:" + "d" * 64)
     manifest = parse_simple_manifest(manifest_path)
 
     out_a = tmp_path / "out_a"

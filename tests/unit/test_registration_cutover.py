@@ -13,11 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.registration.errors import (
-    PathEscapeError,
-    PrivilegedRegistrationError,
-)
-
+from multiverse.registration.errors import (PathEscapeError,
+                                            PrivilegedRegistrationError)
 
 # ---------------------------------------------------------------------------
 # 1. Dataset registration rejects path-escape
@@ -44,7 +41,9 @@ def test_dataset_register_from_manifest_rejects_path_escape(tmp_path: Path) -> N
         register_from_manifest(str(manifest))
 
 
-def test_dataset_register_from_manifest_rejects_absolute_outside(tmp_path: Path) -> None:
+def test_dataset_register_from_manifest_rejects_absolute_outside(
+    tmp_path: Path,
+) -> None:
     from multiverse.ingestion import register_from_manifest
 
     dataset_dir = tmp_path / "store" / "datasets" / "bad_abs"
@@ -67,8 +66,8 @@ def test_dataset_register_does_not_touch_db_on_escape(
 ) -> None:
     """The hardening check must run BEFORE any SQLite call so a malicious
     manifest cannot mutate the registry by partial side-effect."""
-    from multiverse.ingestion import register_from_manifest
     from multiverse import registry_db
+    from multiverse.ingestion import register_from_manifest
 
     touched = {"yes": False}
 
@@ -99,19 +98,17 @@ def test_dataset_register_does_not_touch_db_on_escape(
 # ---------------------------------------------------------------------------
 
 
-def _write_minimal_model_manifest(
-    dir_: Path, *, extra_docker: str = ""
-) -> Path:
+def _write_minimal_model_manifest(dir_: Path, *, extra_docker: str = "") -> Path:
     """Build a minimal model.yaml that satisfies ``ModelManifest`` without
     requiring scvi/h5py."""
     (dir_).mkdir(parents=True, exist_ok=True)
     body = (
-        'name: demo\n'
+        "name: demo\n"
         'version: "1.0.0"\n'
         'supported_omics: ["rna"]\n'
-        'runtime:\n'
+        "runtime:\n"
         '  image: "multiverse-demo:1.0.0"\n'
-        f'{extra_docker}'
+        f"{extra_docker}"
     )
     path = dir_ / "model.yaml"
     path.write_text(body, encoding="utf-8")
@@ -165,8 +162,8 @@ def test_model_register_rejects_path_escape(tmp_path: Path) -> None:
 def test_model_register_does_not_touch_db_on_elevated(
     tmp_path: Path, monkeypatch
 ) -> None:
-    from multiverse.models_ingest import register_model_from_manifest
     from multiverse import registry_db
+    from multiverse.models_ingest import register_model_from_manifest
 
     monkeypatch.setattr(
         registry_db,
@@ -194,8 +191,8 @@ def test_model_register_with_allow_elevated_passes_hardening(
     """``allow_elevated=True`` short-circuits the privilege gate (the
     user has explicitly acknowledged the risk). Hardening should let
     the registration proceed into the SQLite path."""
+    from multiverse import models_ingest, registry_db
     from multiverse.models_ingest import register_model_from_manifest
-    from multiverse import registry_db, models_ingest
 
     # Skip the actual SQLite work so the test stays hot-path-clean.
     captured = {"called": False}

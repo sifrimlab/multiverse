@@ -1,12 +1,12 @@
-import os
 import json
+import os
 import sys
 from pathlib import Path
 
-import pytest
-import numpy as np
 import h5py
+import numpy as np
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -14,7 +14,8 @@ if str(ROOT) not in sys.path:
 
 ad = pytest.importorskip("anndata")
 
-from multiverse.evaluate import determine_valid_metrics, aggregate_results
+from multiverse.evaluate import aggregate_results, determine_valid_metrics
+
 
 def test_determine_valid_metrics_no_label():
     config = {"batch_key": "batch", "cell_type_key": None}
@@ -22,7 +23,7 @@ def test_determine_valid_metrics_no_label():
 
     requested = {
         "bio_conservation": ["nmi", "ari", "silhouette"],
-        "batch_correction": ["graph_connectivity"]
+        "batch_correction": ["graph_connectivity"],
     }
 
     valid = determine_valid_metrics(config, dataset, requested)
@@ -33,16 +34,18 @@ def test_determine_valid_metrics_no_label():
     assert "silhouette" in valid["bio_conservation"]
     assert "graph_connectivity" in valid["batch_correction"]
 
+
 def test_determine_valid_metrics_one_batch():
     config = {"batch_key": "batch", "cell_type_key": "cell_type"}
-    dataset = ad.AnnData(obs=pd.DataFrame({
-        "batch": ["b1", "b1", "b1", "b1"],
-        "cell_type": ["c1", "c2", "c1", "c2"]
-    }))
+    dataset = ad.AnnData(
+        obs=pd.DataFrame(
+            {"batch": ["b1", "b1", "b1", "b1"], "cell_type": ["c1", "c2", "c1", "c2"]}
+        )
+    )
 
     requested = {
         "bio_conservation": ["silhouette"],
-        "batch_correction": ["graph_connectivity"]
+        "batch_correction": ["graph_connectivity"],
     }
 
     valid = determine_valid_metrics(config, dataset, requested)
@@ -50,6 +53,7 @@ def test_determine_valid_metrics_one_batch():
     assert "silhouette" in valid["bio_conservation"]
     # graph_connectivity should be removed because num_batches == 1
     assert "graph_connectivity" not in valid["batch_correction"]
+
 
 def test_aggregate_results(tmp_path):
     output_dir = tmp_path / "outputs"
@@ -61,12 +65,9 @@ def test_aggregate_results(tmp_path):
         json.dump({"score": 0.9}, f)
 
     model_fail_dir = output_dir / "model_fail"
-    model_fail_dir.mkdir() # shouldn't be read anyway
+    model_fail_dir.mkdir()  # shouldn't be read anyway
 
-    model_status = {
-        "model_ok": "success",
-        "model_fail": "failed"
-    }
+    model_status = {"model_ok": "success", "model_fail": "failed"}
 
     results = aggregate_results(model_status, str(output_dir))
 
@@ -80,10 +81,12 @@ def test_aggregate_results(tmp_path):
 def test_evaluate_single_run_merges_evaluation_metrics(tmp_path):
     # Setup dummy dataset
     dataset_path = tmp_path / "test_dataset.h5ad"
-    obs = pd.DataFrame({
-        "batch": ["b1", "b2", "b1", "b2"] * 10,
-        "cell_type": ["c1", "c2", "c1", "c2"] * 10
-    })
+    obs = pd.DataFrame(
+        {
+            "batch": ["b1", "b2", "b1", "b2"] * 10,
+            "cell_type": ["c1", "c2", "c1", "c2"] * 10,
+        }
+    )
     dataset = ad.AnnData(X=np.random.rand(40, 10), obs=obs)
     dataset.write_h5ad(dataset_path)
 
@@ -95,27 +98,26 @@ def test_evaluate_single_run_merges_evaluation_metrics(tmp_path):
     with h5py.File(embeddings_path, "w") as f:
         f.create_dataset("latent", data=np.random.rand(40, 2))
 
-    from multiverse.evaluate import evaluate_single_run
-
     # Mock Benchmarker to avoid real heavy computation and failures
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import MagicMock, patch
+
+    from multiverse.evaluate import evaluate_single_run
 
     with patch("multiverse.evaluate.Benchmarker") as mock_benchmarker:
         mock_instance = MagicMock()
         mock_benchmarker.return_value = mock_instance
 
         # Simulate benchmark results
-        mock_instance.get_results.return_value = pd.DataFrame({
-            "Metric": ["ARI", "NMI"],
-            "X_model": [0.8, 0.9]
-        }).set_index("Metric")
+        mock_instance.get_results.return_value = pd.DataFrame(
+            {"Metric": ["ARI", "NMI"], "X_model": [0.8, 0.9]}
+        ).set_index("Metric")
 
         # Run evaluation
         metrics = evaluate_single_run(
             output_dir=str(output_dir),
             dataset_path=str(dataset_path),
             batch_key="batch",
-            label_key="cell_type"
+            label_key="cell_type",
         )
 
     # Model-native metrics are preserved and scIB results are namespaced.
@@ -138,16 +140,19 @@ def test_evaluate_single_run_uses_constant_dummy_batch_when_batch_missing(tmp_pa
     with h5py.File(output_dir / "embeddings.h5", "w") as f:
         f.create_dataset("latent", data=np.random.rand(4, 2))
 
+    from unittest.mock import MagicMock, patch
+
     from multiverse.evaluate import evaluate_single_run
-    from unittest.mock import patch, MagicMock
 
     with patch("multiverse.evaluate.Benchmarker") as mock_benchmarker:
         mock_instance = MagicMock()
         mock_benchmarker.return_value = mock_instance
-        mock_instance.get_results.return_value = pd.DataFrame({
-            "Metric": ["ARI"],
-            "X_model": [0.8],
-        }).set_index("Metric")
+        mock_instance.get_results.return_value = pd.DataFrame(
+            {
+                "Metric": ["ARI"],
+                "X_model": [0.8],
+            }
+        ).set_index("Metric")
 
         evaluate_single_run(
             output_dir=str(output_dir),
@@ -180,7 +185,9 @@ def test_aggregate_results_sanitizes_nan_inf(tmp_path):
     output_dir.mkdir()
     model_dir = output_dir / "model_ok"
     model_dir.mkdir()
-    (model_dir / "metrics.json").write_text('{"nan": NaN, "inf": Infinity, "ok": 1.0}', encoding="utf-8")
+    (model_dir / "metrics.json").write_text(
+        '{"nan": NaN, "inf": Infinity, "ok": 1.0}', encoding="utf-8"
+    )
 
     results = aggregate_results({"model_ok": "success"}, str(output_dir))
 

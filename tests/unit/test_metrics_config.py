@@ -1,10 +1,11 @@
 """Tests for metrics config propagation through job_spec and per-model enforcement."""
+
 import json
 import os
 from unittest.mock import MagicMock, patch
-import pytest
-import numpy as np
 
+import numpy as np
+import pytest
 
 
 def test_build_model_config_returns_metrics():
@@ -29,8 +30,10 @@ def test_build_model_config_metrics_defaults_to_empty_dict():
 
 # ── manifest metrics propagation ─────────────────────────────────────────────
 
+
 def test_manifest_global_metrics_propagated_to_jobs(tmp_path):
     from unittest.mock import MagicMock
+
     from multiverse.runner.cli import generate_execution_plan_from_manifest
 
     manifest = {
@@ -40,9 +43,7 @@ def test_manifest_global_metrics_propagated_to_jobs(tmp_path):
                 "batch_correction": [],
             }
         },
-        "jobs": [
-            {"dataset_slug": "ds1", "model_name": "pca"}
-        ],
+        "jobs": [{"dataset_slug": "ds1", "model_name": "pca"}],
     }
 
     # Minimal DB mock
@@ -62,6 +63,7 @@ def test_manifest_global_metrics_propagated_to_jobs(tmp_path):
 
 def test_per_job_metrics_override_globals(tmp_path):
     from unittest.mock import MagicMock
+
     from multiverse.runner.cli import generate_execution_plan_from_manifest
 
     manifest = {
@@ -92,8 +94,10 @@ def test_per_job_metrics_override_globals(tmp_path):
 
 # ── per-model metric enforcement ─────────────────────────────────────────────
 
+
 def test_pca_skips_metric_when_not_in_requested(tmp_path):
     import anndata as ad
+
     from multiverse.models.pca import PCAModel
 
     adata = ad.AnnData(X=np.eye(5))
@@ -105,7 +109,14 @@ def test_pca_skips_metric_when_not_in_requested(tmp_path):
     config = {
         "output_dir": str(tmp_path),
         "seed": 42,
-        "model": {"pca": {"n_components": 2, "device": "cpu", "umap_random_state": 42, "umap_color_type": "cell_type"}},
+        "model": {
+            "pca": {
+                "n_components": 2,
+                "device": "cpu",
+                "umap_random_state": 42,
+                "umap_color_type": "cell_type",
+            }
+        },
         "metrics": {"model_metrics": []},  # empty → no metrics
     }
     model = PCAModel(dataset=adata, dataset_name="test", config_path=config)
@@ -119,6 +130,7 @@ def test_pca_skips_metric_when_not_in_requested(tmp_path):
 
 def test_pca_computes_metric_when_requested(tmp_path):
     import anndata as ad
+
     from multiverse.models.pca import PCAModel
 
     adata = ad.AnnData(X=np.eye(5))
@@ -130,7 +142,14 @@ def test_pca_computes_metric_when_requested(tmp_path):
     config = {
         "output_dir": str(tmp_path),
         "seed": 42,
-        "model": {"pca": {"n_components": 2, "device": "cpu", "umap_random_state": 42, "umap_color_type": "cell_type"}},
+        "model": {
+            "pca": {
+                "n_components": 2,
+                "device": "cpu",
+                "umap_random_state": 42,
+                "umap_color_type": "cell_type",
+            }
+        },
         "metrics": {"model_metrics": ["total_variance"]},
     }
     model = PCAModel(dataset=adata, dataset_name="test", config_path=config)
@@ -145,6 +164,7 @@ def test_pca_computes_metric_when_requested(tmp_path):
 
 def test_pca_computes_all_defaults_when_no_metrics_config(tmp_path):
     import anndata as ad
+
     from multiverse.models.pca import PCAModel
 
     adata = ad.AnnData(X=np.eye(5))
@@ -156,7 +176,14 @@ def test_pca_computes_all_defaults_when_no_metrics_config(tmp_path):
     config = {
         "output_dir": str(tmp_path),
         "seed": 42,
-        "model": {"pca": {"n_components": 2, "device": "cpu", "umap_random_state": 42, "umap_color_type": "cell_type"}},
+        "model": {
+            "pca": {
+                "n_components": 2,
+                "device": "cpu",
+                "umap_random_state": 42,
+                "umap_color_type": "cell_type",
+            }
+        },
         # no "metrics" key → all defaults computed
     }
     model = PCAModel(dataset=adata, dataset_name="test", config_path=config)

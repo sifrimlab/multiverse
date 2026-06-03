@@ -10,7 +10,6 @@ import streamlit as st
 
 from multiverse.gui_telemetry import track
 
-
 TEXT_SUFFIXES = {
     ".csv",
     ".json",
@@ -70,10 +69,17 @@ def render_download_button(
         help=f"{size_mb:.2f} MB",
     )
     if clicked:
-        track("download_clicked", artifact_kind=path.suffix.lower().lstrip(".") or "file", size_mb=round(size_mb, 4), path=str(path))
+        track(
+            "download_clicked",
+            artifact_kind=path.suffix.lower().lstrip(".") or "file",
+            size_mb=round(size_mb, 4),
+            path=str(path),
+        )
 
 
-def render_log_viewer(log_path: Path, *, default_tail: int = 200, with_filter: bool = True) -> None:
+def render_log_viewer(
+    log_path: Path, *, default_tail: int = 200, with_filter: bool = True
+) -> None:
     log_path = Path(log_path)
     if not log_path.exists() or not log_path.is_file():
         st.info(f"No log found at `{log_path}`.")
@@ -96,16 +102,19 @@ def render_log_viewer(log_path: Path, *, default_tail: int = 200, with_filter: b
         render_download_button(log_path, "Download log")
 
     if with_filter:
-        query = st.text_input("Filter log", key=f"log_filter::{log_path.resolve()}").strip()
+        query = st.text_input(
+            "Filter log", key=f"log_filter::{log_path.resolve()}"
+        ).strip()
     else:
         query = ""
 
     visible = lines
     if query:
         visible = [line for line in visible if query.lower() in line.lower()]
-    st.code("\n".join(visible[-int(tail):]) or "(empty log)", language=None)
-    st.caption(f"Showing {min(int(tail), len(visible))} of {len(visible)} matching line(s).")
-
+    st.code("\n".join(visible[-int(tail) :]) or "(empty log)", language=None)
+    st.caption(
+        f"Showing {min(int(tail), len(visible))} of {len(visible)} matching line(s)."
+    )
 
 
 def _render_image_preview(path: Path, *, max_preview_mb: float = 25) -> None:
@@ -151,6 +160,11 @@ def render_artifact_tree(artifact_dir: Path, *, max_inline_mb: float = 200) -> N
             else:
                 render_download_button(path, f"Download artifact {rel}")
                 if suffix in TEXT_SUFFIXES and size_mb <= max_inline_mb:
-                    st.code(path.read_text(encoding="utf-8", errors="replace")[:20000], language=None)
+                    st.code(
+                        path.read_text(encoding="utf-8", errors="replace")[:20000],
+                        language=None,
+                    )
                 elif size_mb > max_inline_mb:
-                    st.caption(f"Preview skipped because the file is larger than {max_inline_mb:g} MB.")
+                    st.caption(
+                        f"Preview skipped because the file is larger than {max_inline_mb:g} MB."
+                    )

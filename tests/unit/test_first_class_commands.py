@@ -31,14 +31,9 @@ import h5py
 import numpy as np
 import pytest
 
-from multiverse.cli_entrypoints import (
-    doctor_main,
-    gc_main,
-    main as commands_main,
-    mlflow_sync_main,
-    rebuild_index_main,
-)
-
+from multiverse.cli_entrypoints import doctor_main, gc_main
+from multiverse.cli_entrypoints import main as commands_main
+from multiverse.cli_entrypoints import mlflow_sync_main, rebuild_index_main
 
 # ---------------------------------------------------------------------------
 # 1. doctor
@@ -64,7 +59,8 @@ def test_doctor_repair_health_probes_invokes_sweeper(tmp_path: Path) -> None:
     reserved.mkdir()
     stale = reserved / "old"
     stale.mkdir()
-    import os, time
+    import os
+    import time
 
     old = time.time() - 7200  # 2 h old
     os.utime(stale, (old, old))
@@ -109,18 +105,12 @@ def test_rebuild_index_writes_summary_on_empty_journal(tmp_path: Path, capsys) -
 
 
 def test_rebuild_index_classifies_promoted_run(tmp_path: Path, capsys) -> None:
-    from multiverse.artifact import (
-        ArtifactManifest,
-        BootContext,
-        ImageIdentity,
-        ProducedAt,
-        ProducedBy,
-        compute_logical_run_id,
-        compute_manifest_hash,
-        compute_params_hash,
-        produced_at_now,
-        write_manifest,
-    )
+    from multiverse.artifact import (ArtifactManifest, BootContext,
+                                     ImageIdentity, ProducedAt, ProducedBy,
+                                     compute_logical_run_id,
+                                     compute_manifest_hash,
+                                     compute_params_hash, produced_at_now,
+                                     write_manifest)
     from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 
     state_root = tmp_path / "state"
@@ -245,23 +235,15 @@ def test_gc_apply_with_no_retention_deletes_nothing(tmp_path: Path, capsys) -> N
 
 def _build_bundle(tmp_path: Path) -> Path:
     """Reusable contract-valid bundle."""
-    from multiverse.artifact import (
-        ArtifactManifest,
-        BootContext,
-        BundleInputs,
-        ImageIdentity,
-        ModelOutputContract,
-        ProducedAt,
-        ProducedBy,
-        ValidationLevel,
-        compute_logical_run_id,
-        compute_manifest_hash,
-        compute_params_hash,
-        new_physical_attempt_id,
-        produced_at_now,
-        validate_output_bundle,
-        write_bundle,
-    )
+    from multiverse.artifact import (ArtifactManifest, BootContext,
+                                     BundleInputs, ImageIdentity,
+                                     ModelOutputContract, ProducedAt,
+                                     ProducedBy, ValidationLevel,
+                                     compute_logical_run_id,
+                                     compute_manifest_hash,
+                                     compute_params_hash,
+                                     new_physical_attempt_id, produced_at_now,
+                                     validate_output_bundle, write_bundle)
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     workspace = tmp_path / "ws"
@@ -369,9 +351,9 @@ def test_cli_entrypoints_does_not_eagerly_load_ml_stack() -> None:
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, (
-        f"cli_entrypoints leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"cli_entrypoints leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
 
 
 # ---------------------------------------------------------------------------

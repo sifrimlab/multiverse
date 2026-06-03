@@ -1,9 +1,11 @@
 """Tests for H3: multiverse build-sif command."""
+
 from __future__ import annotations
+
+import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-import subprocess
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import yaml
@@ -36,6 +38,7 @@ def test_preflight_no_apptainer(tmp_path):
     _write_manifest(manifest)
     with patch("shutil.which", return_value=None):
         from multiverse.cli_entrypoints import build_sif_main
+
         rc = build_sif_main(["--slug", "pca", "--manifest", str(manifest)])
     assert rc != 0
 
@@ -49,7 +52,10 @@ def test_preflight_docker_image_missing(tmp_path):
         patch("subprocess.Popen") as mock_popen,
     ):
         from multiverse.cli_entrypoints import build_sif_main
-        rc = build_sif_main(["--slug", "pca", "--manifest", str(manifest), "--method", "docker-daemon"])
+
+        rc = build_sif_main(
+            ["--slug", "pca", "--manifest", str(manifest), "--method", "docker-daemon"]
+        )
     assert rc != 0
 
 
@@ -67,15 +73,24 @@ def test_output_dir_respected(tmp_path):
         patch("shutil.which", return_value="/usr/bin/apptainer"),
         patch("subprocess.run", return_value=MagicMock(returncode=0)),
         patch("subprocess.Popen", return_value=mock_proc),
-        patch("multiverse.asset_registry.set_model_sif_path", return_value=True) as mock_reg,
+        patch(
+            "multiverse.asset_registry.set_model_sif_path", return_value=True
+        ) as mock_reg,
     ):
         from multiverse.cli_entrypoints import build_sif_main
-        rc = build_sif_main([
-            "--slug", "pca",
-            "--manifest", str(manifest),
-            "--output-dir", str(custom_out),
-            "--method", "docker-daemon",
-        ])
+
+        rc = build_sif_main(
+            [
+                "--slug",
+                "pca",
+                "--manifest",
+                str(manifest),
+                "--output-dir",
+                str(custom_out),
+                "--method",
+                "docker-daemon",
+            ]
+        )
     assert rc == 0
     mock_reg.assert_called_once()
     called_path = mock_reg.call_args[0][2]
@@ -99,11 +114,17 @@ def test_model_yaml_unchanged_after_build(tmp_path):
         patch("multiverse.asset_registry.set_model_sif_path", return_value=True),
     ):
         from multiverse.cli_entrypoints import build_sif_main
-        rc = build_sif_main([
-            "--slug", "pca",
-            "--manifest", str(manifest),
-            "--method", "docker-daemon",
-        ])
+
+        rc = build_sif_main(
+            [
+                "--slug",
+                "pca",
+                "--manifest",
+                str(manifest),
+                "--method",
+                "docker-daemon",
+            ]
+        )
 
     assert manifest.read_text() == original_content
 
@@ -113,7 +134,9 @@ def test_def_file_method_uses_def_path(tmp_path):
     _write_manifest(manifest, with_docker=False, with_def_file=True)
     # Create the def file
     def_file = tmp_path / "Singularity.def"
-    def_file.write_text("Bootstrap: docker\nFrom: ubuntu:22.04\n%runscript\nexec bash\n")
+    def_file.write_text(
+        "Bootstrap: docker\nFrom: ubuntu:22.04\n%runscript\nexec bash\n"
+    )
 
     mock_proc = MagicMock()
     mock_proc.stdout = iter([])
@@ -121,6 +144,7 @@ def test_def_file_method_uses_def_path(tmp_path):
     mock_proc.wait = MagicMock()
 
     captured_cmd = []
+
     def capture_popen(cmd, **kwargs):
         captured_cmd.extend(cmd)
         return mock_proc
@@ -131,10 +155,16 @@ def test_def_file_method_uses_def_path(tmp_path):
         patch("multiverse.asset_registry.set_model_sif_path", return_value=True),
     ):
         from multiverse.cli_entrypoints import build_sif_main
-        rc = build_sif_main([
-            "--slug", "pca",
-            "--manifest", str(manifest),
-            "--method", "def-file",
-        ])
+
+        rc = build_sif_main(
+            [
+                "--slug",
+                "pca",
+                "--manifest",
+                str(manifest),
+                "--method",
+                "def-file",
+            ]
+        )
     assert rc == 0
     assert str(def_file) in captured_cmd

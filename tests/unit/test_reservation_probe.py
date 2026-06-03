@@ -8,12 +8,7 @@ import pytest
 
 from multiverse.doctor import probe_reservation_ledger
 from multiverse.doctor.health_probes import CleanupResult, ProbeOutcome
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalWriter,
-)
-
+from multiverse.journal import JournalKind, JournalLayout, JournalWriter
 
 pytestmark = pytest.mark.control_plane
 
@@ -47,7 +42,12 @@ def test_probe_passes_when_ledger_empty(tmp_path: Path) -> None:
             (
                 JournalKind.RESERVATION_GRANTED,
                 "r1",
-                {"ram_bytes": 1024, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+                {
+                    "ram_bytes": 1024,
+                    "vram_bytes": 0,
+                    "gpu_index": None,
+                    "disk_bytes_per_path": {},
+                },
                 None,
             ),
             (JournalKind.RESERVATION_RELEASED, "r1", {"reason": "terminal"}, None),
@@ -66,7 +66,12 @@ def test_probe_flags_reservation_with_terminal_run(tmp_path: Path) -> None:
             (
                 JournalKind.RESERVATION_GRANTED,
                 "r-stuck",
-                {"ram_bytes": 2048, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+                {
+                    "ram_bytes": 2048,
+                    "vram_bytes": 0,
+                    "gpu_index": None,
+                    "disk_bytes_per_path": {},
+                },
                 None,
             ),
             (
@@ -91,7 +96,12 @@ def test_probe_flags_orphan_reservation_with_no_job_intent(tmp_path: Path) -> No
             (
                 JournalKind.RESERVATION_GRANTED,
                 "r-orphan",
-                {"ram_bytes": 1, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+                {
+                    "ram_bytes": 1,
+                    "vram_bytes": 0,
+                    "gpu_index": None,
+                    "disk_bytes_per_path": {},
+                },
                 None,
             ),
         ],
@@ -109,7 +119,12 @@ def test_probe_flags_stale_reservation(tmp_path: Path) -> None:
             (
                 JournalKind.RESERVATION_GRANTED,
                 "r-slow",
-                {"ram_bytes": 1, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+                {
+                    "ram_bytes": 1,
+                    "vram_bytes": 0,
+                    "gpu_index": None,
+                    "disk_bytes_per_path": {},
+                },
                 None,
             ),
             (
@@ -141,7 +156,12 @@ def test_probe_passes_for_active_running_reservation(tmp_path: Path) -> None:
             (
                 JournalKind.RESERVATION_GRANTED,
                 "r-live",
-                {"ram_bytes": 1, "vram_bytes": 0, "gpu_index": None, "disk_bytes_per_path": {}},
+                {
+                    "ram_bytes": 1,
+                    "vram_bytes": 0,
+                    "gpu_index": None,
+                    "disk_bytes_per_path": {},
+                },
                 None,
             ),
             (

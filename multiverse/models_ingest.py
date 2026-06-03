@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
@@ -56,6 +56,25 @@ class ResourcesSpec(BaseModel):
     memory_limit: str = "16g"
 
 
+class PreprocessingSpec(BaseModel):
+    """Optional preprocessing defaults a model declares in ``model.yaml``.
+
+    Every field is optional: an unset field falls back to the container's
+    built-in default (issue #22). Per-run overrides supplied through the run
+    manifest / GUI are merged on top of these defaults inside the container.
+    """
+
+    n_top_genes: Optional[int] = None
+    normalization_target_sum: Optional[float] = None
+    log_normalization: Optional[bool] = None
+    # Per-modality scaling, e.g. {"rna": False, "atac": True}.
+    scale: Optional[Dict[str, bool]] = None
+
+    def to_job_spec(self) -> Dict[str, Any]:
+        """Return only the explicitly-set fields, ready for job_spec.json."""
+        return {k: v for k, v in self.model_dump().items() if v is not None}
+
+
 class ContractSpec(BaseModel):
     input_path: str = "/input/data.h5mu"
     output_path: str = "/output"
@@ -78,13 +97,14 @@ class ModelManifest(BaseModel):
     runtime: Optional[RuntimeSpec] = None
     apptainer: Optional[ApptainerSpec] = None
     hyperparameters_schema: Optional[str] = None
+    preprocessing: Optional[PreprocessingSpec] = None
     resources: ResourcesSpec = Field(default_factory=ResourcesSpec)
     contract: ContractSpec = Field(default_factory=ContractSpec)
     build: Optional[BuildSpec] = None
     manifest_path: Optional[str] = None
 
-    @model_validator(mode='after')
-    def _require_at_least_one_runtime(self) -> 'ModelManifest':
+    @model_validator(mode="after")
+    def _require_at_least_one_runtime(self) -> "ModelManifest":
         if self.runtime is None and self.apptainer is None:
             raise ValueError(
                 "model.yaml must specify at least one of 'runtime' (Docker) or 'apptainer' (SIF)."
@@ -109,10 +129,14 @@ class ModelManifest(BaseModel):
     @classmethod
     def validate_supported_omics(cls, value: List[str]) -> List[str]:
         if not value:
-            raise ValueError("supported_omics must contain at least one modality or ['any'].")
+            raise ValueError(
+                "supported_omics must contain at least one modality or ['any']."
+            )
         normalized = [v.strip().lower() for v in value]
         if "any" in normalized and len(normalized) > 1:
-            raise ValueError("supported_omics cannot mix 'any' with specific modalities.")
+            raise ValueError(
+                "supported_omics cannot mix 'any' with specific modalities."
+            )
         return normalized
 
 
@@ -235,13 +259,25 @@ def register_model_from_manifest(
             ),
         )
         conn.commit()
+    else:
+        # Even when the manifest hash is unchanged, the row may have been
+        # soft-deleted (status='INACTIVE') by a prior delete. Re-registration
+        # must reactivate it, otherwise the GUI (which reads the legacy DB)
+        # keeps hiding a model the user just re-added (issue #29).
+        cursor.execute(
+            "UPDATE models SET status = 'ACTIVE' WHERE slug = ? AND version = ?",
+            (model_slug, manifest.version),
+        )
+        conn.commit()
     conn.close()
 
     # Always upsert into asset_registry (canonical writer per G6). Use an
     # UPSERT with COALESCE so a sif_path/image_digest already recorded by
     # ``build-sif``/``--set-sif-path`` is preserved when the manifest does not
     # itself carry one.
-    from .asset_registry import get_asset_registry_connection, init_asset_registry
+    from .asset_registry import (get_asset_registry_connection,
+                                 init_asset_registry)
+
     init_asset_registry(state_root)
     ar_conn = get_asset_registry_connection(state_root)
     ar_cursor = ar_conn.cursor()

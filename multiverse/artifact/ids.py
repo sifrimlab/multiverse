@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from .image_identity import ImageIdentity
 
@@ -59,6 +59,31 @@ def compute_dataset_fingerprint_hash(fingerprint: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(dict(fingerprint))).hexdigest()
 
 
+def runtime_identity_fingerprint(
+    *,
+    seed: Any = None,
+    preprocessing: Any = None,
+    model_version: Any = None,
+) -> dict:
+    """Collect behaviour-affecting runtime fields that live *outside*
+    ``model_params`` but still change the scientific result or the execution
+    recipe (STRATEGY: MVD completion key).
+
+    Only non-empty values are included. An all-empty result means "no runtime
+    fields" and, fed back into :func:`compute_logical_run_id`, yields a logical
+    ID byte-identical to the historical four-part formula — so existing
+    identities are preserved when none of these fields apply.
+    """
+    fingerprint: dict = {}
+    if seed is not None:
+        fingerprint["seed"] = seed
+    if preprocessing:
+        fingerprint["preprocessing"] = preprocessing
+    if model_version:
+        fingerprint["model_version"] = model_version
+    return fingerprint
+
+
 def compute_logical_run_id(
     *,
     manifest_hash: str,
@@ -66,21 +91,31 @@ def compute_logical_run_id(
     image_identity: ImageIdentity,
     params_hash: str,
     mv_contract_version: str,
+    runtime_fingerprint: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Return the deterministic logical-run-ID for a recipe.
 
     The same inputs always hash to the same logical ID, regardless of OS,
     Python build, or process. This is the property tested in
     ``test_artifact_contract.py::test_logical_run_id_stability``.
+
+    ``runtime_fingerprint`` carries behaviour-affecting fields that are not
+    part of ``model_params`` (seed, preprocessing, model version — see
+    :func:`runtime_identity_fingerprint`). When it is ``None`` or empty the
+    payload is byte-identical to the original four-part formula, so adding the
+    parameter does not change historical identities. There is exactly one
+    canonical identity: every executor and the resume planner derive it here.
     """
     fingerprint_hash = compute_dataset_fingerprint_hash(dataset_fingerprint)
-    parts = (
+    parts = [
         manifest_hash,
         fingerprint_hash,
         image_identity.value,
         params_hash,
         mv_contract_version,
-    )
+    ]
+    if runtime_fingerprint:
+        parts.append(compute_dataset_fingerprint_hash(dict(runtime_fingerprint)))
     payload = "\x00".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 

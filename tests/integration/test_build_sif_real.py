@@ -1,8 +1,10 @@
 """Integration tests for build-sif command (requires apptainer on PATH)."""
-from __future__ import annotations
-import shutil
-import pytest
 
+from __future__ import annotations
+
+import shutil
+
+import pytest
 
 pytestmark = pytest.mark.skipif(
     shutil.which("apptainer") is None and shutil.which("singularity") is None,

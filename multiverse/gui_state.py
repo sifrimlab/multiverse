@@ -84,23 +84,33 @@ def init_state() -> GuiState:
     _apply_pending_shared_state()
     for key, default in STATE_DEFAULTS.items():
         st.session_state.setdefault(key, default)
-    st.session_state["experiment_name"] = st.session_state.get("shared_experiment_name", "benchmark_run")
-    st.session_state["run_mode"] = st.session_state.get("shared_run_mode", "Use User Params")
+    st.session_state["experiment_name"] = st.session_state.get(
+        "shared_experiment_name", "benchmark_run"
+    )
+    st.session_state["run_mode"] = st.session_state.get(
+        "shared_run_mode", "Use User Params"
+    )
     return get_state()
 
 
 def get_state() -> GuiState:
     state = st.session_state
-    run_mode = state.get("shared_run_mode", state.get("run_mode", STATE_DEFAULTS["run_mode"]))
+    run_mode = state.get(
+        "shared_run_mode", state.get("run_mode", STATE_DEFAULTS["run_mode"])
+    )
     if run_mode not in {"Use User Params", "Run Gridsearch"}:
         run_mode = STATE_DEFAULTS["shared_run_mode"]
 
     experiment_name = str(
-        state.get("shared_experiment_name", state.get("experiment_name", "benchmark_run"))
+        state.get(
+            "shared_experiment_name", state.get("experiment_name", "benchmark_run")
+        )
         or "benchmark_run"
     )
     seed = int(state.get("shared_seed", 42) or 42)
-    manifest_path = str(state.get("shared_manifest_path", "run_manifest.yaml") or "run_manifest.yaml")
+    manifest_path = str(
+        state.get("shared_manifest_path", "run_manifest.yaml") or "run_manifest.yaml"
+    )
 
     return GuiState(
         selected_datasets=list(state.get("selected_datasets", [])),
@@ -122,5 +132,7 @@ def get_state() -> GuiState:
 
 
 def bump_editor_version() -> int:
-    st.session_state["editor_version"] = int(st.session_state.get("editor_version", 0) or 0) + 1
+    st.session_state["editor_version"] = (
+        int(st.session_state.get("editor_version", 0) or 0) + 1
+    )
     return int(st.session_state["editor_version"])

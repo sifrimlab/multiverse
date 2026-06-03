@@ -44,7 +44,7 @@ class ExecutionBackend(Protocol):
     def execute(
         self,
         *,
-        job: Any,            # SimpleJob; typed loose to avoid circular imports
+        job: Any,  # SimpleJob; typed loose to avoid circular imports
         workspace_dir: Path,
         seed: Optional[int],
     ) -> ExecutionResult:

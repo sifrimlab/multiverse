@@ -256,7 +256,7 @@ def probe_free_space(
             DANGEROUS,
             detail=f"disk_usage failed: {exc}",
         )
-    free_gb = usage.free / (1024 ** 3)
+    free_gb = usage.free / (1024**3)
     if free_gb >= min_supported_gb:
         return StorageProbeResult(
             "free_space_reservation",

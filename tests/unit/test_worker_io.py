@@ -7,7 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 SDK_PATH = Path(__file__).resolve().parents[2] / "sdk" / "mvr-worker"
 if str(SDK_PATH) not in sys.path:
     sys.path.insert(0, str(SDK_PATH))

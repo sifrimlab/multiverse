@@ -45,6 +45,7 @@ def _is_10x_feature_matrix_h5(path: Path) -> bool:
         or "arc" in name
     )
 
+
 # Filename tokens (lexical guesser). Order: modality-like tags first, then role tags.
 _FILENAME_TAG_SPECS: Tuple[Tuple[Pattern[str], str], ...] = (
     (re.compile(r"(?i)rna"), "rna"),
@@ -124,7 +125,9 @@ def _modality_from_tags(tags: Sequence[str]) -> Optional[str]:
     return None
 
 
-def _collect_all_pattern_matches(keys: Sequence[str], patterns: Tuple[Pattern[str], ...]) -> List[str]:
+def _collect_all_pattern_matches(
+    keys: Sequence[str], patterns: Tuple[Pattern[str], ...]
+) -> List[str]:
     """All keys matching any pattern, for logging cross-pattern alternatives."""
     seen = set()
     out: List[str] = []
@@ -155,7 +158,11 @@ class DatasetHeuristics:
         directory = Path(directory)
         per_file: List[Dict[str, Any]] = []
         if not directory.is_dir():
-            return {"directory": str(directory), "files": [], "error": "not a directory"}
+            return {
+                "directory": str(directory),
+                "files": [],
+                "error": "not a directory",
+            }
 
         for p in sorted(directory.iterdir()):
             if not p.is_file():
@@ -189,8 +196,12 @@ class DatasetHeuristics:
             cell_type_key, cell_alts_same_pattern = _pick_first_pattern_match(
                 match_keys, self._CELL_TYPE_KEY_PATTERNS
             )
-            all_batchish = _collect_all_pattern_matches(match_keys, self._BATCH_KEY_PATTERNS)
-            all_cellish = _collect_all_pattern_matches(match_keys, self._CELL_TYPE_KEY_PATTERNS)
+            all_batchish = _collect_all_pattern_matches(
+                match_keys, self._BATCH_KEY_PATTERNS
+            )
+            all_cellish = _collect_all_pattern_matches(
+                match_keys, self._CELL_TYPE_KEY_PATTERNS
+            )
             batch_alternatives = [k for k in all_batchish if k != batch_key]
             cell_type_alternatives = [k for k in all_cellish if k != cell_type_key]
             out: Dict[str, Any] = {
@@ -212,7 +223,9 @@ class DatasetHeuristics:
         if filepath.suffix.lower() in (".h5ad", ".h5mu"):
             with h5py.File(filepath, "r") as f:
                 if "obs" not in f:
-                    logger.warning("No 'obs' group in %s; cannot infer metadata keys.", filepath)
+                    logger.warning(
+                        "No 'obs' group in %s; cannot infer metadata keys.", filepath
+                    )
                     return _empty_peek(kind="annadata_h5mu", raw_keys=[])
 
                 obs = f["obs"]
@@ -227,8 +240,12 @@ class DatasetHeuristics:
                 match_keys, self._CELL_TYPE_KEY_PATTERNS
             )
 
-            all_batchish = _collect_all_pattern_matches(match_keys, self._BATCH_KEY_PATTERNS)
-            all_cellish = _collect_all_pattern_matches(match_keys, self._CELL_TYPE_KEY_PATTERNS)
+            all_batchish = _collect_all_pattern_matches(
+                match_keys, self._BATCH_KEY_PATTERNS
+            )
+            all_cellish = _collect_all_pattern_matches(
+                match_keys, self._CELL_TYPE_KEY_PATTERNS
+            )
 
             batch_alternatives = [k for k in all_batchish if k != batch_key]
             cell_type_alternatives = [k for k in all_cellish if k != cell_type_key]
@@ -246,7 +263,10 @@ class DatasetHeuristics:
                     cell_type_alternatives,
                 )
             if batch_alts_same_pattern:
-                logger.info("Other batch-like keys matching the same pattern tier: %s", batch_alts_same_pattern)
+                logger.info(
+                    "Other batch-like keys matching the same pattern tier: %s",
+                    batch_alts_same_pattern,
+                )
             if cell_alts_same_pattern:
                 logger.info(
                     "Other cell-type-like keys matching the same pattern tier: %s",
@@ -281,7 +301,9 @@ class DatasetHeuristics:
         """Backward-compatible alias for ``_peek_file_metadata``."""
         return self._peek_file_metadata(filepath)
 
-    def _pick_peek_target(self, directory: Path, lexical: Dict[str, Any]) -> Optional[Path]:
+    def _pick_peek_target(
+        self, directory: Path, lexical: Dict[str, Any]
+    ) -> Optional[Path]:
         """Prefer ``.h5ad`` / ``.h5mu`` with ``obs``; else Cell Ranger matrix ``.h5`` (not CSV)."""
         directory = Path(directory)
         files = lexical.get("files") or []
@@ -311,9 +333,47 @@ class DatasetHeuristics:
             if _is_10x_feature_matrix_h5(p):
                 return p
         for p in paths:
-            if nlow(p).endswith(".h5") and not nlow(p).endswith(".h5ad") and not nlow(p).endswith(".h5mu"):
+            if (
+                nlow(p).endswith(".h5")
+                and not nlow(p).endswith(".h5ad")
+                and not nlow(p).endswith(".h5mu")
+            ):
                 return p
         return None
+
+    def _find_processed_file(self, directory: Path) -> Optional[str]:
+        """Return a dataset-relative path to an already-processed artifact, if
+        present (issue #23). A processed dataset is registered via
+        ``processed_path`` and skips the raw-ingestion / preprocessing step.
+
+        Recognises the canonical ``processed.h5mu``/``processed.h5ad`` written
+        by ``preprocess_dataset`` under either the dataset root or its ``data/``
+        subfolder.
+        """
+        directory = Path(directory)
+        for sub in ("", "data"):
+            for ext in (".h5mu", ".h5ad"):
+                candidate = directory / sub / f"processed{ext}"
+                if candidate.is_file():
+                    return str(candidate.relative_to(directory))
+        return None
+
+    def _peek_processed_omics(self, directory: Path, processed_rel: str) -> List[str]:
+        """Best-effort modality list for a processed artifact. ``.h5mu`` stores
+        modalities under the ``mod`` group; ``.h5ad`` is single-modality (rna).
+        Falls back to ``['rna']`` if the file cannot be inspected."""
+        path = Path(directory) / processed_rel
+        if path.suffix.lower() == ".h5ad":
+            return ["rna"]
+        try:
+            with h5py.File(path, "r") as f:
+                if "mod" in f:
+                    mods = sorted(str(k) for k in f["mod"].keys())
+                    if mods:
+                        return mods
+        except Exception:
+            pass
+        return ["rna"]
 
     def generate_manifest(self, directory: Path) -> Dict[str, Any]:
         """Combine filename heuristics and shallow ``obs`` peek into a YAML-ready manifest."""
@@ -381,6 +441,23 @@ class DatasetHeuristics:
         if not metadata_keys:
             metadata_keys = {"batch": "batch", "cell_type": "cell_type"}
 
+        # Processed-dataset shortcut (issue #23): if the directory already holds
+        # a processed artifact, emit a processed_path manifest (mutually
+        # exclusive with raw_files) so registration skips preprocessing.
+        processed_rel = self._find_processed_file(directory)
+        if processed_rel:
+            return {
+                "name": name,
+                "omics": self._peek_processed_omics(directory, processed_rel),
+                "processed_path": processed_rel,
+                "metadata_keys": metadata_keys,
+                "guesser_notes": {
+                    "filename_scan": lexical,
+                    "peek": peek,
+                    "mode": "processed",
+                },
+            }
+
         return {
             "name": name,
             "omics": omics,
@@ -389,5 +466,6 @@ class DatasetHeuristics:
             "guesser_notes": {
                 "filename_scan": lexical,
                 "peek": peek,
+                "mode": "raw",
             },
         }

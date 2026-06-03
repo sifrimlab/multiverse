@@ -7,10 +7,10 @@ file and asserts that exactly the seven names are present.
 
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Dict, List, Optional, Protocol, runtime_checkable
+from typing import (Any, AsyncIterator, Dict, List, Optional, Protocol,
+                    runtime_checkable)
 
 from .events import KernelEvent
-
 
 # Frozen list. Order is documentation order from R2; the test asserts the
 # *set* matches, so reordering is acceptable.

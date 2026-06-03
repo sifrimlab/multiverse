@@ -22,7 +22,6 @@ import pytest
 from multiverse import cli_entrypoints
 from multiverse.slurm import InMemorySlurmEngine, SlurmJobState
 
-
 pytestmark = pytest.mark.control_plane
 
 
@@ -41,9 +40,7 @@ class _DrivingSlurmEngine(InMemorySlurmEngine):
             time.sleep(0.01)
             self.simulate_running(sub.job_id)
             with h5py.File(workspace / "embeddings.h5", "w") as f:
-                f.create_dataset(
-                    "latent", data=np.zeros((4, 4), dtype=np.float32)
-                )
+                f.create_dataset("latent", data=np.zeros((4, 4), dtype=np.float32))
             self.simulate_completed(sub.job_id, exit_code=0)
 
         threading.Thread(target=_drive, daemon=True).start()

@@ -35,6 +35,8 @@ def load_config(config_path: Union[str, dict] = "./config.json"):
         logger.error(f"Error decoding JSON from {config_path}: {e}")
         raise
     except Exception as e:
-        logger.error(f"An unexpected error occurred while loading the configuration file: {e}")
+        logger.error(
+            f"An unexpected error occurred while loading the configuration file: {e}"
+        )
         raise
     return config

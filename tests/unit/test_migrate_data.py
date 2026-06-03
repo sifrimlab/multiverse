@@ -2,12 +2,8 @@
 
 from pathlib import Path
 
-from multiverse.migrate_data import (
-    _render_yaml_with_notes,
-    _slugify_relpath,
-    safe_copy_file,
-    slugify_fs_safe,
-)
+from multiverse.migrate_data import (_render_yaml_with_notes, _slugify_relpath,
+                                     safe_copy_file, slugify_fs_safe)
 
 
 def test_slugify_fs_safe() -> None:

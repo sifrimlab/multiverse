@@ -24,7 +24,6 @@ from pathlib import Path
 
 from multiverse import registry_db
 
-
 _OMICS_POOL = ["rna", "atac", "adt"]
 _STATUSES = ["SUCCESS", "FAILED", "RUNNING", "QUEUED"]
 _STATUS_WEIGHTS = [0.70, 0.20, 0.05, 0.05]
@@ -58,7 +57,9 @@ def seed_registry(
     try:
         registry_db.init_db()
         conn = sqlite3.connect(str(db_path))
-        conn.executescript("DELETE FROM run_metrics; DELETE FROM runs; DELETE FROM models; DELETE FROM datasets;")
+        conn.executescript(
+            "DELETE FROM run_metrics; DELETE FROM runs; DELETE FROM models; DELETE FROM datasets;"
+        )
 
         # Datasets
         ds_rows = []
@@ -66,15 +67,20 @@ def seed_registry(
             slug = f"synthetic-ds-{i:04d}"
             name = f"Synthetic Dataset {i:04d}"
             omics = _omics_subset(rng)
-            ds_rows.append((
-                i, slug, name,
-                f"store/datasets/{slug}/data.h5mu",
-                json.dumps(omics),
-                "batch", "cell_type",
-                f"store/datasets/{slug}/dataset.yaml",
-                f"hash{i:08x}",
-                "READY",
-            ))
+            ds_rows.append(
+                (
+                    i,
+                    slug,
+                    name,
+                    f"store/datasets/{slug}/data.h5mu",
+                    json.dumps(omics),
+                    "batch",
+                    "cell_type",
+                    f"store/datasets/{slug}/dataset.yaml",
+                    f"hash{i:08x}",
+                    "READY",
+                )
+            )
         conn.executemany(
             "INSERT INTO datasets "
             "(id, slug, name, path, omics_available, batch_key, cell_type_key, manifest_path, manifest_hash, status) "
@@ -87,15 +93,20 @@ def seed_registry(
         for j in range(1, n_models + 1):
             slug = f"synthetic-model-{j:03d}"
             omics = _omics_subset(rng)
-            md_rows.append((
-                slug, "1.0.0", f"Synthetic Model {j:03d}",
-                f"multiverse-{slug}:1.0.0", None,
-                json.dumps(omics),
-                f"store/models/{slug}/model.yaml",
-                f"hash{j:08x}",
-                None,
-                "ACTIVE",
-            ))
+            md_rows.append(
+                (
+                    slug,
+                    "1.0.0",
+                    f"Synthetic Model {j:03d}",
+                    f"multiverse-{slug}:1.0.0",
+                    None,
+                    json.dumps(omics),
+                    f"store/models/{slug}/model.yaml",
+                    f"hash{j:08x}",
+                    None,
+                    "ACTIVE",
+                )
+            )
         conn.executemany(
             "INSERT INTO models "
             "(slug, version, name, docker_image, image_digest, supported_omics, manifest_path, manifest_hash, hyperparameters_schema, status) "
@@ -112,12 +123,25 @@ def seed_registry(
             mod_slug = f"synthetic-model-{mod_idx:03d}"
             mod_name = f"Synthetic Model {mod_idx:03d}"
             status = rng.choices(_STATUSES, weights=_STATUS_WEIGHTS, k=1)[0]
-            output_path = str(artifact_root / f"synthetic_run_{r:06d}") if status == "SUCCESS" else None
+            output_path = (
+                str(artifact_root / f"synthetic_run_{r:06d}")
+                if status == "SUCCESS"
+                else None
+            )
             failure = rng.choice(_FAILURE_REASONS) if status == "FAILED" else None
-            run_rows.append((
-                r, ds_id, mod_slug, "1.0.0", mod_name,
-                status, output_path, None, failure,
-            ))
+            run_rows.append(
+                (
+                    r,
+                    ds_id,
+                    mod_slug,
+                    "1.0.0",
+                    mod_name,
+                    status,
+                    output_path,
+                    None,
+                    failure,
+                )
+            )
         conn.executemany(
             "INSERT INTO runs "
             "(run_id, dataset_id, model_slug, model_version, model_name, status, output_path, container_id, failure_reason) "
@@ -160,7 +184,9 @@ def main() -> None:
         n_runs=args.runs,
         rng_seed=args.seed,
     )
-    print(f"Seeded {args.datasets} datasets, {args.models} models, {args.runs} runs into {args.db}")
+    print(
+        f"Seeded {args.datasets} datasets, {args.models} models, {args.runs} runs into {args.db}"
+    )
 
 
 if __name__ == "__main__":

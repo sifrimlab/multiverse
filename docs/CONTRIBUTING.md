@@ -34,7 +34,7 @@ Write for academic bioinformaticians first. Translate infrastructure details int
 ## How-To: Add a Built-In Model
 
 1. Add the model package under `store/models/<slug>/` (`model.yaml`, `container/Dockerfile`, `container/environment.yml`, `container/run.py`).
-2. Add or update `schemas/models/<slug>.hyperparameters.schema.json`.
+2. Add or update `store/models/<slug>/hyperparameters.schema.json`.
 3. Ensure the container follows [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
 4. Register it with `make register-model slug=<slug>`.
 5. Build the image with `make build-<slug>` and confirm it pulls cleanly.

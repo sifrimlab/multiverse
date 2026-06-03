@@ -19,14 +19,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..mvd import Kernel
-from .protocol import (
-    ApiError,
-    RpcRequest,
-    RpcResponse,
-    decode_request,
-    encode_response,
-)
-
+from .protocol import (ApiError, RpcRequest, RpcResponse, decode_request,
+                       encode_response)
 
 SOCKET_FILENAME = "mvd.sock"
 SOCKET_MODE = 0o600
@@ -215,9 +209,7 @@ class KernelSocketServer:
                 await writer.drain()
         except asyncio.CancelledError:
             pass
-        writer.write(
-            encode_response(RpcResponse(id=request.id, stream_end=True))
-        )
+        writer.write(encode_response(RpcResponse(id=request.id, stream_end=True)))
         await writer.drain()
 
 

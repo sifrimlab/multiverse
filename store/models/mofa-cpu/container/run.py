@@ -1,21 +1,15 @@
 """MOFA container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+
 import random
 from typing import Union
 
-import numpy as np
 import anndata as ad
 import muon as mu
-
-from mvr_worker import (
-    OUTPUT_DIR,
-    build_model_config,
-    get_logger,
-    load_input_mudata,
-    load_job_spec,
-    setup_container_logging,
-    ModelFactory,
-    preprocess_mudata,
-)
+import numpy as np
+from mvr_worker import (OUTPUT_DIR, ModelFactory, build_model_config,
+                        get_logger, load_input_mudata, load_job_spec,
+                        preprocess_mudata, resolve_preprocess_params,
+                        setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -62,7 +56,7 @@ class MOFAModel(ModelFactory):
         if self.model_name not in self.model_params:
             raise ValueError(
                 f"'{self.model_name}' configuration not found in the model parameters."
-            ) 
+            )
 
         mofa_params = self.model_params.get(self.model_name)
 
@@ -156,22 +150,31 @@ def main() -> None:
     dataset_name = job_spec.get("dataset_slug", "dataset")
     try:
         mdata = load_input_mudata()
-        # TODO: make preprocessing not hardcoded but GUI based
         # TODO: make cell type and batch key not hardcoded
-        config["preprocess_params"] = {
-            "n_top_genes": 1000,
-            "scale": {
-            modality: True for modality in mdata.mod.keys()
+        modalities = list(mdata.mod.keys())
+        # Preprocessing is resolved from the job spec (run manifest / GUI),
+        # falling back to these built-in defaults when unspecified (issue #22).
+        config["preprocess_params"] = resolve_preprocess_params(
+            job_spec,
+            modalities,
+            {
+                "n_top_genes": 1000,
+                "scale": {modality: True for modality in modalities},
+                "normalization_target_sum": 1e4,
+                "log_normalization": True,
             },
-            "normalization_target_sum": 1e4,
-            "log_normalization": True,
-        }
-        mdata = preprocess_mudata(mdata, config["preprocess_params"], cell_type_key="cell_type", batch_key="batch")
-        
+        )
+        mdata = preprocess_mudata(
+            mdata,
+            config["preprocess_params"],
+            cell_type_key="cell_type",
+            batch_key="batch",
+        )
+
     except Exception as e:
         logger.error(f"Failed to load and concatenate input data: {e}")
         raise
-    
+
     try:
         model = MOFAModel(
             dataset=mdata,

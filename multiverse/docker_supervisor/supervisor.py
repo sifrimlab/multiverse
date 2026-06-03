@@ -22,12 +22,8 @@ from typing import Dict, Iterable, List, Optional
 from ..journal import JournalKind, JournalWriter
 from .client import ContainerEngine, ContainerInfo, ContainerState
 from .errors import NoSuchContainerError
-from .labels import (
-    LABEL_RUN_ID,
-    MultiverseLabels,
-    label_query,
-    multiverse_labels,
-)
+from .labels import (LABEL_RUN_ID, MultiverseLabels, label_query,
+                     multiverse_labels)
 from .leases import ContainerLease, LeaseLedger
 
 
@@ -102,6 +98,7 @@ class DockerSupervisor:
         mem_limit: Optional[str] = None,
         name: Optional[str] = None,
         entrypoint: Optional[str] = None,
+        gpu_requested: bool = False,
     ) -> LaunchResult:
         labels = multiverse_labels(
             run_id=physical_attempt_id,
@@ -123,6 +120,7 @@ class DockerSupervisor:
                 "image": image,
                 "labels": labels.to_dict(),
                 "mem_limit": mem_limit,
+                "gpu_requested": bool(gpu_requested),
                 "command": list(command or []),
                 "name": name,
                 "entrypoint": entrypoint,
@@ -143,6 +141,7 @@ class DockerSupervisor:
             mem_limit=mem_limit,
             name=name,
             entrypoint=entrypoint,
+            gpu_requested=gpu_requested,
         )
         lease = self.ledger.open(
             physical_attempt_id=physical_attempt_id,

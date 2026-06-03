@@ -58,6 +58,5 @@ site/
 .dvc/
 .pytest_cache/
 
-STRATEGY.md
 !store/models/**/Singularity.def
 *.pyc

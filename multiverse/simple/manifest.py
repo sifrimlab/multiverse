@@ -60,6 +60,8 @@ class SimpleJob:
     image_digest: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
     validators: str = "basic"
+    gpu: bool = False
+    preprocessing: Optional[Dict[str, Any]] = None
 
     def dataset_fingerprint(self) -> Dict[str, Any]:
         fp: Dict[str, Any] = {
@@ -114,6 +116,9 @@ def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> Simpl
     contract_version = str(model_block.get("contract_version", default_contract))
     image_digest_raw = model_block.get("image_digest")
     image_digest = str(image_digest_raw) if image_digest_raw is not None else None
+    # GPU is opt-in (issue #30): simple mode defaults to CPU unless the
+    # manifest explicitly requests a GPU via model.gpu.
+    gpu = bool(model_block.get("gpu", False))
 
     dataset_block = _require(raw, "dataset", where)
     if not isinstance(dataset_block, Mapping):
@@ -123,15 +128,15 @@ def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> Simpl
     try:
         dataset_n_obs = int(_require(dataset_block, "n_obs", f"{where}.dataset"))
     except (TypeError, ValueError) as exc:
-        raise SimpleManifestError(
-            f"{where}.dataset.n_obs must be an integer"
-        ) from exc
+        raise SimpleManifestError(f"{where}.dataset.n_obs must be an integer") from exc
     if dataset_n_obs <= 0:
         raise SimpleManifestError(
             f"{where}.dataset.n_obs must be positive (got {dataset_n_obs})"
         )
     dataset_n_vars = (
-        int(dataset_block["n_vars"]) if dataset_block.get("n_vars") is not None else None
+        int(dataset_block["n_vars"])
+        if dataset_block.get("n_vars") is not None
+        else None
     )
     fingerprint_extra = dict(dataset_block.get("fingerprint") or {})
 
@@ -144,6 +149,11 @@ def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> Simpl
         raise SimpleManifestError(
             f"{where}.validators must be one of basic/strict/developer"
         )
+
+    preprocessing_block = raw.get("preprocessing")
+    if preprocessing_block is not None and not isinstance(preprocessing_block, Mapping):
+        raise SimpleManifestError(f"{where}.preprocessing must be a mapping")
+    preprocessing = dict(preprocessing_block) if preprocessing_block else None
 
     return SimpleJob(
         name=name,
@@ -159,6 +169,8 @@ def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> Simpl
         image_digest=image_digest,
         params=dict(params_block),
         validators=validators,
+        gpu=gpu,
+        preprocessing=preprocessing,
     )
 
 

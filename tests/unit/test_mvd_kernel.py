@@ -26,20 +26,12 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.mvd import (
-    KERNEL_VERBS,
-    Kernel,
-    KernelConfig,
-    NullRunExecutor,
-    PrimaryState,
-    RunRegistry,
-    SyntheticRunExecutor,
-    assert_valid_transition,
-)
-from multiverse.mvd.api import KernelAPI
 from multiverse.journal import JournalKind, JournalLayout, JournalWriter
+from multiverse.mvd import (KERNEL_VERBS, Kernel, KernelConfig,
+                            NullRunExecutor, PrimaryState, RunRegistry,
+                            SyntheticRunExecutor, assert_valid_transition)
+from multiverse.mvd.api import KernelAPI
 from multiverse.mvd.runs import assert_projection_status_valid
-
 
 # ---------------------------------------------------------------------------
 # 1. Seven verbs
@@ -59,11 +51,7 @@ def test_kernel_exposes_exactly_seven_verbs() -> None:
     }
     # The Kernel class implements exactly these public, non-dunder methods
     # that are part of the protocol.
-    api_methods = {
-        name
-        for name in dir(KernelAPI)
-        if not name.startswith("_")
-    }
+    api_methods = {name for name in dir(KernelAPI) if not name.startswith("_")}
     assert api_methods == set(KERNEL_VERBS)
 
 
@@ -238,9 +226,7 @@ def test_cancel_run_honored_by_executor(tmp_path: Path) -> None:
             )
 
     executor = _PausingExecutor()
-    kernel = Kernel(
-        KernelConfig(state_root=tmp_path / "state"), executor=executor
-    )
+    kernel = Kernel(KernelConfig(state_root=tmp_path / "state"), executor=executor)
 
     async def _scenario() -> None:
         attempt = await kernel.submit_run(manifest_path="/tmp/m.yaml")
@@ -256,9 +242,7 @@ def test_cancel_run_honored_by_executor(tmp_path: Path) -> None:
 
 def test_state_machine_refuses_illegal_transition() -> None:
     with pytest.raises(ValueError):
-        assert_valid_transition(
-            PrimaryState.PENDING, PrimaryState.ARTIFACT_SUCCESS
-        )
+        assert_valid_transition(PrimaryState.PENDING, PrimaryState.ARTIFACT_SUCCESS)
     # Legal transitions don't raise.
     assert_valid_transition(PrimaryState.PENDING, PrimaryState.ADMITTED)
 
@@ -287,9 +271,9 @@ def test_report_projection_status_updates_record_without_changing_primary_state(
             details={"error": "connection refused"},
         )
         after = await kernel.query_run(physical_attempt_id=attempt)
-        assert after["primary_state"] == before_state, (
-            "report_projection_status must not change primary_state (R6)"
-        )
+        assert (
+            after["primary_state"] == before_state
+        ), "report_projection_status must not change primary_state (R6)"
         assert after["projections"]["mlflow"] == "TRACKING_SYNC_FAILED"
         await kernel.shutdown()
 
@@ -482,7 +466,10 @@ def test_run_registry_list_filters() -> None:
     registry.add(success)
 
     assert [r.physical_attempt_id for r in registry.list()] == ["p", "s"]
-    assert [r.physical_attempt_id for r in registry.list(state=PrimaryState.PENDING)] == ["p"]
     assert [
-        r.physical_attempt_id for r in registry.list(state=PrimaryState.ARTIFACT_SUCCESS)
+        r.physical_attempt_id for r in registry.list(state=PrimaryState.PENDING)
+    ] == ["p"]
+    assert [
+        r.physical_attempt_id
+        for r in registry.list(state=PrimaryState.ARTIFACT_SUCCESS)
     ] == ["s"]

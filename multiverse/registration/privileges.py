@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Mapping
 
-
 # Frozen list. Each entry is a (dotted-key, expected-value) pair; any of
 # these in a manifest marks the model "elevated" and requires explicit
 # user confirmation at registration.
@@ -62,9 +61,7 @@ def audit_docker_flags(manifest: Mapping[str, Any]) -> PrivilegeAudit:
                 target = _container_target(entry)
                 if target is not None and target not in _ALLOWED_VOLUME_MOUNTS:
                     audit.elevated = True
-                    audit.reasons.append(
-                        f"unauthorised volume target {target!r}"
-                    )
+                    audit.reasons.append(f"unauthorised volume target {target!r}")
     return audit
 
 

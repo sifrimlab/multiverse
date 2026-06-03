@@ -18,7 +18,7 @@ A good model behaves like this:
 | File | Purpose |
 |---|---|
 | `store/models/<slug>/model.yaml` | Model metadata and registry contract. |
-| `schemas/models/<slug>.hyperparameters.schema.json` | GUI controls and sweep definitions. |
+| `store/models/<slug>/hyperparameters.schema.json` | GUI controls and sweep definitions. |
 | `store/models/<slug>/container/Dockerfile` | Runtime environment definition. |
 | Runtime entrypoint | Reads Zero-Path inputs and writes required outputs. |
 
@@ -43,7 +43,7 @@ Minimal schema:
 | `name` | Yes | Display name in the GUI. |
 | `version` | Yes | Model package version. |
 | `contract_version` | Yes | Runtime contract version. |
-| `supported_omics` | Yes | Modalities required by the model. |
+| `supported_omics` | Yes | Modalities required by the model. Use `["any"]` for a modality-agnostic model compatible with every dataset (do not mix `any` with concrete modalities). |
 | `runtime.image` | Yes | Image used by mvexp execution. |
 | `hyperparameters_schema` | Recommended | JSON schema for GUI parameter controls. |
 | `build.context` | Optional | Build context for maintainers. |
@@ -58,7 +58,7 @@ contract_version: 1.0.0
 supported_omics: ["rna"]
 runtime:
   image: mvexp-hello-model:1.0.0
-hyperparameters_schema: schemas/models/hello_model.hyperparameters.schema.json
+hyperparameters_schema: store/models/hello_model/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/hello_model/container/Dockerfile

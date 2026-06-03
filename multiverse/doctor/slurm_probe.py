@@ -29,13 +29,8 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .health_probes import (
-    CleanupResult,
-    LeakInventoryResult,
-    ProbeOutcome,
-    ProbeReport,
-)
-
+from .health_probes import (CleanupResult, LeakInventoryResult, ProbeOutcome,
+                            ProbeReport)
 
 DEFAULT_SMOKE_TIMEOUT_SECONDS = 60
 
@@ -81,9 +76,7 @@ def probe_slurm_deep(
     )
 
     if not cap.sbatch:
-        return _report(
-            cap, probe=ProbeOutcome.SKIPPED, detail="sbatch not on PATH"
-        )
+        return _report(cap, probe=ProbeOutcome.SKIPPED, detail="sbatch not on PATH")
     if not (cap.sacct and cap.scancel):
         missing = []
         if not cap.sacct:
@@ -105,7 +98,8 @@ def probe_slurm_deep(
     if smoke_test:
         _run_smoke_test(
             cap,
-            partition=smoke_partition or (cap.partitions[0] if cap.partitions else None),
+            partition=smoke_partition
+            or (cap.partitions[0] if cap.partitions else None),
             timeout_seconds=smoke_timeout_seconds,
         )
         if cap.smoke_final_state != "COMPLETED":
@@ -169,9 +163,7 @@ def _run_smoke_test(
         cap.errors.append(f"sbatch invocation failed: {type(exc).__name__}: {exc}")
         return
     if submit.returncode != 0:
-        cap.errors.append(
-            f"sbatch exited {submit.returncode}: {submit.stderr.strip()}"
-        )
+        cap.errors.append(f"sbatch exited {submit.returncode}: {submit.stderr.strip()}")
         return
     job_id = (submit.stdout or "").strip().split(";", 1)[0].strip()
     if not job_id or not job_id.isdigit():
@@ -183,8 +175,17 @@ def _run_smoke_test(
     final_state: Optional[str] = None
     while time.monotonic() < deadline:
         state = _query_state(job_id)
-        if state in {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY",
-                     "NODE_FAIL", "PREEMPTED", "BOOT_FAIL", "DEADLINE"}:
+        if state in {
+            "COMPLETED",
+            "FAILED",
+            "CANCELLED",
+            "TIMEOUT",
+            "OUT_OF_MEMORY",
+            "NODE_FAIL",
+            "PREEMPTED",
+            "BOOT_FAIL",
+            "DEADLINE",
+        }:
             final_state = state
             break
         time.sleep(1.0)
@@ -253,9 +254,7 @@ def _describe(cap: SlurmCapability) -> str:
     return "; ".join(parts) or "ok"
 
 
-def _report(
-    cap: SlurmCapability, *, probe: ProbeOutcome, detail: str
-) -> ProbeReport:
+def _report(cap: SlurmCapability, *, probe: ProbeOutcome, detail: str) -> ProbeReport:
     return ProbeReport(
         name="engines.slurm_deep",
         probe=probe,

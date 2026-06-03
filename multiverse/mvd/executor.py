@@ -80,10 +80,14 @@ class SyntheticRunExecutor:
                 return True
             return False
 
-        await kernel.transition(record.physical_attempt_id, to_state=PrimaryState.ADMITTED)
+        await kernel.transition(
+            record.physical_attempt_id, to_state=PrimaryState.ADMITTED
+        )
         if await _check_cancel():
             return
-        await kernel.transition(record.physical_attempt_id, to_state=PrimaryState.RUNNING)
+        await kernel.transition(
+            record.physical_attempt_id, to_state=PrimaryState.RUNNING
+        )
         if await _check_cancel():
             return
 
@@ -100,7 +104,9 @@ class SyntheticRunExecutor:
         )
         if await _check_cancel():
             return
-        await kernel.transition(record.physical_attempt_id, to_state=PrimaryState.EVALUATING)
+        await kernel.transition(
+            record.physical_attempt_id, to_state=PrimaryState.EVALUATING
+        )
 
         if self.outcome == "eval_fail":
             await kernel.transition(
@@ -115,7 +121,9 @@ class SyntheticRunExecutor:
             )
             return
 
-        await kernel.transition(record.physical_attempt_id, to_state=PrimaryState.PROMOTING)
+        await kernel.transition(
+            record.physical_attempt_id, to_state=PrimaryState.PROMOTING
+        )
         await kernel.transition(
             record.physical_attempt_id, to_state=PrimaryState.ARTIFACT_SUCCESS
         )

@@ -24,27 +24,13 @@ import numpy as np
 import pytest
 
 from multiverse.artifact import BootContext, ImageIdentityKind, read_manifest
-from multiverse.broker import (
-    HostMetrics,
-    InMemoryHostObserver,
-    ResourceBroker,
-)
-from multiverse.journal import (
-    JournalKind,
-    JournalLayout,
-    JournalReader,
-    JournalWriter,
-)
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdSlurmExecutor,
-    PrimaryState,
-    build_slurm_executor_options,
-)
+from multiverse.broker import HostMetrics, InMemoryHostObserver, ResourceBroker
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
+from multiverse.mvd import (Kernel, KernelConfig, MvdSlurmExecutor,
+                            PrimaryState, build_slurm_executor_options)
 from multiverse.promotion import StoreLayout
 from multiverse.slurm import InMemorySlurmEngine, SlurmJobState
-
 
 pytestmark = pytest.mark.control_plane
 
@@ -56,9 +42,7 @@ pytestmark = pytest.mark.control_plane
 
 def _good_producer(workspace: Path, *, n_obs: int) -> None:
     with h5py.File(workspace / "embeddings.h5", "w") as f:
-        f.create_dataset(
-            "latent", data=np.zeros((n_obs, 4), dtype=np.float32)
-        )
+        f.create_dataset("latent", data=np.zeros((n_obs, 4), dtype=np.float32))
 
 
 def _broker_inflight(*, inflight: int = 8, journal=None) -> ResourceBroker:
@@ -155,9 +139,7 @@ class _DrivingSlurmExecutor(MvdSlurmExecutor):
             elif target is SlurmJobState.TIMEOUT:
                 engine.simulate_timeout(job_id)
             elif target is SlurmJobState.CANCELLED:
-                engine.simulate_failed(
-                    job_id, exit_code=0, reason="cancelled by user"
-                )
+                engine.simulate_failed(job_id, exit_code=0, reason="cancelled by user")
             else:
                 engine.simulate_failed(job_id, exit_code=99)
 
@@ -280,7 +262,9 @@ def test_manifest_has_runtime_sif_digest(tmp_path: Path) -> None:
     manifest = read_manifest(Path(snap["artifact_dir"]))
 
     rti = manifest.runtime_image_identity
-    assert rti is not None, "runtime_image_identity must be set when engine provides digest"
+    assert (
+        rti is not None
+    ), "runtime_image_identity must be set when engine provides digest"
     assert rti.kind is ImageIdentityKind.SIF_DIGEST
     assert rti.value.startswith("sha256:")
     # built_from must echo the source image_digest (M2 dual-digest invariant).
@@ -321,6 +305,7 @@ def test_slurm_sif_digest_caching(tmp_path: Path) -> None:
 
     # The digest matches compute_sif_digest directly.
     from multiverse.apptainer.images import compute_sif_digest
+
     assert digest1 == compute_sif_digest(sif)
 
     # Writing new content bumps the mtime/size → cache miss → new digest.

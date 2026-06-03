@@ -51,12 +51,12 @@ Set up the platform from a source checkout:
 
 ```bash
 make bootstrap      # install dev deps, initialize the registry, register built-in models
-make services-up    # optional: MLflow on :5000 and Optuna Dashboard on :8080
+make services-up    # optional: MLflow on :25000 and Optuna Dashboard on :28080
 make setup          # optional: install GUI and ML model wrapper extras
-make gui            # launch Streamlit on :8501
+make gui            # launch Streamlit on :28501
 ```
 
-Then open the GUI at `http://localhost:8501`. For a headless run, generate or edit `run_manifest.yaml` and use:
+Then open the GUI at `http://localhost:28501` (or the port in `.env`). For a headless run, generate or edit `run_manifest.yaml` and use:
 
 ```bash
 uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_output

@@ -33,7 +33,6 @@ from typing import Mapping, Optional
 
 import yaml
 
-
 PACKAGE_DIR = Path(__file__).resolve().parent
 """The installed multiverse package directory. Used by the doctor probe
 to refuse a state_root that points inside this directory."""

@@ -32,13 +32,8 @@ from ..broker import HostMetrics, InMemoryHostObserver, ResourceBroker
 from ..docker_supervisor import DockerSupervisor
 from ..index.sqlite_index import INDEX_FILENAME, open_index
 from ..journal import JournalLayout, JournalWriter
-from ..mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    PrimaryState,
-    build_executor_options,
-)
+from ..mvd import (Kernel, KernelConfig, MvdDockerExecutor, PrimaryState,
+                   build_executor_options)
 from ..promotion import StoreLayout
 
 
@@ -79,13 +74,9 @@ def run_via_mvd(args: argparse.Namespace) -> int:
 
     # Plan resolution: re-use the legacy parser so existing manifests
     # keep working, but never call into ``docker_runner`` afterwards.
-    from .cli import (
-        ManifestValidationError,
-        build_missing_images,
-        generate_execution_plan,
-        require_parsed_manifest,
-    )
     from ..registry_db import get_db_connection
+    from .cli import (ManifestValidationError, build_missing_images,
+                      generate_execution_plan, require_parsed_manifest)
 
     # Auto-build missing images by default; --no-build opts out. When building,
     # skip the manifest's image-availability probe so a missing image does not
@@ -97,7 +88,10 @@ def run_via_mvd(args: argparse.Namespace) -> int:
         if getattr(args, "manifest", None):
             try:
                 parsed = require_parsed_manifest(
-                    args.manifest, conn, backend_override="docker", check_images=not autobuild
+                    args.manifest,
+                    conn,
+                    backend_override="docker",
+                    check_images=not autobuild,
                 )
             except ManifestValidationError as exc:
                 print("Manifest validation failed:", file=sys.stderr)
@@ -108,10 +102,30 @@ def run_via_mvd(args: argparse.Namespace) -> int:
                     )
                 return 2
             manifest_text = Path(args.manifest).read_text(encoding="utf-8")
+            manifest_data = parsed.data
+            seed = resolve_effective_seed(getattr(args, "seed", None), manifest_data)
             pending_jobs = parsed.plan
+            pending_jobs = _maybe_apply_resume(
+                pending_jobs,
+                args=args,
+                manifest_data=manifest_data,
+                manifest_text=manifest_text,
+                state_root=state_root,
+                backend="docker",
+                seed=seed,
+            )
         else:
             manifest_text = ""
+            manifest_data = None
+            seed = resolve_effective_seed(getattr(args, "seed", None), None)
             pending_jobs = generate_execution_plan(conn)
+
+        _print_preflight(
+            manifest_path=getattr(args, "manifest", None),
+            manifest_text=manifest_text,
+            pending_jobs=pending_jobs,
+            manifest_data=manifest_data,
+        )
 
         if pending_jobs and autobuild:
             failures = build_missing_images(pending_jobs, conn)
@@ -136,7 +150,7 @@ def run_via_mvd(args: argparse.Namespace) -> int:
             artifact_root=artifact_root,
             pending_jobs=pending_jobs,
             manifest_text=manifest_text,
-            seed=getattr(args, "seed", None),
+            seed=seed,
             accept_degraded=accept_degraded,
         )
     )
@@ -226,8 +240,6 @@ async def _drive_jobs(
     return 0 if n_fail == 0 else 1
 
 
-
-
 def run_via_slurm(args: argparse.Namespace) -> int:
     """Drive the CLI's planned jobs through the mvd Slurm kernel."""
     output = getattr(args, "output", None)
@@ -243,12 +255,9 @@ def run_via_slurm(args: argparse.Namespace) -> int:
 
     setup_logging(str(state_root))
 
-    from .cli import (
-        ManifestValidationError,
-        generate_execution_plan,
-        require_parsed_manifest,
-    )
     from ..registry_db import get_db_connection
+    from .cli import (ManifestValidationError, generate_execution_plan,
+                      require_parsed_manifest)
 
     conn = get_db_connection()
     try:
@@ -257,7 +266,9 @@ def run_via_slurm(args: argparse.Namespace) -> int:
                 # Force the Slurm backend so manifest validation resolves SIFs
                 # and skips Docker image probing even when the manifest omits
                 # globals.backend.
-                parsed = require_parsed_manifest(args.manifest, conn, backend_override="slurm")
+                parsed = require_parsed_manifest(
+                    args.manifest, conn, backend_override="slurm"
+                )
             except ManifestValidationError as exc:
                 print("Manifest validation failed:", file=sys.stderr)
                 for err in exc.parsed.errors:
@@ -267,12 +278,35 @@ def run_via_slurm(args: argparse.Namespace) -> int:
                     )
                 return 2
             manifest_text = Path(args.manifest).read_text(encoding="utf-8")
+            manifest_data = parsed.data
+            seed = resolve_effective_seed(getattr(args, "seed", None), manifest_data)
             pending_jobs = parsed.plan
+            # Apply resume after Slurm SIF/GPU validation (done inside
+            # parse_manifest), because image identity resolution feeds the
+            # logical run identity used for matching completed work.
+            pending_jobs = _maybe_apply_resume(
+                pending_jobs,
+                args=args,
+                manifest_data=manifest_data,
+                manifest_text=manifest_text,
+                state_root=state_root,
+                backend="slurm",
+                seed=seed,
+            )
         else:
             manifest_text = ""
+            manifest_data = None
+            seed = resolve_effective_seed(getattr(args, "seed", None), None)
             pending_jobs = generate_execution_plan(conn)
     finally:
         conn.close()
+
+    _print_preflight(
+        manifest_path=getattr(args, "manifest", None),
+        manifest_text=manifest_text,
+        pending_jobs=pending_jobs,
+        manifest_data=manifest_data,
+    )
 
     if not pending_jobs:
         print("No pending jobs to execute.", file=sys.stderr)
@@ -285,7 +319,7 @@ def run_via_slurm(args: argparse.Namespace) -> int:
             artifact_root=artifact_root,
             pending_jobs=pending_jobs,
             manifest_text=manifest_text,
-            seed=getattr(args, "seed", None),
+            seed=seed,
             accept_degraded=accept_degraded,
         )
     )
@@ -369,11 +403,132 @@ async def _drive_jobs_slurm(
             )
 
     await kernel.shutdown()
-    print(f"slurm run complete: {n_success} succeeded, {n_fail} failed", file=sys.stderr)
+    print(
+        f"slurm run complete: {n_success} succeeded, {n_fail} failed", file=sys.stderr
+    )
     return 0 if n_fail == 0 else 1
 
 
-def _options_for_slurm_job(job: Dict[str, Any], *, manifest_hash: str, seed: int | None = None) -> Dict[str, Any]:
+def _maybe_apply_resume(
+    pending_jobs: List[Dict[str, Any]],
+    *,
+    args: argparse.Namespace,
+    manifest_data: Dict[str, Any],
+    manifest_text: str,
+    state_root: Path,
+    backend: str,
+    seed: int,
+) -> List[Dict[str, Any]]:
+    """Decorate the plan with mvd-backed resume when skip-completed is enabled.
+
+    Resume policy precedence (CLI flag > manifest globals > default off) is
+    resolved in :func:`multiverse.runner.resume.resolve_skip_completed`. The
+    decoration marks completed jobs ``_skipped`` against durable mvd
+    ``ARTIFACT_SUCCESS`` state — never the legacy ``runs`` table.
+
+    ``seed`` is the already-resolved effective seed (see
+    :func:`resolve_effective_seed`) so the resume identity matches what the
+    executor will actually run with.
+    """
+    from ..artifact import compute_manifest_hash
+    from .resume import decorate_plan_with_resume, resolve_skip_completed
+
+    skip_completed = resolve_skip_completed(
+        cli_flag=getattr(args, "skip_completed", None),
+        manifest_data=manifest_data,
+    )
+    if not skip_completed:
+        return pending_jobs
+    return decorate_plan_with_resume(
+        pending_jobs,
+        state_root=state_root,
+        manifest_hash=compute_manifest_hash(manifest_text or ""),
+        seed=seed,
+        backend=backend,
+    )
+
+
+def resolve_effective_seed(
+    cli_seed: "int | None", manifest_data: "Dict[str, Any] | None"
+) -> int:
+    """Resolve the execution seed with documented precedence (Gap 4).
+
+    1. an explicit ``--seed`` value (``cli_seed`` not ``None``);
+    2. ``globals.random_seed`` from the manifest;
+    3. fallback ``42``.
+
+    The same resolved seed is used for executor submission *and* the resume
+    logical-run identity, so a manifest's declared ``random_seed`` actually runs
+    (and is reflected in resume matching) without requiring ``--seed``.
+    """
+    if cli_seed is not None:
+        return int(cli_seed)
+    if manifest_data:
+        globals_block = manifest_data.get("globals") or {}
+        if (
+            isinstance(globals_block, dict)
+            and globals_block.get("random_seed") is not None
+        ):
+            return int(globals_block["random_seed"])
+    return 42
+
+
+def _print_preflight(
+    *,
+    manifest_path: str | None,
+    manifest_text: str,
+    pending_jobs: List[Dict[str, Any]],
+    manifest_data: "Dict[str, Any] | None" = None,
+) -> None:
+    """Print a dry-run/preflight summary so launches are auditable.
+
+    Shows the manifest path and hash that was launched, distinct job counts, and
+    per-job model, dataset, params hash, and skip reason. The counts are kept
+    separate (Gap 5) because one YAML job can expand into several model jobs:
+
+    * ``yaml jobs`` — entries in the manifest ``jobs:`` list;
+    * ``planned jobs`` — the expanded plan (one per model × dataset);
+    * ``runnable jobs`` — planned jobs that will be submitted;
+    * ``skipped completed jobs`` — planned jobs resumed from mvd state.
+    """
+    from ..artifact import compute_manifest_hash
+
+    manifest_hash = compute_manifest_hash(manifest_text or "")
+    runnable = [j for j in pending_jobs if not j.get("_skipped")]
+    skipped = [j for j in pending_jobs if j.get("_skipped")]
+    yaml_jobs = None
+    if isinstance(manifest_data, dict) and isinstance(manifest_data.get("jobs"), list):
+        yaml_jobs = len(manifest_data["jobs"])
+    print("mvd preflight:", file=sys.stderr)
+    print(f"  manifest: {manifest_path or '(none)'}", file=sys.stderr)
+    print(f"  manifest_hash: {manifest_hash}", file=sys.stderr)
+    if yaml_jobs is not None:
+        print(f"  yaml jobs: {yaml_jobs}", file=sys.stderr)
+    print(f"  planned jobs: {len(pending_jobs)}", file=sys.stderr)
+    print(f"  runnable jobs: {len(runnable)}", file=sys.stderr)
+    print(f"  skipped completed jobs: {len(skipped)}", file=sys.stderr)
+    for job in pending_jobs:
+        model = job.get("model_slug") or job.get("model_name") or "?"
+        dataset = job.get("dataset_name") or job.get("dataset_slug") or "?"
+        params_hash = job.get("params_hash") or "-"
+        if job.get("_skipped"):
+            reason = job.get("_skip_reason", "skipped")
+            attempt = job.get("_completed_attempt_id")
+            prov = f" [attempt={attempt}]" if attempt else ""
+            print(
+                f"  - SKIP {dataset}/{model} params={params_hash}: {reason}{prov}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  - RUN  {dataset}/{model} params={params_hash}",
+                file=sys.stderr,
+            )
+
+
+def _options_for_slurm_job(
+    job: Dict[str, Any], *, manifest_hash: str, seed: int | None = None
+) -> Dict[str, Any]:
     """Build ``Kernel.submit_run`` options for a Slurm job dict.
 
     The Slurm executor reads its knobs from the nested ``options["slurm"]``
@@ -391,7 +546,9 @@ def _options_for_slurm_job(job: Dict[str, Any], *, manifest_hash: str, seed: int
     options = build_slurm_executor_options(
         model_slug=str(job.get("model_slug") or job.get("model_name") or "model"),
         image_sif=str(job.get("image_sif") or ""),
-        dataset_slug=str(job.get("dataset_slug") or job.get("dataset_name") or "dataset"),
+        dataset_slug=str(
+            job.get("dataset_slug") or job.get("dataset_name") or "dataset"
+        ),
         dataset_path=str(job.get("dataset_path") or ""),
         dataset_n_obs=int(job.get("dataset_n_obs") or job.get("n_obs") or 0),
         params=dict(job.get("model_params") or {}),
@@ -400,8 +557,9 @@ def _options_for_slurm_job(job: Dict[str, Any], *, manifest_hash: str, seed: int
         dataset_n_vars=job.get("dataset_n_vars") or job.get("n_vars"),
         validators=str(job.get("validators") or "basic"),
         artifact_dir_name=(
-            str(job.get("artifact_dir_name")) if job.get("artifact_dir_name") else
-            os.path.basename(str(job.get("output_path") or "")) or None
+            str(job.get("artifact_dir_name"))
+            if job.get("artifact_dir_name")
+            else os.path.basename(str(job.get("output_path") or "")) or None
         ),
         seed=seed,
         partition=slurm_cfg.get("partition"),
@@ -435,17 +593,18 @@ def _project_snapshot_to_index(state_root: Path, snap: Dict[str, Any]) -> None:
         # authoritative, and `multiverse rebuild-index` can recreate this DB.
         return
 
-def _options_for_job(job: Dict[str, Any], *, manifest_hash: str, seed: int | None = None) -> Dict[str, Any]:
+
+def _options_for_job(
+    job: Dict[str, Any], *, manifest_hash: str, seed: int | None = None
+) -> Dict[str, Any]:
     """Build ``Kernel.submit_run`` options from a legacy job dict."""
     return build_executor_options(
-        model_slug=str(
-            job.get("model_slug")
-            or job.get("model_name")
-            or "model"
-        ),
+        model_slug=str(job.get("model_slug") or job.get("model_name") or "model"),
         model_image=str(job.get("model_image") or ""),
         image_digest=job.get("image_digest"),
-        dataset_slug=str(job.get("dataset_slug") or job.get("dataset_name") or "dataset"),
+        dataset_slug=str(
+            job.get("dataset_slug") or job.get("dataset_name") or "dataset"
+        ),
         dataset_path=str(job.get("dataset_path") or ""),
         dataset_n_obs=int(job.get("dataset_n_obs") or job.get("n_obs") or 0),
         dataset_n_vars=job.get("dataset_n_vars") or job.get("n_vars"),
@@ -459,6 +618,8 @@ def _options_for_job(job: Dict[str, Any], *, manifest_hash: str, seed: int | Non
             else os.path.basename(str(job.get("output_path") or "")) or None
         ),
         mem_limit=job.get("mem_limit"),
+        gpu_requested=bool(job.get("gpu", False)),
+        preprocessing=job.get("preprocessing"),
         seed=seed,
     ) | {"manifest_hash": manifest_hash}
 
@@ -485,9 +646,7 @@ def _build_engine():
     try:
         from ..docker_supervisor.client import RealDockerEngine
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            f"could not load the Docker engine adapter: {exc}"
-        ) from exc
+        raise RuntimeError(f"could not load the Docker engine adapter: {exc}") from exc
     return RealDockerEngine()
 
 

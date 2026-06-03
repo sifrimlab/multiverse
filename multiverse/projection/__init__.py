@@ -15,16 +15,9 @@ This module's ``MLflowSyncPlugin`` is composable: tests inject a fake
 ``MLflowTarget``; production composes the real MLflow SDK.
 """
 
-from .base import (
-    MLflowTarget,
-    SyncOutcome,
-    SyncResult,
-)
-from .mlflow_sync import (
-    DEFAULT_PROJECTION_PLUGIN,
-    MLflowSyncPlugin,
-    sync_artifact_bundle,
-)
+from .base import MLflowTarget, SyncOutcome, SyncResult
+from .mlflow_sync import (DEFAULT_PROJECTION_PLUGIN, MLflowSyncPlugin,
+                          sync_artifact_bundle)
 
 __all__ = [
     "DEFAULT_PROJECTION_PLUGIN",

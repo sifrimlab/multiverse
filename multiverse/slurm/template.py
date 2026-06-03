@@ -101,9 +101,13 @@ def render_sbatch_script(spec: SlurmJobSpec) -> str:
     # back into the workspace as the final step so the promotion saga (which
     # reads the workspace after sacct reports COMPLETED) sees them.
     if spec.use_tmpdir:
-        lines.append('cp ' + shlex.quote(str(spec.dataset_path)) + ' "$SLURM_TMPDIR/data.h5mu"')
+        lines.append(
+            "cp " + shlex.quote(str(spec.dataset_path)) + ' "$SLURM_TMPDIR/data.h5mu"'
+        )
         if spec.use_tmpdir_sif:
-            lines.append('cp ' + shlex.quote(str(spec.image_sif)) + ' "$SLURM_TMPDIR/image.sif"')
+            lines.append(
+                "cp " + shlex.quote(str(spec.image_sif)) + ' "$SLURM_TMPDIR/image.sif"'
+            )
         lines.append('mkdir -p "$SLURM_TMPDIR/output"')
         lines.append("")
 

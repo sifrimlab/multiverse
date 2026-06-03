@@ -21,22 +21,12 @@ from pathlib import Path
 
 import pytest
 
-from multiverse.gc import (
-    CandidateKind,
-    GcCandidate,
-    GcResult,
-    PlanReason,
-    RetentionPolicy,
-    TIER1_PATHS,
-    apply_plan,
-    build_plan,
-    enumerate_candidates,
-    sweep_tier1,
-)
+from multiverse.gc import (TIER1_PATHS, CandidateKind, GcCandidate, GcResult,
+                           PlanReason, RetentionPolicy, apply_plan, build_plan,
+                           enumerate_candidates, sweep_tier1)
 from multiverse.gc.apply import GC_REPORTS_SUBDIR
 from multiverse.promotion import StoreLayout
 from multiverse.promotion.tokens import write_owner_token
-
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -49,7 +39,11 @@ def store(tmp_path: Path) -> StoreLayout:
 
 
 def _seed_failed_workspace(
-    store: StoreLayout, name: str, *, age_seconds: int, with_token: bool = True,
+    store: StoreLayout,
+    name: str,
+    *,
+    age_seconds: int,
+    with_token: bool = True,
     with_export: bool = False,
 ) -> Path:
     path = store.failed / name
@@ -128,8 +122,10 @@ def test_apply_to_promoted_required_to_consider_promoted(store: StoreLayout) -> 
         apply_to_promoted=True,
     )
     [entry] = plan.entries
-    assert entry.reason is PlanReason.KEEP_NO_RETENTION or \
-        entry.reason is PlanReason.KEEP_PROMOTED_PROTECTED
+    assert (
+        entry.reason is PlanReason.KEEP_NO_RETENTION
+        or entry.reason is PlanReason.KEEP_PROMOTED_PROTECTED
+    )
     # And RetentionPolicy.promoted_artifacts_seconds cannot be set.
     with pytest.raises(TypeError):
         RetentionPolicy(promoted_artifacts_seconds=10)  # type: ignore[call-arg]
@@ -169,9 +165,7 @@ def test_apply_true_deletes_woulddelete_entries(store: StoreLayout) -> None:
     failed = _seed_failed_workspace(
         store, "f", age_seconds=10 * 24 * 3600, with_export=True
     )
-    kept = _seed_failed_workspace(
-        store, "k", age_seconds=10, with_export=True
-    )
+    kept = _seed_failed_workspace(store, "k", age_seconds=10, with_export=True)
     plan = build_plan(
         enumerate_candidates(store),
         policy=RetentionPolicy(failed_workspaces_seconds=24 * 3600),
@@ -272,7 +266,9 @@ def test_tier1_never_touches_user_visible_directories(tmp_path: Path) -> None:
     state_root.mkdir()
     store = StoreLayout(root=tmp_path / "store").ensure()
     # Seed an ancient promoted artifact AND an ancient failed workspace.
-    promoted = _seed_promoted_artifact(store, "ancient_promoted", age_seconds=10_000_000)
+    promoted = _seed_promoted_artifact(
+        store, "ancient_promoted", age_seconds=10_000_000
+    )
     failed = _seed_failed_workspace(store, "ancient_failed", age_seconds=10_000_000)
     quarantine_dir = store.quarantine / "2020-01-01" / "ancient_q"
     quarantine_dir.mkdir(parents=True)
@@ -297,6 +293,6 @@ def test_tier1_closed_list_excludes_user_visible_namespaces() -> None:
     forbidden_substrings = ("artifacts", "quarantine", "cancelled", "failed")
     for root_kind, rel, _ttl in TIER1_PATHS:
         for token in forbidden_substrings:
-            assert token not in rel, (
-                f"Tier-1 path {rel!r} contains forbidden substring {token!r}"
-            )
+            assert (
+                token not in rel
+            ), f"Tier-1 path {rel!r} contains forbidden substring {token!r}"

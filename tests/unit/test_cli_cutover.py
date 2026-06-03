@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -30,9 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 _GUI_FILES = sorted(
-    p
-    for p in (REPO_ROOT / "multiverse").glob("gui*.py")
-    if p.is_file()
+    p for p in (REPO_ROOT / "multiverse").glob("gui*.py") if p.is_file()
 )
 _FORBIDDEN_DOCKER = re.compile(r"^\s*(?:import|from)\s+docker\b", re.MULTILINE)
 _FORBIDDEN_DOCKER_RUNNER = re.compile(
@@ -121,9 +118,9 @@ def test_mvd_entrypoint_does_not_import_legacy_docker_runner() -> None:
         encoding="utf-8"
     )
     m = _FORBIDDEN_DOCKER_RUNNER.search(text)
-    assert m is None, (
-        f"mvd_entrypoint must not import legacy docker_runner; got {m.group(0)!r}"
-    )
+    assert (
+        m is None
+    ), f"mvd_entrypoint must not import legacy docker_runner; got {m.group(0)!r}"
 
 
 def test_legacy_flag_is_not_in_run_parser_help() -> None:
@@ -140,9 +137,7 @@ def test_legacy_flag_is_not_in_run_parser_help() -> None:
 
 
 def test_runner_cli_does_not_import_legacy_docker_runner_at_module_load() -> None:
-    text = (REPO_ROOT / "multiverse" / "runner" / "cli.py").read_text(
-        encoding="utf-8"
-    )
+    text = (REPO_ROOT / "multiverse" / "runner" / "cli.py").read_text(encoding="utf-8")
     m = _FORBIDDEN_DOCKER_RUNNER.search(text)
     assert m is None, f"runner.cli must not import docker_runner; got {m.group(0)!r}"
 
@@ -169,9 +164,9 @@ def test_mvd_entrypoint_does_not_eagerly_load_mlflow_optuna_streamlit() -> None:
         text=True,
         timeout=30,
     )
-    assert result.returncode == 0, (
-        f"mvd_entrypoint leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
-    )
+    assert (
+        result.returncode == 0
+    ), f"mvd_entrypoint leaked: {result.stdout.strip()!r}\nstderr: {result.stderr}"
 
 
 def test_mvd_entrypoint_projects_snapshot_to_rebuildable_index(tmp_path: Path) -> None:

@@ -45,15 +45,9 @@ from multiverse.docker_supervisor import DockerSupervisor
 from multiverse.index import open_index, rebuild_index
 from multiverse.index.sqlite_index import INDEX_FILENAME
 from multiverse.journal import JournalLayout, JournalWriter
-from multiverse.mvd import (
-    Kernel,
-    KernelConfig,
-    MvdDockerExecutor,
-    PrimaryState,
-    build_executor_options,
-)
+from multiverse.mvd import (Kernel, KernelConfig, MvdDockerExecutor,
+                            PrimaryState, build_executor_options)
 from multiverse.promotion import StoreLayout
-
 
 # ---------------------------------------------------------------------------
 # Apptainer availability probe
@@ -121,13 +115,18 @@ def _build_sif_from_docker(docker_image: str, sif_path: Path, bin_name: str) -> 
 def _find_local_docker_shell_image() -> Optional[str]:
     """Return the name of a small locally-available Docker image with ``sh``."""
     override = os.environ.get("MVD_REAL_DOCKER_BASE_IMAGE")
-    candidates = (override,) if override else (
-        "busybox:latest",
-        "alpine:latest",
-        "multiverse-pca:1.0.0",
+    candidates = (
+        (override,)
+        if override
+        else (
+            "busybox:latest",
+            "alpine:latest",
+            "multiverse-pca:1.0.0",
+        )
     )
     try:
         import docker  # type: ignore[import-untyped]
+
         client = docker.from_env()
     except Exception:
         return None
@@ -245,12 +244,14 @@ def apptainer_oom_sif(_session_sif_dir: Path, apptainer_available):
 
         ctx = Path(workdir)
         (ctx / "Dockerfile").write_text(
-            "\n".join([
-                f"FROM {docker_img}",
-                "RUN mkdir -p /input /output",
-                f'CMD ["sh", "-c", {json.dumps(_OOM_FIXTURE_CMD)}]',
-                "",
-            ]),
+            "\n".join(
+                [
+                    f"FROM {docker_img}",
+                    "RUN mkdir -p /input /output",
+                    f'CMD ["sh", "-c", {json.dumps(_OOM_FIXTURE_CMD)}]',
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
         tag = f"mvd-apptainer-oom-fixture:{digest}"
@@ -261,9 +262,7 @@ def apptainer_oom_sif(_session_sif_dir: Path, apptainer_available):
             check=False,
         )
         if r.returncode != 0:
-            pytest.skip(
-                f"OOM Docker fixture build failed: {r.stderr.strip()[-400:]}"
-            )
+            pytest.skip(f"OOM Docker fixture build failed: {r.stderr.strip()[-400:]}")
         built = _build_sif_from_docker(tag, sif_path, bin_name)
         # Clean up the ephemeral Docker image.
         subprocess.run(["docker", "rmi", tag], capture_output=True, check=False)
@@ -283,7 +282,9 @@ def _dataset_file(tmp_path: Path, *, n_obs: int = 4) -> Path:
     with h5py.File(dataset, "w") as f:
         f.create_dataset(
             "latent",
-            data=np.random.default_rng(0).standard_normal((n_obs, 4)).astype(np.float32),
+            data=np.random.default_rng(0)
+            .standard_normal((n_obs, 4))
+            .astype(np.float32),
         )
     return dataset
 
@@ -316,9 +317,7 @@ def _kernel_with_real_apptainer(
         supervisor=supervisor,
         broker=ResourceBroker(
             observer=InMemoryHostObserver(
-                HostMetrics(
-                    ram_free_bytes=8 * 1024**3, ram_total_bytes=16 * 1024**3
-                )
+                HostMetrics(ram_free_bytes=8 * 1024**3, ram_total_bytes=16 * 1024**3)
             )
         ),
         state_root=state_root,
@@ -500,9 +499,9 @@ def test_real_apptainer_container_fail_produces_failed_state(
     assert snap["primary_state"] == PrimaryState.FAILED.value, snap
     reason = snap.get("failure_reason") or ""
     # Must contain a usable signal about the exit code.
-    assert "42" in reason or "exit" in reason.lower() or "failed" in reason.lower(), (
-        f"failure_reason should mention exit code 42; got: {reason!r}"
-    )
+    assert (
+        "42" in reason or "exit" in reason.lower() or "failed" in reason.lower()
+    ), f"failure_reason should mention exit code 42; got: {reason!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -566,9 +565,9 @@ def test_real_apptainer_oom_produces_failed_with_oom_reason(
         return snap
 
     snap = asyncio.run(_scenario())
-    assert snap["primary_state"] == PrimaryState.FAILED.value, (
-        f"OOM run should reach FAILED; got {snap['primary_state']!r}"
-    )
+    assert (
+        snap["primary_state"] == PrimaryState.FAILED.value
+    ), f"OOM run should reach FAILED; got {snap['primary_state']!r}"
     reason = snap.get("failure_reason") or ""
     # The engine marks oom_killed=True when exit_code==137 + mem_limit set;
     # the executor turns that into "container OOM_KILLED" in failure_reason.

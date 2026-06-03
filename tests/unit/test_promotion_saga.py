@@ -27,35 +27,19 @@ import h5py
 import numpy as np
 import pytest
 
-from multiverse.artifact import (
-    ArtifactEntry,
-    ArtifactManifest,
-    BootContext,
-    ExpectedArtifact,
-    ImageIdentity,
-    ModelOutputContract,
-    ProducedAt,
-    ProducedBy,
-    ValidationLevel,
-    compute_logical_run_id,
-    compute_manifest_hash,
-    compute_params_hash,
-    new_physical_attempt_id,
-    produced_at_now,
-    read_manifest,
-)
-from multiverse.journal import JournalKind, JournalLayout, JournalReader, JournalWriter
-from multiverse.promotion import (
-    OWNER_TOKEN_FILENAME,
-    OwnershipMismatchError,
-    PromotionOutcome,
-    PromotionSaga,
-    PromotionStep,
-    StoreLayout,
-    TOMBSTONE_SUFFIX,
-    read_owner_token,
-)
-
+from multiverse.artifact import (ArtifactEntry, ArtifactManifest, BootContext,
+                                 ExpectedArtifact, ImageIdentity,
+                                 ModelOutputContract, ProducedAt, ProducedBy,
+                                 ValidationLevel, compute_logical_run_id,
+                                 compute_manifest_hash, compute_params_hash,
+                                 new_physical_attempt_id, produced_at_now,
+                                 read_manifest)
+from multiverse.journal import (JournalKind, JournalLayout, JournalReader,
+                                JournalWriter)
+from multiverse.promotion import (OWNER_TOKEN_FILENAME, TOMBSTONE_SUFFIX,
+                                  OwnershipMismatchError, PromotionOutcome,
+                                  PromotionSaga, PromotionStep, StoreLayout,
+                                  read_owner_token)
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -86,7 +70,9 @@ def _workspace_with_good_embedding(tmp_path: Path, n_obs: int = 4) -> Path:
     with h5py.File(ws / "embeddings.h5", "w") as f:
         f.create_dataset(
             "latent",
-            data=np.random.default_rng(0).standard_normal((n_obs, 4)).astype(np.float32),
+            data=np.random.default_rng(0)
+            .standard_normal((n_obs, 4))
+            .astype(np.float32),
         )
     (ws / "metrics.json").write_text(json.dumps({"asw": 0.5}), encoding="utf-8")
     return ws
@@ -357,9 +343,9 @@ def test_hot_path_has_no_destructive_calls() -> None:
     for rel in _HOT_PATH_MODULES:
         text = (root / rel).read_text(encoding="utf-8")
         for pattern in _FORBIDDEN_CALLS:
-            assert not pattern.search(text), (
-                f"forbidden destructive call {pattern.pattern} found in {rel}"
-            )
+            assert not pattern.search(
+                text
+            ), f"forbidden destructive call {pattern.pattern} found in {rel}"
 
 
 def test_fsutil_staged_copy_has_no_delete_in_main_path() -> None:
@@ -368,9 +354,9 @@ def test_fsutil_staged_copy_has_no_delete_in_main_path() -> None:
     root = Path(__file__).resolve().parents[2]
     text = (root / "multiverse/promotion/fsutil.py").read_text(encoding="utf-8")
     for pattern in _FORBIDDEN_CALLS:
-        assert not pattern.search(text), (
-            f"forbidden destructive call {pattern.pattern} reintroduced in fsutil.py"
-        )
+        assert not pattern.search(
+            text
+        ), f"forbidden destructive call {pattern.pattern} reintroduced in fsutil.py"
 
 
 # ---------------------------------------------------------------------------
@@ -390,9 +376,11 @@ def test_prepare_writes_owner_token_into_staging_only(
         store=store,
         workspace=ws,
         manifest=_make_manifest(boot),
-        after_step_hook=lambda step: (_ for _ in ()).throw(RuntimeError("stop"))
-        if step is PromotionStep.PREPARE
-        else None,
+        after_step_hook=lambda step: (
+            (_ for _ in ()).throw(RuntimeError("stop"))
+            if step is PromotionStep.PREPARE
+            else None
+        ),
     )
     with pytest.raises(RuntimeError):
         saga.run()
@@ -417,8 +405,8 @@ def test_prepare_writes_owner_token_into_staging_only(
 def test_symlink_in_workspace_is_rejected_by_cross_fs_copy(tmp_path: Path) -> None:
     """``staged_copy_directory`` refuses to copy a workspace containing a
     symlink — per R13 symlinks within managed store paths are forbidden."""
-    from multiverse.promotion.fsutil import staged_copy_directory
     from multiverse.promotion.errors import SymlinkPolicyError
+    from multiverse.promotion.fsutil import staged_copy_directory
 
     src = tmp_path / "src"
     src.mkdir()

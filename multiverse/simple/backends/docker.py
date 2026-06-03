@@ -33,7 +33,6 @@ from ...artifact import ImageIdentity
 from ..manifest import SimpleJob
 from .base import ExecutionResult
 
-
 CONTAINER_INPUT_DATA_PATH = "/input/data.h5mu"
 CONTAINER_OUTPUT_DIR = "/output"
 JOB_SPEC_FILENAME = "job_spec.json"
@@ -41,17 +40,20 @@ JOB_SPEC_FILENAME = "job_spec.json"
 
 import subprocess
 
+
 def gpu_available():
     try:
         subprocess.run(
             ["nvidia-smi"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=True
+            check=True,
         )
         return True
     except Exception:
         return False
+
+
 class DockerBackendError(RuntimeError):
     """Raised on hard Docker failures (image missing, container non-zero
     exit, daemon unreachable)."""
@@ -102,13 +104,12 @@ class DockerBackend:
             "multiverse.image_kind": image_identity.kind.value,
         }
         device_requests = None
-         # TODO: make it from the config file
-        if gpu_available():
+        # GPU is opt-in: the manifest job must request it (job.gpu) AND a GPU
+        # must be present (issue #30). gpu_available() is only a guard against
+        # requesting an unavailable device, not a trigger for allocation.
+        if job.gpu and gpu_available():
             device_requests = [
-                docker.types.DeviceRequest(
-                    count=-1,
-                    capabilities=[["gpu"]]
-                )
+                docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
             ]
         environment = self._environment_for(seed)
         volumes = self._volumes_for(job, workspace_dir)
@@ -177,9 +178,7 @@ class DockerBackend:
             client = docker.from_env()
             client.ping()
         except Exception as exc:
-            raise DockerBackendError(
-                f"Docker daemon is not reachable: {exc}"
-            ) from exc
+            raise DockerBackendError(f"Docker daemon is not reachable: {exc}") from exc
         self.client = client
         return client
 
@@ -226,9 +225,7 @@ class DockerBackend:
             return ImageIdentity.local_image_id(f"sha256:{image_id}")
         return ImageIdentity.unverified_local(image_ref)
 
-    def _image_ref_for_run(
-        self, identity: ImageIdentity, job: SimpleJob
-    ) -> str:
+    def _image_ref_for_run(self, identity: ImageIdentity, job: SimpleJob) -> str:
         """Choose the runtime image reference that Docker will actually
         run. Always prefer the manifest tag — digests on a registry are
         addressable, but ``image@sha256:...`` references are not always
@@ -254,6 +251,10 @@ class DockerBackend:
             "hyperparameters": {job.model_slug: dict(job.params)},
             "seed": seed,
         }
+        # Per-run preprocessing overrides (issue #22); absent ⇒ container
+        # defaults apply.
+        if job.preprocessing:
+            spec["preprocessing"] = dict(job.preprocessing)
         (workspace_dir / JOB_SPEC_FILENAME).write_text(
             json.dumps(spec, sort_keys=True, indent=2),
             encoding="utf-8",

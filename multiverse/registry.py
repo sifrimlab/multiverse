@@ -1,12 +1,16 @@
 import json
-from typing import List, Dict
+from typing import Dict, List
+
 import pandas as pd
+
 from .logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
-def generate_compatibility_matrix(datasets: List[Dict], models: List[Dict]) -> pd.DataFrame:
+def generate_compatibility_matrix(
+    datasets: List[Dict], models: List[Dict]
+) -> pd.DataFrame:
     """Generates a compatibility matrix between datasets and models based on omics.
 
     Args:

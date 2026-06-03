@@ -42,9 +42,7 @@ def _load(manifest_path: Path) -> Mapping[str, Any]:
     with manifest_path.open("r", encoding="utf-8") as fp:
         data = yaml.safe_load(fp)
     if not isinstance(data, Mapping):
-        raise ValueError(
-            f"manifest {manifest_path} top-level must be a mapping"
-        )
+        raise ValueError(f"manifest {manifest_path} top-level must be a mapping")
     return data
 
 

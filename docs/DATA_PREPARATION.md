@@ -217,7 +217,7 @@ with open(dataset_dir / "dataset.yaml", "w") as f:
 
 Sequential GUI workflow:
 
-1. Start mvexp and open `http://localhost:8501`.
+1. Start mvexp and open `http://localhost:28501`.
 2. Open the **Registry** tab.
 3. Expand **Register New Dataset**.
 4. If you already wrote `dataset.yaml`, keep **Build manifest from fields** off and enter the manifest path.

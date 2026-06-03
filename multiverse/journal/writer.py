@@ -34,7 +34,7 @@ from .errors import JournalError, JournalLocked
 from .layout import JournalLayout
 from .record import INLINE_BLOB_SPILL_THRESHOLD, JournalKind, JournalRecord
 
-DEFAULT_SEGMENT_MAX_BYTES = 16 * 1024 * 1024   # 16 MiB per segment
+DEFAULT_SEGMENT_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB per segment
 
 
 @dataclass(frozen=True)
@@ -160,12 +160,11 @@ class JournalWriter:
         line = record.to_line()
 
         # Rotate eagerly so the *new* record never spans two segments.
-        prospective_size = self._segment_size + sum(
-            len(b) for b in self._pending_bytes
-        ) + len(line)
-        if (
-            prospective_size > self._segment_max_bytes
-            and (self._segment_size > 0 or self._pending_bytes)
+        prospective_size = (
+            self._segment_size + sum(len(b) for b in self._pending_bytes) + len(line)
+        )
+        if prospective_size > self._segment_max_bytes and (
+            self._segment_size > 0 or self._pending_bytes
         ):
             # Commit anything already pending so it stays in the *current*
             # segment, then rotate before adding the new record.

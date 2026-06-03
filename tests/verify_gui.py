@@ -1,6 +1,8 @@
-from playwright.sync_api import sync_playwright, expect
-import time
 import os
+import time
+
+from playwright.sync_api import expect, sync_playwright
+
 
 def run_verification():
     with sync_playwright() as p:
@@ -27,7 +29,9 @@ def run_verification():
             page.get_by_role("button", name="Generate Configuration").click()
 
             # Wait for success message
-            expect(page.get_by_text("Configuration saved to generated_config.json!")).to_be_visible()
+            expect(
+                page.get_by_text("Configuration saved to generated_config.json!")
+            ).to_be_visible()
 
             # Take screenshot
             verification_dir = os.path.join(os.getcwd(), "verification")
@@ -43,6 +47,7 @@ def run_verification():
             page.screenshot(path=os.path.join(verification_dir, "gui_failure.png"))
         finally:
             browser.close()
+
 
 if __name__ == "__main__":
     run_verification()
