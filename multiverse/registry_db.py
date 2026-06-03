@@ -263,6 +263,7 @@ def _migrate_models_table(conn: sqlite3.Connection) -> None:
 def insert_dataset(
     name: str, path: str, omics_available: List[str], status: str = "READY"
 ) -> int:
+    """Insert a dataset row into the legacy SQLite registry; returns new id."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -276,6 +277,7 @@ def insert_dataset(
 
 
 def get_dataset_by_slug(slug: str) -> Optional[Dict[str, Any]]:
+    """Return one dataset dict by slug, or ``None`` if not found."""
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -297,6 +299,7 @@ def upsert_dataset_from_manifest(
     manifest_hash: str,
     status: str = "READY",
 ) -> int:
+    """Insert or update a dataset from a registration manifest; returns row id."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM datasets WHERE slug = ? LIMIT 1", (slug,))
@@ -340,6 +343,7 @@ def upsert_dataset_from_manifest(
 
 
 def get_all_datasets() -> List[Dict[str, Any]]:
+    """Return all dataset rows from the legacy registry."""
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -351,6 +355,7 @@ def get_all_datasets() -> List[Dict[str, Any]]:
 
 
 def get_all_models() -> List[Dict[str, Any]]:
+    """Return the latest ACTIVE version of each model slug."""
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -375,6 +380,7 @@ def get_all_models() -> List[Dict[str, Any]]:
 
 
 def mark_dataset_removed(slug_or_id: "str | int") -> bool:
+    """Soft-delete a dataset by slug or numeric id; returns whether a row changed."""
     conn = get_db_connection()
     cursor = conn.cursor()
     if isinstance(slug_or_id, int) or str(slug_or_id).isdigit():
@@ -392,6 +398,7 @@ def mark_dataset_removed(slug_or_id: "str | int") -> bool:
 
 
 def mark_model_inactive(slug: str, version: Optional[str] = None) -> bool:
+    """Mark model(s) inactive in legacy DB and best-effort in asset_registry."""
     conn = get_db_connection()
     cursor = conn.cursor()
     if version:

@@ -1,3 +1,5 @@
+"""Post-training evaluation metrics for integration model outputs."""
+
 import argparse
 import json
 import os

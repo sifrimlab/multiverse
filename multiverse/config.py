@@ -1,3 +1,5 @@
+"""JSON configuration loading for orchestrator-side scripts."""
+
 import json
 from typing import Union
 

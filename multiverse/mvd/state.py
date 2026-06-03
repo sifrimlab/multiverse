@@ -13,6 +13,13 @@ from typing import Dict, FrozenSet
 
 
 class PrimaryState(str, Enum):
+    """Canonical run lifecycle states (journal authority, GUI reads via API).
+
+    Valid edges are defined in :data:`STATE_TRANSITIONS`. Terminal states end
+    the run; sub-terminal states (training/eval/promotion branch outcomes)
+    may still transition before a terminal state.
+    """
+
     PENDING = "PENDING"
     ADMITTED = "ADMITTED"
     RUNNING = "RUNNING"
@@ -29,10 +36,12 @@ class PrimaryState(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
+        """True when no further primary-state transitions are allowed."""
         return self in _TERMINAL
 
     @property
     def is_sub_terminal(self) -> bool:
+        """True for branch outcomes that may still transition (e.g. re-evaluate)."""
         return self in _SUB_TERMINAL
 
 

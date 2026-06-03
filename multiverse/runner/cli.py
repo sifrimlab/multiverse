@@ -1,3 +1,5 @@
+"""CLI entrypoints for manifest validation, submission, and run control."""
+
 import argparse
 import asyncio
 import hashlib
@@ -45,6 +47,7 @@ console = Console()
 
 
 def emit_event(event: str, **payload: Any) -> None:
+    """Emit one JSON line event on stderr for machine-readable CLI progress."""
     record = {"event": event, **payload}
     print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
 
@@ -54,6 +57,8 @@ def emit_event(event: str, **payload: Any) -> None:
 
 @dataclass
 class ParsedManifest:
+    """Result of parsing and validating a run manifest YAML file."""
+
     path: Path
     data: Dict[str, Any] = field(default_factory=dict)
     plan: List[Dict[str, Any]] = field(default_factory=list)
@@ -66,6 +71,8 @@ class ParsedManifest:
 
 
 class ManifestValidationError(ValueError):
+    """Raised when :attr:`ParsedManifest.errors` is non-empty."""
+
     def __init__(self, parsed: ParsedManifest):
         self.parsed = parsed
         message = "; ".join(f"{e['field']}: {e['message']}" for e in parsed.errors)
@@ -286,7 +293,6 @@ def validate_pending_jobs(
             )
             continue
 
-        # 2. Batch key presence check (only if registry declares a batch_key)
         if batch_key:
             if dataset_id not in obs_cache:
                 obs_cache[dataset_id] = _read_obs_columns(dataset_path)
@@ -311,7 +317,6 @@ def validate_pending_jobs(
                 )
                 continue
 
-        # 3. Cell type key warning (don't skip)
         if cell_type_key:
             if dataset_id not in obs_cache:
                 obs_cache[dataset_id] = _read_obs_columns(dataset_path)
@@ -328,7 +333,6 @@ def validate_pending_jobs(
                 logger.warning(f"[WARN] {msg}")
                 warnings.append(msg)
 
-        # 4. Single batch warning (don't skip)
         if batch_key:
             if dataset_id not in batch_count_cache:
                 batch_count_cache[dataset_id] = _read_batch_count(

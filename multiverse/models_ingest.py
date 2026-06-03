@@ -1,3 +1,5 @@
+"""Model image manifest parsing and registration metadata."""
+
 from __future__ import annotations
 
 import hashlib

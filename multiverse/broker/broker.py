@@ -18,6 +18,8 @@ from .pressure import PressureMode, PressureThresholds
 
 
 class AdmissionOutcome(str, Enum):
+    """Result of a single :meth:`ResourceBroker.admit` call."""
+
     ADMITTED = "admitted"
     REJECTED_INSUFFICIENT = "rejected_insufficient"
     REJECTED_PRESSURE = "rejected_pressure"
@@ -26,6 +28,8 @@ class AdmissionOutcome(str, Enum):
 
 @dataclass
 class AdmissionDecision:
+    """Admission verdict for one physical attempt."""
+
     outcome: AdmissionOutcome
     physical_attempt_id: str
     detail: Optional[str] = None
@@ -64,6 +68,8 @@ class PressureEvent:
 
 @dataclass
 class OomEvent:
+    """Broker observation when a container exits due to OOM."""
+
     physical_attempt_id: str
     at_iso: str
 
@@ -91,15 +97,19 @@ class ReservationLedger:
     by_attempt: Dict[str, ResourceRequest] = field(default_factory=dict)
 
     def reserve(self, attempt_id: str, request: ResourceRequest) -> None:
+        """Record an in-flight reservation (after durable journal grant)."""
         self.by_attempt[attempt_id] = request
 
     def release(self, attempt_id: str) -> None:
+        """Drop a reservation from the in-memory ledger."""
         self.by_attempt.pop(attempt_id, None)
 
     def has(self, attempt_id: str) -> bool:
+        """Return whether ``attempt_id`` still holds a reservation."""
         return attempt_id in self.by_attempt
 
     def total_ram(self) -> int:
+        """Sum RAM bytes reserved across all in-flight attempts."""
         return sum(r.ram_bytes for r in self.by_attempt.values())
 
     def total_vram_for(self, gpu_index: Optional[int]) -> int:
@@ -210,6 +220,12 @@ class ResourceBroker:
         physical_attempt_id: str,
         request: ResourceRequest,
     ) -> AdmissionDecision:
+        """Decide whether to grant a resource reservation for a run.
+
+        When ``journal`` is set, writes ``RESERVATION_GRANTED`` before
+        mutating the ledger. Under pressure mode, new admissions are refused
+        without preempting existing reservations.
+        """
         if self.max_inflight_dispatches is not None:
             return self._admit_inflight(
                 physical_attempt_id=physical_attempt_id, request=request
@@ -301,6 +317,11 @@ class ResourceBroker:
         *,
         reason: str = "terminal",
     ) -> None:
+        """Release a reservation; idempotent when no grant is active.
+
+        Writes ``RESERVATION_RELEASED`` only when the ledger still holds the
+        attempt, so executor ``finally`` blocks do not create orphan releases.
+        """
         # M3: only write a release record if the in-memory ledger
         # believes a reservation is still live. ``release`` is called
         # unconditionally on the finally-branch of the executor, so we
@@ -320,6 +341,7 @@ class ResourceBroker:
     # ---- continuous observation ----
 
     def observe(self) -> ContinuousObservation:
+        """Sample host metrics and derive pressure mode for this tick."""
         metrics = self.observer.observe()
         mode = self._classify(metrics)
         events: List[PressureEvent] = []

@@ -61,16 +61,19 @@ class RunRegistry:
     _listeners: List[Callable[[RunRecord], None]] = field(default_factory=list)
 
     def add(self, record: RunRecord) -> None:
+        """Register a run and notify listeners."""
         self.records[record.physical_attempt_id] = record
         self._fire(record)
 
     def get(self, physical_attempt_id: str) -> RunRecord:
+        """Return the run record; raises ``KeyError`` if unknown."""
         try:
             return self.records[physical_attempt_id]
         except KeyError as exc:
             raise KeyError(f"no run with id {physical_attempt_id!r}") from exc
 
     def has(self, physical_attempt_id: str) -> bool:
+        """Return whether ``physical_attempt_id`` is in the registry."""
         return physical_attempt_id in self.records
 
     def list(
@@ -79,6 +82,7 @@ class RunRegistry:
         state: Optional[PrimaryState] = None,
         logical_run_id: Optional[str] = None,
     ) -> List[RunRecord]:
+        """List runs, optionally filtered by state or logical run id."""
         out = list(self.records.values())
         if state is not None:
             out = [r for r in out if r.primary_state is state]
@@ -88,6 +92,7 @@ class RunRegistry:
         return out
 
     def add_listener(self, listener: Callable[[RunRecord], None]) -> None:
+        """Register a callback invoked on ``add``; listener errors are swallowed."""
         self._listeners.append(listener)
 
     def _fire(self, record: RunRecord) -> None:
@@ -106,6 +111,7 @@ def new_run_record(
     logical_run_id: Optional[str] = None,
     options: Optional[Dict[str, Any]] = None,
 ) -> RunRecord:
+    """Create a new run record with submit-time timestamps."""
     return RunRecord(
         physical_attempt_id=physical_attempt_id,
         logical_run_id=logical_run_id,

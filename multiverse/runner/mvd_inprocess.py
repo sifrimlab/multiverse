@@ -38,6 +38,8 @@ TERMINAL_STATES = {
 
 @dataclass(frozen=True)
 class SubmittedRun:
+    """Summary returned to the GUI after submitting one manifest job."""
+
     attempt_id: str
     job_name: str
     dataset: str
@@ -91,6 +93,7 @@ class InProcessMvdController:
         manifest_text: str,
         seed: Optional[int],
     ) -> List[SubmittedRun]:
+        """Submit pending jobs from a manifest; may start MLflow sync in background."""
         return self._call(
             self._submit_manifest(
                 manifest_path=manifest_path,
@@ -101,18 +104,23 @@ class InProcessMvdController:
         )
 
     def query_many(self, attempt_ids: Iterable[str]) -> List[Dict[str, Any]]:
+        """Blocking query of multiple runs on the background event loop."""
         return self._call(self._query_many(list(attempt_ids)))
 
     def list_runs(self, *, state: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List runs, optionally filtered by primary state string."""
         return self._call(self._list_runs(state=state))
 
     def cancel_many(self, attempt_ids: Iterable[str]) -> None:
+        """Request cancellation for each attempt id."""
         self._call(self._cancel_many(list(attempt_ids)))
 
     def health(self) -> Dict[str, Any]:
+        """Return kernel health snapshot (runs active, journal seq, etc.)."""
         return self._call(self._require_kernel().health())
 
     def shutdown(self) -> None:
+        """Stop the background loop and close the kernel."""
         if self._closed:
             return
         self._closed = True

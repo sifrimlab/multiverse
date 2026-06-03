@@ -141,6 +141,11 @@ class MOFAModel(ModelFactory):
 
 
 def main() -> None:
+    """Container entry: load job spec and data, preprocess, train, write outputs.
+
+    ``cell_type_key`` and ``batch_key`` are fixed to ``cell_type`` / ``batch`` until
+    job-spec overrides exist.
+    """
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("mofa-cpu", job_spec, OUTPUT_DIR)
@@ -150,7 +155,6 @@ def main() -> None:
     dataset_name = job_spec.get("dataset_slug", "dataset")
     try:
         mdata = load_input_mudata()
-        # TODO: make cell type and batch key not hardcoded
         modalities = list(mdata.mod.keys())
         # Preprocessing is resolved from the job spec (run manifest / GUI),
         # falling back to these built-in defaults when unspecified (issue #22).

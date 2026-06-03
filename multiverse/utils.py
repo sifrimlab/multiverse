@@ -1,3 +1,5 @@
+"""Shared PyTorch device helpers for orchestrator-side code."""
+
 import torch
 
 from .logging_utils import get_logger

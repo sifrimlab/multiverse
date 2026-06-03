@@ -1,3 +1,5 @@
+"""Dataset ingestion, manifest hashing, and registry registration."""
+
 from __future__ import annotations
 
 import hashlib

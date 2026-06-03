@@ -13,8 +13,9 @@ Minimal usage:
             train_one_epoch(...)
             ep.log(step=epoch, loss=loss, val_loss=val_loss)
 
-Framework adapters live at the bottom of this file as copy-pasteable
-templates (Keras callback, PyTorch hook, scvi-style history replay).
+Framework adapters: subclass or wrap ``EpochLogger.log`` from your training
+loop (Keras ``Callback.on_epoch_end``, PyTorch epoch loop, or replay
+``model.history`` after scvi-tools training via ``replay_history``).
 """
 
 from __future__ import annotations
@@ -244,41 +245,3 @@ def scvi_history_to_dict(history: Any) -> Dict[str, List[float]]:
         if series:
             result[str(key)] = series
     return result
-
-
-# ---------------------------------------------------------------------------
-# Reusable adapter templates. Copy into your container/run.py as needed.
-# ---------------------------------------------------------------------------
-
-# --- Keras / TensorFlow ----------------------------------------------------
-#
-# from tensorflow import keras
-#
-# class EpochLoggerKerasCallback(keras.callbacks.Callback):
-#     def __init__(self, epoch_logger):
-#         super().__init__()
-#         self._ep = epoch_logger
-#     def on_epoch_end(self, epoch, logs=None):
-#         self._ep.log(step=epoch, **(logs or {}))
-#
-# Usage:
-#     with EpochLogger(jsonl_path="/output/metrics.jsonl", run_name="my-run") as ep:
-#         model.fit(..., callbacks=[EpochLoggerKerasCallback(ep)])
-#
-# --- PyTorch (manual loop) -------------------------------------------------
-#
-# with EpochLogger(jsonl_path="/output/metrics.jsonl", run_name="my-run") as ep:
-#     for epoch in range(num_epochs):
-#         train_loss = train_one_epoch(model, loader)
-#         val_loss = evaluate(model, val_loader)
-#         ep.log(step=epoch, train_loss=train_loss, val_loss=val_loss)
-#
-# --- scvi-tools / Cobolt (history replay after .train) ---------------------
-#
-# model.train(num_epochs=N)
-# history = {k: list(map(float, v)) for k, v in model.history.items()}
-# with EpochLogger(jsonl_path="/output/metrics.jsonl", run_name="my-run") as ep:
-#     length = max((len(v) for v in history.values()), default=0)
-#     for step in range(length):
-#         row = {k: v[step] for k, v in history.items() if step < len(v)}
-#         ep.log(step=step, **row)

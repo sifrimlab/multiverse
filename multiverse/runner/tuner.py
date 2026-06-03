@@ -1,3 +1,5 @@
+"""Optuna hyperparameter tuning integration for legacy run records."""
+
 from __future__ import annotations
 
 import sqlite3

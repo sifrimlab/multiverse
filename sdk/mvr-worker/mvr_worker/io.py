@@ -1,3 +1,5 @@
+"""Container I/O: job spec, MuData load/save, and shared preprocessing."""
+
 from __future__ import annotations
 
 import json
@@ -24,16 +26,19 @@ JOB_SPEC_PATH = os.environ.get(
 
 
 def setup_container_logging(output_dir: str = OUTPUT_DIR) -> None:
+    """Ensure ``output_dir`` exists and configure file logging under it."""
     os.makedirs(output_dir, exist_ok=True)
     setup_logging(output_dir)
 
 
 def load_job_spec(path: str = JOB_SPEC_PATH) -> Dict[str, Any]:
+    """Load the JSON job specification written by the orchestrator."""
     with open(path, "r", encoding="utf-8") as fp:
         return json.load(fp)
 
 
 def load_input_mudata(path: str = INPUT_DATA_PATH) -> md.MuData:
+    """Read the input ``.h5mu`` file (default: ``MVR_INPUT_DATA_PATH``)."""
     return md.read_h5mu(path)
 
 
@@ -42,6 +47,7 @@ def build_model_config(
     job_spec: Dict[str, Any],
     output_dir: str = OUTPUT_DIR,
 ) -> Dict[str, Any]:
+    """Build the nested config dict expected by ``ModelFactory`` wrappers."""
     params = job_spec.get("hyperparameters", {})
     scoped = {model_name: params.get(model_name, params)}
     return {
@@ -121,20 +127,21 @@ def anndata_concatenate(
     cell_type_key: str = "cell_type",
     batch_key: str = "batch",
 ) -> ad.AnnData:
-    """
-    Fuse modalities and concatenate along variables axis.
-    This is a common preprocessing step for models that require a single AnnData input.
-    It also ensures that cell type and batch annotations are preserved in the concatenated object.
-    Note: this function assumes that the same cells are present across all modalities and that
-    cell type and batch annotations are consistent across modalities.
-    :param mdata: MuData object containing multiple modalities
-    :param adata_list: List of AnnData objects to concatenate (if None, will be constructed from mdata.mod using selected_modalities)
-    :param selected_modalities: List of modalities to include in the concatenated object
-    :param cell_type_key: Key in .obs that contains cell type annotations
-    :param batch_key: Key in .obs that contains batch annotations
-    :return: Concatenated AnnData object with modalities fused along variables axis
-     and cell type and batch annotations preserved in .obs.
+    """Fuse modalities and concatenate along the variable axis.
 
+    Common for models that require a single AnnData input. Assumes aligned
+    cells and consistent ``cell_type_key`` / ``batch_key`` across modalities.
+
+    Args:
+        mdata: MuData source (mutually exclusive with ``adata_list``).
+        adata_list: Pre-built modality AnnData objects.
+        selected_modalities: Modalities to include when building from ``mdata``.
+        obs: Shared observation metadata when not taken from ``mdata.obs``.
+        cell_type_key: Column in ``.obs`` for cell-type labels.
+        batch_key: Column in ``.obs`` for batch labels.
+
+    Returns:
+        AnnData with modalities concatenated on variables; labels copied to ``.obs``.
     """
     if adata_list is not None and mdata is not None:
         raise ValueError("Provide either adata_list or mdata, not both.")
@@ -245,21 +252,30 @@ def preprocess_mudata(
     cell_type_key="cell_type",
     batch_key="batch",
 ):
-    # TODO: make modality specific preprocessing configurable, e.g. log normalization only for RNA, not ADT, etc.
-    """Preprocess MuData while keeping all modalities aligned."""
+    """Preprocess MuData while keeping all modalities cell-aligned.
 
+    Pipeline: per-modality gene filter; intersect cells with counts in every
+    modality; optional RNA normalize/log1p; HVG subset; per-modality scaling;
+    sync ``cell_type`` and ``batch`` into ``mdata.obs``.
+
+    Known limitation: log normalization is applied only to the ``rna``
+    modality; per-modality preprocessing overrides are not yet supported.
+
+    Args:
+        mdata: Input MuData (modified in place).
+        preprocess_params: Resolved dict from :func:`resolve_preprocess_params`.
+        cell_type_key: Observation column for cell types.
+        batch_key: Observation column for batch.
+
+    Returns:
+        The same ``mdata`` object after preprocessing.
+    """
     modalities = list(mdata.mod.keys())
 
-    # ------------------------------------------------------------------
-    # Step 1: Filter genes independently
-    # ------------------------------------------------------------------
     for modality in modalities:
         logger.info(f"Preprocessing modality: {modality}")
         sc.pp.filter_genes(mdata.mod[modality], min_cells=1)
 
-    # ------------------------------------------------------------------
-    # Step 2: Find cells with counts in ALL modalities
-    # ------------------------------------------------------------------
     common_cells = None
 
     for modality in modalities:
@@ -275,17 +291,11 @@ def preprocess_mudata(
 
     common_cells = sorted(common_cells)
 
-    # ------------------------------------------------------------------
-    # Step 3: Subset ALL modalities to identical cells
-    # ------------------------------------------------------------------
     for modality in modalities:
         mdata.mod[modality] = mdata.mod[modality][common_cells].copy()
 
     mdata.update()
 
-    # ------------------------------------------------------------------
-    # Step 4: Modality-specific preprocessing
-    # ------------------------------------------------------------------
     for modality in modalities:
         adata = mdata.mod[modality]
 
@@ -304,9 +314,6 @@ def preprocess_mudata(
             ):
                 sc.pp.log1p(adata)
 
-    # ------------------------------------------------------------------
-    # Step 5: HVG selection
-    # ------------------------------------------------------------------
     n_top_genes = preprocess_params.get("n_top_genes")
 
     if n_top_genes is not None:
@@ -317,6 +324,7 @@ def preprocess_mudata(
                     f"Warning: Modality '{modality}' has only {adata.n_vars} features, which is less than or equal to n_top_genes={n_top_genes}. Skipping HVG selection for this modality."
                 )
 
+            # seurat flavor requires log-normalized RNA; ADT/protein use seurat_v3.
             hvg_flavor = (
                 "seurat"
                 if (
@@ -342,34 +350,6 @@ def preprocess_mudata(
 
         mdata.update()
 
-    """ 
-        # --------------------------------------------------------------
-        # Step 6: Remove cells that became empty after HVG filtering
-        # --------------------------------------------------------------
-        common_cells = None
-
-        for modality in modalities:
-            adata = mdata.mod[modality]
-
-            counts_per_cell = np.asarray(adata.X.sum(axis=1)).ravel()
-
-            valid_cells = adata.obs_names[counts_per_cell > 0]
-
-            if common_cells is None:
-                common_cells = set(valid_cells)
-            else:
-                common_cells &= set(valid_cells)
-
-        common_cells = sorted(common_cells)
-
-        for modality in modalities:
-            mdata.mod[modality] = mdata.mod[modality][common_cells].copy()
-
-        mdata.update()"""
-
-    # ------------------------------------------------------------------
-    # Step 7: Scaling
-    # ------------------------------------------------------------------
     modality_scaling = preprocess_params.get("scale", {})
     for modality in modalities:
         if modality_scaling.get(modality, False):
@@ -377,9 +357,6 @@ def preprocess_mudata(
 
         mdata.update()
 
-    # ------------------------------------------------------------------
-    # Step 8: Synchronize metadata
-    # ------------------------------------------------------------------
     ref_obs = mdata.mod[modalities[0]].obs
 
     mdata.obs[cell_type_key] = (

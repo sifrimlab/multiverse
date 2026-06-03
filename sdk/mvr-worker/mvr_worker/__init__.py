@@ -1,3 +1,9 @@
+"""Worker SDK for model containers (I/O, preprocessing, metrics, device).
+
+Containers import this package instead of the orchestrator. Environment
+variables ``MVR_*`` locate inputs and outputs; see :mod:`mvr_worker.io`.
+"""
+
 from .base import ModelFactory
 from .device import get_device, resolve_device
 from .epoch_logger import (EpochLogger, replay_history, scvi_history_to_dict,

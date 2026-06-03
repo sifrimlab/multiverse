@@ -114,6 +114,11 @@ class PCAModel(ModelFactory):
 
 
 def main() -> None:
+    """Container entry: load job spec and data, preprocess, train, write outputs.
+
+    ``cell_type_key`` and ``batch_key`` are fixed to ``cell_type`` / ``batch`` until
+    job-spec overrides exist.
+    """
     setup_container_logging(OUTPUT_DIR)
     logger.info("PCA container run script started.")
     job_spec = load_job_spec()

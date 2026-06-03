@@ -1,3 +1,5 @@
+"""Orchestrator logging setup and ``MVEXP_LOG_LEVEL`` resolution."""
+
 import logging
 import os
 
@@ -39,16 +41,14 @@ def setup_logging(log_dir: str, log_level=None):
         log_level = resolve_log_level()
     log_file = os.path.join(log_dir, "multiverse.log")
 
-    # Get the root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Remove existing handlers to avoid duplicate logs
+    # Avoid duplicate log lines when setup_logging runs more than once.
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
 
-    # Create file handler
-    file_handler = logging.FileHandler(log_file, mode="a")  # Append mode
+    file_handler = logging.FileHandler(log_file, mode="a")
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )

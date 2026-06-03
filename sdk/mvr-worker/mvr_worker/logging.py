@@ -1,3 +1,5 @@
+"""Container-local logging setup (orchestrator-independent)."""
+
 import logging
 import os
 
@@ -10,6 +12,11 @@ here so the worker SDK stays dependency-free of the orchestrator package.
 
 
 def resolve_log_level(default: int = logging.INFO) -> int:
+    """Map ``MVEXP_LOG_LEVEL`` to a numeric logging level.
+
+    Accepts a level name (e.g. ``DEBUG``) or an integer string; returns
+    ``default`` when the variable is unset.
+    """
     raw = os.environ.get(LOG_LEVEL_ENV)
     if not raw:
         return default
@@ -21,6 +28,11 @@ def resolve_log_level(default: int = logging.INFO) -> int:
 
 
 def setup_logging(log_dir: str, log_level=None):
+    """Configure the root logger to append to ``<log_dir>/run.log``.
+
+    Replaces existing root handlers so repeated setup in one process does
+    not duplicate log lines.
+    """
     if log_level is None:
         log_level = resolve_log_level()
     log_file = os.path.join(log_dir, "run.log")
@@ -36,4 +48,5 @@ def setup_logging(log_dir: str, log_level=None):
 
 
 def get_logger(name: str) -> logging.Logger:
+    """Return a standard library logger for the given module name."""
     return logging.getLogger(name)

@@ -1,3 +1,5 @@
+"""Docker image build utilities for model container contexts."""
+
 from __future__ import annotations
 
 import io

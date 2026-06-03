@@ -1,3 +1,5 @@
+"""Base model wrapper: training lifecycle, embeddings, and UMAP output."""
+
 import json
 import os
 from typing import Any, Dict, Union
@@ -60,7 +62,6 @@ class ModelFactory:
             self.config_dict["output_dir"],
         )
 
-        # Embeddings of the latent space
         self.latent_filepath = os.path.join(
             self.output_dir,
             "embeddings.h5",
@@ -73,7 +74,7 @@ class ModelFactory:
             self.output_dir,
             "metrics.json",
         )
-        self.is_grid_search = is_gridsearch  # Flag for grid search runs
+        self.is_grid_search = is_gridsearch
         os.makedirs(self.output_dir, exist_ok=True)
         self.latent_key = f"X_{self.model_name}"
         if self.model_name in self.model_params:

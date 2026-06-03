@@ -85,6 +85,7 @@ class Kernel:  # implements KernelAPI
     # ------------------------------------------------------------------
 
     def boot_id(self) -> str:
+        """Return the boot identifier stamped on this kernel instance."""
         return self._boot.boot_id
 
     def replay_from_journal(self) -> None:
@@ -177,6 +178,7 @@ class Kernel:  # implements KernelAPI
                     self._broker.release(attempt, reason="crash_recovery")
 
     async def shutdown(self) -> None:
+        """Cancel in-flight execution tasks and close the journal writer."""
         for task in self._execution_tasks.values():
             task.cancel()
         for task in self._execution_tasks.values():
@@ -198,6 +200,12 @@ class Kernel:  # implements KernelAPI
         to_state: PrimaryState,
         reason: Optional[str] = None,
     ) -> None:
+        """Append a durable state transition and broadcast to subscribers.
+
+        Only the run executor should call this; transitions are validated
+        against :data:`~multiverse.mvd.state.STATE_TRANSITIONS` and journaled
+        before the in-memory registry is updated.
+        """
         record = self._registry.get(physical_attempt_id)
         from_state = record.primary_state
         assert_valid_transition(from_state, to_state)
@@ -335,7 +343,6 @@ class Kernel:  # implements KernelAPI
         *,
         physical_attempt_id: str,
     ) -> AsyncIterator[KernelEvent]:
-        # Validate the attempt exists.
         self._registry.get(physical_attempt_id)
         queue: asyncio.Queue[KernelEvent] = asyncio.Queue()
         self._event_subscribers.setdefault(physical_attempt_id, []).append(queue)
@@ -408,7 +415,6 @@ class Kernel:  # implements KernelAPI
         try:
             await self._executor.execute(record=record, kernel=self)
         except asyncio.CancelledError:
-            # Kernel shutdown.
             raise
         except Exception as exc:
             reason = f"executor crashed: {type(exc).__name__}: {exc}"
@@ -442,7 +448,6 @@ class Kernel:  # implements KernelAPI
                         reason=reason,
                     )
             except ValueError:
-                # Already terminal or no legal crash transition remains.
                 pass
 
     async def _broadcast(self, event: KernelEvent) -> None:

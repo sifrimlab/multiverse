@@ -1,3 +1,5 @@
+"""Streamlit GUI for datasets, models, run submission, and results."""
+
 import html
 import json
 import os

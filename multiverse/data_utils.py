@@ -1,3 +1,5 @@
+"""MuData fusion and AnnData concatenation (container-only ML runtime)."""
+
 from __future__ import annotations
 
 import importlib

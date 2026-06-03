@@ -1,3 +1,9 @@
+"""Legacy dataset/model compatibility helpers for the GUI.
+
+Prefer :mod:`multiverse.asset_registry` for new registration paths. This
+module remains for the compatibility matrix and SQLite-backed listings.
+"""
+
 import json
 from typing import Dict, List
 

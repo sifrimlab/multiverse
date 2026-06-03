@@ -39,8 +39,10 @@ DEFAULT_SEGMENT_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB per segment
 
 @dataclass(frozen=True)
 class SegmentInfo:
+    """Metadata for one on-disk journal segment file."""
+
     path: Path
-    base_seq: int  # seq of the first record in this segment
+    base_seq: int
     size_bytes: int
 
 
@@ -230,6 +232,7 @@ class JournalWriter:
         )
 
     def close(self) -> None:
+        """Commit pending records, close the segment fd, and release the writer lock."""
         if self._pending_bytes:
             self.commit()
         if self._segment_fd >= 0:

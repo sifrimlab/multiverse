@@ -1,3 +1,5 @@
+"""Dataset loading and modality assembly for model containers."""
+
 from __future__ import annotations
 
 import importlib

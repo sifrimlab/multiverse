@@ -91,6 +91,8 @@ class ArtifactEntry:
 
 @dataclass
 class StateTransition:
+    """One primary-state change recorded in the artifact manifest timeline."""
+
     from_state: str
     to_state: str
     at: Dict[str, Any]  # produced_at-shaped struct from timestamps.py
@@ -118,6 +120,8 @@ class StateTransition:
 
 @dataclass
 class ProducedAt:
+    """Wall-clock and monotonic timestamps for manifest provenance."""
+
     wall: str
     monotonic_ns: int
     tz: str
@@ -354,7 +358,6 @@ def write_manifest(
     tmp = directory / f"{ARTIFACT_MANIFEST_FILENAME}.tmp"
     sidecar = directory / ARTIFACT_MANIFEST_SHA256_FILENAME
 
-    # Step 1: tmp body
     import os
 
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -365,11 +368,9 @@ def write_manifest(
     finally:
         os.close(fd)
 
-    # Step 2: detached sha256 sidecar (atomic write of its own).
     sidecar_payload = f"{body_sha}  {ARTIFACT_MANIFEST_FILENAME}\n".encode("ascii")
     atomic_write_bytes(sidecar, sidecar_payload, fsync=fsync)
 
-    # Step 3: rename tmp -> final and fsync the directory.
     os.replace(str(tmp), str(final))
     if fsync:
         fsync_path(directory)

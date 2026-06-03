@@ -180,6 +180,11 @@ class MultiVIModel(ModelFactory):
 
 
 def main() -> None:
+    """Container entry: load job spec and data, preprocess, train, write outputs.
+
+    ``cell_type_key`` and ``batch_key`` are fixed to ``cell_type`` / ``batch`` until
+    job-spec overrides exist.
+    """
     setup_container_logging(OUTPUT_DIR)
     job_spec = load_job_spec()
     config = build_model_config("multivi", job_spec, OUTPUT_DIR)
@@ -191,7 +196,6 @@ def main() -> None:
 
     mudata_obj = load_input_mudata()
     modalities = list(mudata_obj.mod.keys())
-    # TODO: make cell type and batch key not hardcoded
     # Preprocessing is resolved from the job spec (run manifest / GUI),
     # falling back to these built-in defaults when unspecified (issue #22).
     config["preprocess_params"] = resolve_preprocess_params(
