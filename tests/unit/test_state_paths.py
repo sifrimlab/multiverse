@@ -12,6 +12,11 @@ from multiverse import state_paths
 pytestmark = pytest.mark.control_plane
 
 
+@pytest.fixture
+def no_repo_config(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_paths, "REPO_ROOT_GUESS", tmp_path / "no-config")
+
+
 # ---------------------------------------------------------------------------
 # resolve_state_root precedence
 # ---------------------------------------------------------------------------
@@ -33,12 +38,12 @@ def test_config_file_state_root_used_when_no_env(tmp_path, monkeypatch):
     assert state_paths.resolve_state_root(env) == (tmp_path / "from-config").resolve()
 
 
-def test_xdg_state_home_used_when_no_env_no_config(tmp_path):
+def test_xdg_state_home_used_when_no_env_no_config(tmp_path, no_repo_config):
     env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "HOME": str(tmp_path)}
     assert state_paths.resolve_state_root(env) == (tmp_path / "xdg" / "mvexp").resolve()
 
 
-def test_home_default(tmp_path):
+def test_home_default(tmp_path, no_repo_config):
     env = {"HOME": str(tmp_path)}
     assert state_paths.resolve_state_root(env) == (tmp_path / ".mvexp").resolve()
 
@@ -114,7 +119,9 @@ def test_legacy_db_refusal_skipped_when_db_name_monkeypatched(monkeypatch, tmp_p
     registry_db._check_legacy_db_refusal()
 
 
-def test_legacy_db_refusal_fires_when_default_and_legacy_exists(monkeypatch, tmp_path):
+def test_legacy_db_refusal_fires_when_default_and_legacy_exists(
+    monkeypatch, tmp_path, no_repo_config
+):
     """Simulate the upgrade scenario: resolver default is $HOME/.mvexp,
     a legacy DB exists at the repo root."""
     from multiverse import registry_db

@@ -44,6 +44,7 @@ class SubmittedRun:
     job_name: str
     dataset: str
     model: str
+    logical_run_id: str = ""
 
     def to_dict(self) -> Dict[str, str]:
         return {
@@ -51,6 +52,7 @@ class SubmittedRun:
             "job_name": self.job_name,
             "dataset": self.dataset,
             "model": self.model,
+            "logical_run_id": self.logical_run_id,
         }
 
 
@@ -234,6 +236,7 @@ class InProcessMvdController:
                         job.get("dataset_name") or job.get("dataset_slug") or "?"
                     ),
                     model=str(job.get("model_slug") or job.get("model_name") or "?"),
+                    logical_run_id=str(job.get("_logical_run_id") or ""),
                 )
             )
         if projected_attempts:

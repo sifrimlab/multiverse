@@ -1577,6 +1577,73 @@ def _manifest_skip_completed_default(manifest_path_input: str, repo_root: Path):
     return bool(globals_block.get("skip_completed"))
 
 
+def _write_launch_cohort(
+    *,
+    output_path: Path,
+    manifest_file: Path,
+    manifest_text: str,
+    manifest_hash: str,
+    experiment_name: str,
+    seed: int,
+    backend: str,
+    pending_jobs: list[dict],
+) -> str:
+    """Write cohort.json + latest_launch.json; return the launch_id.
+
+    Returns '' on failure and surfaces a Streamlit warning so the user knows
+    cohort persistence failed (Gap 2).
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from multiverse.evaluation.cohort import (build_cohort, make_launch_id,
+                                                  write_cohort,
+                                                  write_latest_launch)
+
+        created_at = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        launch_id = make_launch_id(
+            manifest_hash=manifest_hash,
+            backend=backend,
+            seed=seed,
+            created_at=created_at,
+        )
+        cohort = build_cohort(
+            launch_id=launch_id,
+            manifest_hash=manifest_hash,
+            manifest_path=str(manifest_file),
+            output_dir=str(output_path),
+            experiment_name=experiment_name,
+            seed=seed,
+            backend=backend,
+            pending_jobs=pending_jobs,
+            created_at=created_at,
+        )
+        write_cohort(
+            output_dir=output_path,
+            launch_id=launch_id,
+            cohort=cohort,
+            manifest_text=manifest_text,
+        )
+        write_latest_launch(
+            output_dir=output_path,
+            launch_id=launch_id,
+            created_at=created_at,
+        )
+        return launch_id
+    except Exception as exc:
+        import logging as _logging
+        mvexp = output_path / ".mvexp"
+        _logging.getLogger(__name__).warning(
+            "cohort write failed: output_path=%s manifest=%s backend=%s seed=%s error=%s",
+            output_path, manifest_file, backend, seed, exc,
+        )
+        st.warning(
+            f"Could not persist launch cohort to `{mvexp}`: {exc}. "
+            "The run will continue but the Evaluate section will not show this launch."
+        )
+        return ""
+
+
 def _launch_mvd_runs(
     *,
     manifest_file: Path,
@@ -1585,6 +1652,9 @@ def _launch_mvd_runs(
     pending_jobs: list[dict],
     manifest_text: str,
     repo_root: Path,
+    manifest_hash: str = "",
+    experiment_name: str = "",
+    backend: str = "docker",
 ) -> None:
     # ``pending_jobs`` is already resume-decorated by the caller (the Run tab),
     # so this function never decorates a second time (Gap 2). It only submits
@@ -1625,6 +1695,21 @@ def _launch_mvd_runs(
     st.session_state["_mvd_output_dir"] = str(output_path)
     st.session_state["_mvd_snapshots"] = []
 
+    # --- Cohort persistence (Step 2 of evaluation roadmap) ---
+    # Write cohort.json BEFORE the all-skipped early return so every launch,
+    # including all-skipped ones, produces a persistent cohort on disk.
+    _cohort_launch_id = _write_launch_cohort(
+        output_path=output_path,
+        manifest_file=manifest_file,
+        manifest_text=manifest_text,
+        manifest_hash=manifest_hash,
+        experiment_name=experiment_name or "",
+        seed=seed,
+        backend=backend,
+        pending_jobs=pending_jobs,
+    )
+    st.session_state["_cohort_launch_id"] = _cohort_launch_id
+
     # All-skipped resume is a completed no-op, not a failure (Gap 3).
     if not runnable_jobs:
         st.session_state["_mvd_controller"] = controller
@@ -1649,12 +1734,43 @@ def _launch_mvd_runs(
         raise RuntimeError("manifest produced no runnable mvd submissions")
 
     st.session_state["_run_all_skipped"] = False
-    st.session_state["_mvd_submissions"] = [s.to_dict() for s in submitted]
+    submitted_dicts = [s.to_dict() for s in submitted]
+    st.session_state["_mvd_submissions"] = submitted_dicts
     st.session_state["_mvd_last_states"] = {
         s.attempt_id: "SUBMITTED" for s in submitted
     }
     for s in submitted:
         _append_run_log(f"{s.job_name}: SUBMITTED ({s.attempt_id})")
+
+    # Update cohort members with their submitted attempt IDs.
+    # Primary identity comes from SubmittedRun.to_dict() which now carries
+    # logical_run_id directly from the kernel submission (Gap 3).  member_id is
+    # injected here as an additional stable key using zip-order, which is valid
+    # because submit_manifest returns results in the same order as runnable jobs.
+    if _cohort_launch_id:
+        try:
+            from multiverse.evaluation.cohort import (make_member_id,
+                                                      update_cohort_submitted)
+
+            runnable_indexed = [
+                (i, j) for i, j in enumerate(pending_jobs) if not j.get("_skipped")
+            ]
+            enriched: list[dict] = []
+            for (job_idx, job), sub_dict in zip(runnable_indexed, submitted_dicts):
+                entry = dict(sub_dict)
+                entry["member_id"] = make_member_id(job, job_idx)
+                # logical_run_id is already present from SubmittedRun.to_dict();
+                # overwrite only if the source-provided value is empty.
+                if not entry.get("logical_run_id"):
+                    entry["logical_run_id"] = str(job.get("_logical_run_id") or "")
+                enriched.append(entry)
+            update_cohort_submitted(
+                output_dir=output_path,
+                launch_id=_cohort_launch_id,
+                submitted_runs=enriched,
+            )
+        except Exception:
+            pass  # cohort update is best-effort; never block the run
 
     st.session_state["is_running"] = True
     st.session_state["run_finalized"] = False
@@ -1854,6 +1970,92 @@ def _render_run_monitor() -> None:
                 mime="text/plain",
                 key="btn_download_pipeline_log",
             )
+
+
+def _render_evaluate_section() -> None:
+    """Render the Evaluate Experiment section in the Run tab.
+
+    Loads the latest cohort for the current output directory, resolves
+    readiness for each member, shows a summary table, and gates the
+    Evaluate button on at least one ready member.
+    """
+    st.divider()
+    st.subheader("Evaluate Experiment")
+
+    output_dir_raw: str = st.session_state.get("exec_output_dir", "")
+    if not output_dir_raw:
+        st.caption("Configure an output directory above and launch a run first.")
+        return
+
+    repo_root = Path(__file__).resolve().parents[1]
+    output_path = Path(output_dir_raw.strip())
+    if not output_path.is_absolute():
+        output_path = (repo_root / output_path).resolve()
+
+    try:
+        from multiverse.evaluation.cohort import (load_latest_cohort,
+                                                   resolve_cohort_readiness)
+    except Exception as exc:
+        st.warning(f"Evaluation helpers unavailable: {exc}")
+        return
+
+    cohort = load_latest_cohort(output_path)
+    if cohort is None:
+        st.caption("No launch cohort found. Launch a run to generate one.")
+        return
+
+    # Gather current mvd snapshots for submitted attempt IDs (Gap 9: show warning on failure).
+    snapshots_by_id: dict = {}
+    _snapshot_query_failed = False
+    try:
+        controller = _mvd_controller_for_session()
+        attempt_ids = [
+            m["submitted_attempt_id"]
+            for m in cohort.get("members", [])
+            if m.get("submitted_attempt_id")
+        ]
+        if attempt_ids:
+            snaps = controller.query_many(attempt_ids)
+            snapshots_by_id = {
+                str(s["physical_attempt_id"]): s for s in snaps if s.get("physical_attempt_id")
+            }
+    except Exception as _snap_exc:
+        _snapshot_query_failed = True
+        import logging as _logging
+        _logging.getLogger(__name__).warning("evaluate section: mvd snapshot query failed: %s", _snap_exc)
+
+    if _snapshot_query_failed:
+        st.caption(
+            ":warning: Could not query live mvd state; readiness is based on persisted artifact paths."
+        )
+
+    # Gather completed-run index for skipped-member revalidation (Gaps 4 & 5).
+    completed_runs: dict = {}
+    try:
+        from multiverse.runner.mvd_entrypoint import _state_root_for_output
+        from multiverse.runner.resume import completed_logical_runs
+
+        completed_runs = completed_logical_runs(_state_root_for_output(output_path))
+    except Exception:
+        pass
+
+    members_with_status = resolve_cohort_readiness(
+        cohort, mvd_snapshots=snapshots_by_id, completed_runs=completed_runs
+    )
+
+    from multiverse.evaluation.cohort import evaluate_section_view
+    view = evaluate_section_view(members_with_status)
+
+    st.caption(view["summary_text"])
+
+    if view["table_rows"]:
+        import pandas as pd  # already used elsewhere in gui.py
+        st.dataframe(pd.DataFrame(view["table_rows"]), use_container_width=True, hide_index=True)
+
+    if st.button(view["button_label"], disabled=not view["button_enabled"], type="primary"):
+        st.info(
+            "Evaluation execution is not implemented yet. Cohort readiness is complete."
+        )
 
 
 def _render_execute_tab() -> None:
@@ -2068,6 +2270,7 @@ def _render_execute_tab() -> None:
                 st.info("🖥️ Slurm backend active — jobs will be submitted via sbatch")
 
             manifest_text = manifest_file.read_text(encoding="utf-8")
+            manifest_hash = compute_manifest_hash(manifest_text)
             output_path = Path(output_dir_input.strip())
             if not output_path.is_absolute():
                 output_path = (repo_root / output_path).resolve()
@@ -2088,7 +2291,7 @@ def _render_execute_tab() -> None:
                 pending_jobs = decorate_plan_with_resume(
                     pending_jobs,
                     state_root=_state_root_for_output(output_path),
-                    manifest_hash=compute_manifest_hash(manifest_text),
+                    manifest_hash=manifest_hash,
                     seed=int(exec_seed),
                     backend=backend,
                 )
@@ -2143,6 +2346,11 @@ def _render_execute_tab() -> None:
                     pending_jobs=pending_jobs,
                     manifest_text=manifest_text,
                     repo_root=repo_root,
+                    manifest_hash=manifest_hash,
+                    experiment_name=str(
+                        st.session_state.get("shared_experiment_name") or "benchmark_run"
+                    ),
+                    backend=backend,
                 )
             except Exception as exc:
                 track(
@@ -2156,6 +2364,11 @@ def _render_execute_tab() -> None:
 
     if st.session_state.get("is_running") or st.session_state.get("run_finalized"):
         _render_run_monitor()
+
+    # ------------------------------------------------------------------
+    # T4.25: Evaluate Experiment
+    # ------------------------------------------------------------------
+    _render_evaluate_section()
 
     # ------------------------------------------------------------------
     # T4.3: Live MLflow Metrics

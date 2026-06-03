@@ -1,48 +1,21 @@
 globals:
-  experiment_name: tesbenc
-  random_seed: 21
+  experiment_name: benchmark_run123456789
+  random_seed: 42
   run_user_params: true
   run_gridsearch: false
 jobs:
 - dataset_slug: pbmc10k
-  model_name: Cobolt
-  model_params:
-    device: cuda:0
-    latent_dimensions: 24
-    learning_rate: 0.001
-    num_epochs: 10
-    umap_random_state: 42
-    umap_color_type: cell_type
-    random_state: 42
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: pbmc10k
-  model_name: MOFA
-  model_params:
-    device: cuda:0
-    n_iterations: 10
-    n_factors: 4
-    umap_random_state: 42
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: pbmc10k
-  model_name: Mowgli
-  model_params:
-    device: cuda:0
-    latent_dimensions: 3
-    optimizer: adam
-    learning_rate: 0.001
-    tol_inner: 1.0e-06
-    max_iter_inner: 10
-    umap_random_state: 42
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: pbmc10k
   model_name: PCA
   model_params:
-    n_components: 6
+    n_components: 5
+    device: cpu
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: PCA
+  model_params:
+    n_components: 50
     device: cpu
     umap_random_state: 42
     umap_color_type: cell_type
