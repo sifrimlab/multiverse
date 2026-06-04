@@ -203,3 +203,4 @@ register-models:
 	uv run multiverse register-model --slug mowgli
 	uv run multiverse register-model --slug cobolt
 	uv run multiverse register-model --slug totalvi
+	uv run multiverse register-model --slug mofa-cpu

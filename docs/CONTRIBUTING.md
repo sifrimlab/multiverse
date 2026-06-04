@@ -1,23 +1,10 @@
 # Contributing
 
-This guide explains how to contribute to Multiverse. Contributions should preserve the GUI-first, reproducible, notebook-compatible experience.
-
-## Documentation Principles
-
-Use Diátaxis:
-
-| Type | Use for |
-|---|---|
-| Tutorial | First successful outcome. |
-| How-to | Task-oriented recipes. |
-| Reference | Complete field lists and contracts. |
-| Explanation | Design rationale and tradeoffs. |
-
-Write for academic bioinformaticians first. Translate infrastructure details into benefits: reproducibility, fewer path errors, comparable model outputs, and publication-ready provenance.
+This guide explains how to contribute to Multiverse. Contributions should preserve the GUI-first reproducible experience.
 
 ## Code Contribution Checklist
 
-- Keep the GUI path working for researchers.
+- Keep the GUI path working for all users.
 - Preserve Zero-Path execution for models.
 - Write or update tests for planner, ingestion, metrics, or model contract changes.
 - Update docs when user-visible behavior changes.
