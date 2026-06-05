@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Union
 
 import anndata as ad
 import h5py

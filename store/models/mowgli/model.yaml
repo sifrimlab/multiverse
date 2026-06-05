@@ -2,8 +2,7 @@ name: Mowgli
 version: 1.0.0
 contract_version: 1.0.0
 supported_omics:
-  - rna
-  - atac
+  - any
 runtime:
   image: multiverse-mowgli:1.0.0
 hyperparameters_schema: store/models/mowgli/hyperparameters.schema.json

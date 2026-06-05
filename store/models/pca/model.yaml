@@ -2,7 +2,7 @@ name: PCA
 version: 1.0.0
 contract_version: 1.0.0
 supported_omics:
-  - rna
+  - any
 runtime:
   image: multiverse-pca:1.0.0
 hyperparameters_schema: store/models/pca/hyperparameters.schema.json

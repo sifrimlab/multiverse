@@ -2,8 +2,7 @@ name: MOFA-Cpu
 version: 1.0.0
 contract_version: 1.0.0
 supported_omics:
-  - rna
-  - atac
+  - any
 runtime:
   image: multiverse-mofa-cpu:1.0.0
 hyperparameters_schema: store/models/mofa-cpu/hyperparameters.schema.json
