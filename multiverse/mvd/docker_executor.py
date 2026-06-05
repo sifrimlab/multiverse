@@ -454,6 +454,8 @@ class MvdDockerExecutor:
             "model_name": spec.model_slug,
             "model_version": spec.model_version,
             "dataset_slug": spec.dataset_slug,
+            "batch_key": spec.batch_key,
+            "cell_type_key": spec.cell_type_key,
             "dataset_path_in_container": "/input/data.h5mu",
             "hyperparameters": {spec.model_slug: dict(spec.params)},
             "seed": spec.seed,
@@ -568,6 +570,8 @@ class _ExecutorJobSpec:
     preprocessing: Optional[Dict[str, Any]]
     container_command: Optional[List[str]]
     container_entrypoint: Optional[str]
+    batch_key: Optional[str]
+    cell_type_key: Optional[str]
     validators: ValidationLevel
     seed: Optional[int]
     env_extra: Dict[str, str] = field(default_factory=dict)
@@ -622,6 +626,10 @@ class _ExecutorJobSpec:
             image_digest=options.get("image_digest"),
             contract_version=str(options.get("contract_version", "1")),
             dataset_slug=str(options["dataset_slug"]),
+            batch_key=(str(options["batch_key"]) if options.get("batch_key") else None),
+            cell_type_key=(
+                str(options["cell_type_key"]) if options.get("cell_type_key") else None
+            ),
             dataset_path=str(_req("dataset_path")),
             dataset_n_obs=int(_req("dataset_n_obs")),
             dataset_n_vars=(
@@ -730,6 +738,8 @@ def build_executor_options(
     container_command: Optional[List[str]] = None,
     container_entrypoint: Optional[str] = None,
     validators: str = "basic",
+    batch_key: Optional[str] = None,
+    cell_type_key: Optional[str] = None,
     artifact_dir_name: Optional[str] = None,
     seed: Optional[int] = None,
     container_env_extra: Optional[Mapping[str, str]] = None,
@@ -774,4 +784,9 @@ def build_executor_options(
         out["container_env_extra"] = {
             str(k): str(v) for k, v in dict(container_env_extra).items()
         }
+    if batch_key:
+        out["batch_key"] = str(batch_key)
+    if cell_type_key:
+        out["cell_type_key"] = str(cell_type_key)
+        
     return out

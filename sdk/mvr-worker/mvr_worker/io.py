@@ -246,6 +246,25 @@ def resolve_preprocess_params(job_spec, modalities, defaults):
     return resolved
 
 
+def resolve_labels_key_params(job_spec, defaults=None):
+    """Resolve effective label key parameters for a run.
+
+    ``defaults`` provides model-specific fallbacks for ``cell_type_key`` and
+    ``batch_key``; built-in defaults (``"cell_type"`` / ``"batch"``) are used
+    when a key is absent or ``None`` in both ``defaults`` and ``job_spec``.
+    Any non-null value in ``job_spec`` takes precedence over ``defaults``.
+    """
+    resolved = {"cell_type_key": "cell_type", "batch_key": "batch"}
+    for key, val in (defaults or {}).items():
+        if val is not None:
+            resolved[key] = val
+    for key in ("cell_type_key", "batch_key"):
+        val = (job_spec or {}).get(key)
+        if val is not None:
+            resolved[key] = val
+    return resolved
+
+
 def preprocess_mudata(
     mdata,
     preprocess_params,

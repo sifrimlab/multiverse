@@ -8,8 +8,8 @@ import muon as mu
 import numpy as np
 from mvr_worker import (OUTPUT_DIR, ModelFactory, build_model_config,
                         get_logger, load_input_mudata, load_job_spec,
-                        preprocess_mudata, resolve_preprocess_params,
-                        setup_container_logging)
+                        preprocess_mudata, resolve_labels_key_params,
+                        resolve_preprocess_params, setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -30,6 +30,8 @@ class MOFAModel(ModelFactory):
         dataset_name: str,
         config_path: Union[str, dict],
         is_gridsearch: bool = False,
+        cell_type_key: str = "cell_type",
+        batch_key: str = "batch",  
     ):
         """Initializes the MOFAModel.
 
@@ -39,6 +41,8 @@ class MOFAModel(ModelFactory):
             config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
+            cell_type_key (str): Key in .obs for cell type annotations. Defaults to "cell_type".
+            batch_key (str): Key in .obs for batch annotations. Defaults to "batch".
 
         Raises:
             ValueError: If 'mofa' configuration is not found in the model parameters.
@@ -51,6 +55,8 @@ class MOFAModel(ModelFactory):
             config_path=config_path,
             model_name="mofa",
             is_gridsearch=is_gridsearch,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
         if self.model_name not in self.model_params:
@@ -154,11 +160,12 @@ def main() -> None:
     random.seed(seed)
     np.random.seed(seed)
     dataset_name = job_spec.get("dataset_slug", "dataset")
+    label_keys = resolve_labels_key_params(job_spec)
+    cell_type_key = label_keys["cell_type_key"]
+    batch_key = label_keys["batch_key"]
     try:
         mdata = load_input_mudata()
         modalities = list(mdata.mod.keys())
-        # Preprocessing is resolved from the job spec (run manifest / GUI),
-        # falling back to these built-in defaults when unspecified (issue #22).
         config["preprocess_params"] = resolve_preprocess_params(
             job_spec,
             modalities,
@@ -172,8 +179,8 @@ def main() -> None:
         mdata = preprocess_mudata(
             mdata,
             config["preprocess_params"],
-            cell_type_key="cell_type",
-            batch_key="batch",
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
     except Exception as e:
@@ -185,6 +192,8 @@ def main() -> None:
             dataset=mdata,
             dataset_name=dataset_name,
             config_path=config,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
         logger.info(f"Running MOFA model on dataset: {dataset_name}")
         model.train()

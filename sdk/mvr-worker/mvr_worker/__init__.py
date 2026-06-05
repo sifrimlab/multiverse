@@ -11,6 +11,7 @@ from .epoch_logger import (
     replay_history,
     scvi_history_to_dict,
     sanitize_nan_inf,
+    series_to_float_list,
 )
 from .io import (
     INPUT_DATA_PATH,
@@ -21,6 +22,7 @@ from .io import (
     load_input_mudata,
     load_job_spec,
     preprocess_mudata,
+    resolve_labels_key_params,
     resolve_preprocess_params,
     save_embeddings,
     save_umap,
@@ -41,6 +43,7 @@ __all__ = [
     "load_input_mudata",
     "preprocess_mudata",
     "load_job_spec",
+    "resolve_labels_key_params",
     "resolve_preprocess_params",
     "resolve_device",
     "save_embeddings",
@@ -52,4 +55,5 @@ __all__ = [
     "scvi_history_to_dict",
     "sanitize_nan_inf",
     "load_config",
+    "series_to_float_list",
 ]

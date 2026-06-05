@@ -9,7 +9,8 @@ import scanpy as sc
 from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
                         build_model_config, get_logger, load_input_mudata,
                         load_job_spec, preprocess_mudata,
-                        resolve_preprocess_params, setup_container_logging)
+                        resolve_labels_key_params, resolve_preprocess_params,
+                        setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -32,6 +33,8 @@ class PCAModel(ModelFactory):
         dataset_name: str,
         config_path: Union[str, dict],
         is_gridsearch: bool = False,
+        cell_type_key: str = "cell_type",
+        batch_key: str = "batch",
     ):
         """Initializes the PCAModel.
 
@@ -53,6 +56,8 @@ class PCAModel(ModelFactory):
             config_path=config_path,
             model_name="pca",
             is_gridsearch=is_gridsearch,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
         # Check if model-specific params are present
@@ -66,7 +71,6 @@ class PCAModel(ModelFactory):
         # PCA parameters from config file
         self.n_components = pca_params.get("n_components")
         self.device = pca_params.get("device")
-        self.gpu_mode = False  # Cpu default mode
         self.umap_random_state = pca_params.get("umap_random_state")
         self.umap_color_type = pca_params.get("umap_color_type")
 
@@ -128,6 +132,9 @@ def main() -> None:
     random.seed(seed)
     np.random.seed(seed)
 
+    label_keys = resolve_labels_key_params(job_spec)
+    cell_type_key = label_keys["cell_type_key"]
+    batch_key = label_keys["batch_key"]
     params = config["model"].get("pca", {})
     n_components = params.get("n_components", 50)
     try:
@@ -151,15 +158,15 @@ def main() -> None:
         mudata_obj = preprocess_mudata(
             mudata_obj,
             config["preprocess_params"],
-            cell_type_key="cell_type",
-            batch_key="batch",
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
         dataset_name = job_spec.get("dataset_slug", "dataset")
         data_concat = anndata_concatenate(
             mdata=mudata_obj,
             selected_modalities=modalities,
-            cell_type_key="cell_type",
-            batch_key="batch",
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
     except Exception as e:
         logger.error(f"Failed to load and concatenate input data: {e}")
@@ -171,6 +178,8 @@ def main() -> None:
             dataset=data_concat,
             dataset_name=dataset_name,
             config_path=config,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
         pca_model.train()
         pca_model.save_latent()

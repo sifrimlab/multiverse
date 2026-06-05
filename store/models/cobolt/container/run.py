@@ -12,8 +12,9 @@ from cobolt.utils import MultiomicDataset, SingleData
 from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
                         build_model_config, get_device, get_logger,
                         load_input_mudata, load_job_spec, preprocess_mudata,
-                        replay_history, resolve_preprocess_params,
-                        series_to_float_list, setup_container_logging)
+                        replay_history, resolve_labels_key_params,
+                        resolve_preprocess_params, series_to_float_list,
+                        setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -59,6 +60,8 @@ class CoboltModel(ModelFactory):
             config_path=config_path,
             model_name="cobolt",
             is_gridsearch=is_gridsearch,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
         if self.model_name not in self.model_params:
@@ -181,8 +184,9 @@ def main() -> None:
     torch.manual_seed(seed)
     mudata_obj = load_input_mudata()
     modalities = list(mudata_obj.mod.keys())
-    # Preprocessing is resolved from the job spec (run manifest / GUI),
-    # falling back to these built-in defaults when unspecified (issue #22).
+    label_keys = resolve_labels_key_params(job_spec)
+    cell_type_key = label_keys["cell_type_key"]
+    batch_key = label_keys["batch_key"]
     config["preprocess_params"] = resolve_preprocess_params(
         job_spec,
         modalities,
@@ -196,8 +200,8 @@ def main() -> None:
     mudata_obj = preprocess_mudata(
         mudata_obj,
         config["preprocess_params"],
-        cell_type_key="cell_type",
-        batch_key="batch",
+        cell_type_key=cell_type_key,
+        batch_key=batch_key,
     )
 
     dataset_name = job_spec.get("dataset_slug", "dataset")
@@ -215,6 +219,8 @@ def main() -> None:
                 dataset=data_dict,
                 dataset_name=dataset_name,
                 config_path=config,
+                cell_type_key=cell_type_key,
+                batch_key=batch_key,
             )
             logger.info(f"Running Cobolt model on dataset: {dataset_name}")
             model.train()

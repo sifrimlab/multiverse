@@ -561,6 +561,8 @@ def _options_for_slurm_job(
             if job.get("artifact_dir_name")
             else os.path.basename(str(job.get("output_path") or "")) or None
         ),
+        batch_key=str(job.get("batch_key") or None),
+        cell_type_key=str(job.get("cell_type_key") or None),
         seed=seed,
         partition=slurm_cfg.get("partition"),
         account=slurm_cfg.get("account"),
@@ -608,6 +610,8 @@ def _options_for_job(
         dataset_path=str(job.get("dataset_path") or ""),
         dataset_n_obs=int(job.get("dataset_n_obs") or job.get("n_obs") or 0),
         dataset_n_vars=job.get("dataset_n_vars") or job.get("n_vars"),
+        batch_key=str(job.get("batch_key") or None),
+        cell_type_key=str(job.get("cell_type_key") or None),
         params=dict(job.get("model_params") or {}),
         model_version=str(job.get("model_version") or "0.0.0"),
         manifest_text="",

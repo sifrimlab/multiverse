@@ -39,6 +39,8 @@ class ModelFactory:
         model_name: str = "",
         config_path: Union[str, dict] = "./config.json",
         is_gridsearch: bool = False,
+        cell_type_key: str = "cell_type",
+        batch_key: str = "batch",
     ):
         """Initializes the ModelFactory base class.
 
@@ -49,6 +51,8 @@ class ModelFactory:
             config_path (Union[str, dict]): Path to the configuration file or the configuration dictionary.
                 Defaults to "./config.json".
             is_gridsearch (bool): Flag indicating if this is a grid search run. Defaults to False.
+            cell_type_key (str): Key in .obs for cell type annotations. Defaults to "cell_type".
+            batch_key (str): Key in .obs for batch annotations. Defaults to "batch".
         """
         if isinstance(config_path, dict):
             self.config_dict = config_path
@@ -58,6 +62,8 @@ class ModelFactory:
         self.dataset = dataset
         self.dataset_name = dataset_name
         self.model_name = model_name
+        self.cell_type_key = cell_type_key
+        self.batch_key = batch_key
         self.output_dir = os.path.join(
             self.config_dict["output_dir"],
         )

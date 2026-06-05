@@ -13,7 +13,8 @@ import torch
 from mvr_worker import (OUTPUT_DIR, ModelFactory, build_model_config,
                         get_device, get_logger, load_input_mudata,
                         load_job_spec, preprocess_mudata, replay_history,
-                        resolve_preprocess_params, setup_container_logging)
+                        resolve_labels_key_params, resolve_preprocess_params,
+                        setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -23,12 +24,6 @@ class MowgliModel(ModelFactory):
 
     Uses Optimal Transport and Non-negative Matrix Factorization for multimodal
     data integration.
-
-    Attributes:
-        latent_dimensions (int): Dimension of the latent space.
-        optimizer (str): Name of the optimizer to use.
-        learning_rate (float): Learning rate for the optimizer.
-        loss (float): Final training loss.
     """
 
     def __init__(
@@ -37,6 +32,8 @@ class MowgliModel(ModelFactory):
         dataset_name: str,
         config_path: Union[str, dict],
         is_gridsearch: bool = False,
+        cell_type_key: str = "cell_type",
+        batch_key: str = "batch",
     ):
         """Initializes the MowgliModel.
 
@@ -58,6 +55,8 @@ class MowgliModel(ModelFactory):
             config_path=config_path,
             model_name="mowgli",
             is_gridsearch=is_gridsearch,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
         if self.model_name not in self.model_params:
@@ -68,7 +67,6 @@ class MowgliModel(ModelFactory):
         mowgli_params = self.model_params.get(self.model_name)
 
         self.device = mowgli_params.get("device")
-        self.torch_device = "cpu"
         self.latent_dimensions = mowgli_params.get("latent_dimensions", 20)
         self.optimizer = mowgli_params.get("optimizer", "adam")
         self.learning_rate = mowgli_params.get("learning_rate", 0.001)
@@ -145,7 +143,9 @@ def main() -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
+    label_keys = resolve_labels_key_params(job_spec)
+    cell_type_key = label_keys["cell_type_key"]
+    batch_key = label_keys["batch_key"]
     dataset_name = job_spec.get("dataset_slug", "dataset")
     try:
         mdata = load_input_mudata()
@@ -167,8 +167,8 @@ def main() -> None:
         mdata = preprocess_mudata(
             mdata,
             config["preprocess_params"],
-            cell_type_key="cell_type",
-            batch_key="batch",
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
     except Exception as e:
         logger.error(f"Failed to load and concatenate input data: {e}")
@@ -179,6 +179,8 @@ def main() -> None:
             dataset=mdata,
             dataset_name=dataset_name,
             config_path=config,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
         logger.info(f"Running Mowgli model on dataset: {dataset_name}")
         model.train()

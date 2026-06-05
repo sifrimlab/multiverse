@@ -495,6 +495,8 @@ class _SlurmJobSpec:
     container_command: Optional[List[str]]
     validators: ValidationLevel
     seed: Optional[int]
+    batch_key: Optional[str] = None
+    cell_type_key: Optional[str] = None
     env_extra: Dict[str, str] = field(default_factory=dict)
     # Slurm-specific knobs.
     partition: Optional[str] = None
@@ -571,6 +573,8 @@ class _SlurmJobSpec:
             dataset_slug=str(options["dataset_slug"]),
             dataset_path=str(_req("dataset_path")),
             dataset_n_obs=int(_req("dataset_n_obs")),
+            batch_key=(str(options["batch_key"]) if options.get("batch_key") else None),
+            cell_type_key=(str(options["cell_type_key"]) if options.get("cell_type_key") else None),
             dataset_n_vars=(
                 int(options["dataset_n_vars"])
                 if options.get("dataset_n_vars") is not None
@@ -679,6 +683,8 @@ def build_slurm_executor_options(
     contract_version: str = "1",
     dataset_n_vars: Optional[int] = None,
     manifest_text: str = "",
+    cell_type_key: Optional[str] = None,
+    batch_key: Optional[str] = None,
     container_command: Optional[List[str]] = None,
     validators: str = "basic",
     artifact_dir_name: Optional[str] = None,
@@ -740,5 +746,9 @@ def build_slurm_executor_options(
         slurm_block["gpus"] = int(gpus)
     if extra_directives:
         slurm_block["extra_directives"] = list(extra_directives)
+    if batch_key is not None:
+        slurm_block["batch_key"] = str(batch_key)
+    if cell_type_key is not None:
+        slurm_block["cell_type_key"] = str(cell_type_key)
     out["slurm"] = slurm_block
     return out

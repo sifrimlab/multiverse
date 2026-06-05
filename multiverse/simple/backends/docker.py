@@ -246,6 +246,8 @@ class DockerBackend:
         spec: Dict[str, Any] = {
             "model_name": job.model_slug,
             "model_version": job.model_version,
+            "batch_key": job.batch_key,
+            "cell_type_key": job.cell_type_key,
             "dataset_slug": job.dataset_slug,
             "dataset_path_in_container": CONTAINER_INPUT_DATA_PATH,
             "hyperparameters": {job.model_slug: dict(job.params)},

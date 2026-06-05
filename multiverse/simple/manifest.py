@@ -54,6 +54,8 @@ class SimpleJob:
     contract_version: str
     dataset_slug: str
     dataset_path: Path
+    batch_key: Optional[str] = None
+    cell_type_key: Optional[str] = None
     dataset_n_obs: int
     dataset_n_vars: Optional[int]
     dataset_fingerprint_extra: Dict[str, Any] = field(default_factory=dict)
@@ -139,6 +141,10 @@ def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> Simpl
         else None
     )
     fingerprint_extra = dict(dataset_block.get("fingerprint") or {})
+    batch_key_raw = dataset_block.get("batch_key")
+    batch_key = str(batch_key_raw) if batch_key_raw is not None else None
+    cell_type_key_raw = dataset_block.get("cell_type_key")
+    cell_type_key = str(cell_type_key_raw) if cell_type_key_raw is not None else None
 
     params_block = raw.get("params") or {}
     if not isinstance(params_block, Mapping):
@@ -163,6 +169,8 @@ def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> Simpl
         contract_version=contract_version,
         dataset_slug=dataset_slug,
         dataset_path=dataset_path,
+        batch_key=batch_key,
+        cell_type_key=cell_type_key,
         dataset_n_obs=dataset_n_obs,
         dataset_n_vars=dataset_n_vars,
         dataset_fingerprint_extra=fingerprint_extra,

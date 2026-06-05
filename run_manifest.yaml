@@ -1,14 +1,154 @@
 globals:
-  experiment_name: benchmark_run123456789
+  experiment_name: benchmark_run
   random_seed: 42
   run_user_params: true
   run_gridsearch: false
 jobs:
 - dataset_slug: pbmc10k
+  model_name: Cobolt
+  model_params:
+    device: cuda
+    latent_dimensions: 20
+    learning_rate: 0.001
+    num_epochs: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+    random_state: 42
+  mem_limit: 16g
+- dataset_slug: pbmc10k
+  model_name: MOFA
+  model_params:
+    device: cuda
+    n_iterations: 5000
+    n_factors: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: pbmc10k
+  model_name: MOFA-Cpu
+  model_params:
+    device: cpu
+    n_iterations: 50
+    n_factors: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: pbmc10k
+  model_name: Mowgli
+  model_params:
+    device: cuda
+    latent_dimensions: 20
+    optimizer: adam
+    learning_rate: 0.001
+    tol_inner: 1.0e-06
+    max_iter_inner: 5
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: pbmc10k
+  model_name: MultiVI
+  model_params:
+    device: cpu
+    max_epochs: 400
+    learning_rate: 0.001
+    latent_dimensions: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: pbmc10k
   model_name: PCA
   model_params:
-    n_components: 5
+    n_components: 50
     device: cpu
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: prostate
+  model_name: MOFA
+  model_params:
+    device: cuda
+    n_iterations: 50
+    n_factors: 20
+    umap_random_state: 42
+    umap_color_type: new_ann
+  mem_limit: 16g
+- dataset_slug: prostate
+  model_name: MOFA-Cpu
+  model_params:
+    device: cpu
+    n_iterations: 50
+    n_factors: 20
+    umap_random_state: 42
+    umap_color_type: new_ann
+  mem_limit: 16g
+- dataset_slug: prostate
+  model_name: Mowgli
+  model_params:
+    device: cuda
+    latent_dimensions: 20
+    optimizer: adam
+    learning_rate: 0.001
+    tol_inner: 1.0e-06
+    max_iter_inner: 50
+    umap_random_state: 42
+    umap_color_type: new_ann
+  mem_limit: 16g
+- dataset_slug: prostate
+  model_name: PCA
+  model_params:
+    n_components: 50
+    device: cpu
+    umap_random_state: 42
+    umap_color_type: new_ann
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: Cobolt
+  model_params:
+    device: cuda
+    latent_dimensions: 20
+    learning_rate: 0.001
+    num_epochs: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+    random_state: 42
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: MOFA
+  model_params:
+    device: cuda
+    n_iterations: 50
+    n_factors: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: MOFA-Cpu
+  model_params:
+    device: cpu
+    n_iterations: 50
+    n_factors: 20
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: Mowgli
+  model_params:
+    device: cuda
+    latent_dimensions: 20
+    optimizer: adam
+    learning_rate: 0.001
+    tol_inner: 1.0e-06
+    max_iter_inner: 50
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: MultiVI
+  model_params:
+    device: cuda
+    max_epochs: 20
+    learning_rate: 0.001
+    latent_dimensions: 20
     umap_random_state: 42
     umap_color_type: cell_type
   mem_limit: 16g
@@ -17,6 +157,16 @@ jobs:
   model_params:
     n_components: 50
     device: cpu
+    umap_random_state: 42
+    umap_color_type: cell_type
+  mem_limit: 16g
+- dataset_slug: teaseq
+  model_name: TotalVI
+  model_params:
+    device: cuda
+    max_epochs: 20
+    learning_rate: 0.001
+    latent_dimensions: 20
     umap_random_state: 42
     umap_color_type: cell_type
   mem_limit: 16g

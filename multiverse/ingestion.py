@@ -210,8 +210,8 @@ def register_from_manifest(
 
     slug = sanitize_slug(dataset_dir.name)
 
-    batch_key = manifest.metadata_keys.get("batch")
-    cell_type_key = manifest.metadata_keys.get("cell_type")
+    batch_key = manifest.metadata_keys.get("batch_key")
+    cell_type_key = manifest.metadata_keys.get("cell_type_key")
 
     if manifest.processed_path:
         # Processed registration (issue #23): the manifest points at an
@@ -238,7 +238,7 @@ def register_from_manifest(
     existing = registry_db.get_dataset_by_slug(slug)
     if existing:
         existing_hash = existing.get("manifest_hash")
-        if existing_hash == manifest_hash:
+        if existing_hash == manifest_hash and not update:
             return {
                 "action": "noop",
                 "dataset_id": existing["id"],

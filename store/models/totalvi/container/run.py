@@ -10,8 +10,8 @@ import scvi
 from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
                         build_model_config, get_device, get_logger,
                         load_input_mudata, load_job_spec, preprocess_mudata,
-                        resolve_preprocess_params, scvi_history_to_dict,
-                        setup_container_logging)
+                        resolve_labels_key_params, resolve_preprocess_params,
+                        scvi_history_to_dict, setup_container_logging)
 
 logger = get_logger(__name__)
 
@@ -34,6 +34,8 @@ class TotalVIModel(ModelFactory):
         dataset_name: str,
         config_path: Union[str, dict],
         is_gridsearch: bool = False,
+        cell_type_key: str = "cell_type",
+        batch_key: str = "batch",
     ):
         """Initializes the TotalVIModel.
 
@@ -55,6 +57,8 @@ class TotalVIModel(ModelFactory):
             config_path=config_path,
             model_name="totalvi",
             is_gridsearch=is_gridsearch,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
 
         if self.model_name not in self.model_params:
@@ -102,7 +106,7 @@ class TotalVIModel(ModelFactory):
             scvi.model.TOTALVI.setup_anndata(
                 self.dataset,
                 protein_expression_obsm_key="protein_expression",
-                batch_key="batch",
+                batch_key=self.batch_key,
             )
         except Exception as e:
             logger.error(f"Something is wrong in TotalVI initialization: {e}")
@@ -167,8 +171,10 @@ def main() -> None:
     scvi.settings.seed = seed
     mudata_obj = load_input_mudata()
     modalities = list(mudata_obj.mod.keys())
-    # Preprocessing is resolved from the job spec (run manifest / GUI),
-    # falling back to these built-in defaults when unspecified (issue #22).
+
+    label_keys = resolve_labels_key_params(job_spec)
+    cell_type_key = label_keys["cell_type_key"]
+    batch_key = label_keys["batch_key"]
     config["preprocess_params"] = resolve_preprocess_params(
         job_spec,
         modalities,
@@ -184,8 +190,8 @@ def main() -> None:
     mudata_obj = preprocess_mudata(
         mudata_obj,
         config["preprocess_params"],
-        cell_type_key="cell_type",
-        batch_key="batch",
+        cell_type_key=cell_type_key,
+        batch_key=batch_key,
     )
     dataset_name = job_spec.get("dataset_slug", "dataset")
     data_concat = anndata_concatenate(
@@ -194,8 +200,8 @@ def main() -> None:
             "rna",
             "adt",
         ],  # only concatenate RNA and Protein modalities for TotalVI
-        cell_type_key="cell_type",
-        batch_key="batch",
+        cell_type_key=cell_type_key,
+        batch_key=batch_key,
     )
 
     try:
@@ -203,6 +209,8 @@ def main() -> None:
             dataset=data_concat,
             dataset_name=dataset_name,
             config_path=config,
+            cell_type_key=cell_type_key,
+            batch_key=batch_key,
         )
         logger.info(f"Running TotalVI model on dataset: {dataset_name}")
         model.train()
