@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WNN Hyperparameters",
+  "type": "object",
+  "required": ["modality_1", "modality_2"],
+  "properties": {
+    "modality_1": {
+      "type": "string",
+      "description": "Key of the first modality in the MuData object (e.g. 'rna')."
+    },
+    "modality_2": {
+      "type": "string",
+      "description": "Key of the second modality in the MuData object (e.g. 'msi')."
+    },
+    "n_neighbors": {
+      "type": "integer",
+      "minimum": 5,
+      "default": 20,
+      "description": "Number of nearest neighbors for each modality's KNN graph."
+    },
+    "n_pcs_per_modality": {
+      "type": "integer",
+      "minimum": 2,
+      "default": 30,
+      "description": "Number of PCA components to compute per modality before WNN."
+    },
+    "device": {
+      "type": "string",
+      "enum": ["cpu"],
+      "default": "cpu",
+      "description": "Computation device. WNN is CPU-only."
+    },
+    "umap_random_state": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 42,
+      "description": "Random state for UMAP reproducibility."
+    },
+    "umap_color_type": {
+      "type": "string",
+      "default": "cell_type",
+      "description": "Column in .obs used to color the UMAP plot."
+    }
+  },
+  "additionalProperties": false
+}

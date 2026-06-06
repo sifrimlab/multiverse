@@ -1,0 +1,15 @@
+name: WNN
+version: 1.0.0
+contract_version: 1.0.0
+supported_omics:
+  - any
+runtime:
+  image: multiverse-wnn:1.0.0
+hyperparameters_schema: store/models/wnn/hyperparameters.schema.json
+build:
+  context: ../../..
+  dockerfile: store/models/wnn/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/wnn/container/Singularity.def
+  gpu_required: false
