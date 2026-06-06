@@ -1800,6 +1800,7 @@ def _refresh_mvd_snapshots() -> list[dict]:
 
     names_by_id = {s["attempt_id"]: s["job_name"] for s in submissions}
     last_states: dict[str, str] = st.session_state.setdefault("_mvd_last_states", {})
+    newly_successful: list[dict] = []
     for snap in snapshots:
         attempt = snap["physical_attempt_id"]
         state = snap["primary_state"]
@@ -1808,6 +1809,29 @@ def _refresh_mvd_snapshots() -> list[dict]:
             reason = snap.get("failure_reason") or ""
             suffix = f" - {reason}" if reason else ""
             _append_run_log(f"{names_by_id.get(attempt, attempt)}: {state}{suffix}")
+            if state == "ARTIFACT_SUCCESS" and snap.get("artifact_dir"):
+                newly_successful.append(snap)
+
+    # Back-fill artifact_dir in cohort.json for jobs that just completed.
+    # At cohort-write time jobs haven't run yet, so artifact_dir is null;
+    # we patch it here on first transition to ARTIFACT_SUCCESS.
+    if newly_successful:
+        launch_id = st.session_state.get("_cohort_launch_id") or ""
+        output_dir_str = st.session_state.get("_mvd_output_dir") or ""
+        if launch_id and output_dir_str:
+            try:
+                from pathlib import Path as _Path
+
+                from multiverse.evaluation.cohort import update_cohort_artifact_dirs
+
+                update_cohort_artifact_dirs(
+                    output_dir=_Path(output_dir_str),
+                    launch_id=launch_id,
+                    completed_snapshots=newly_successful,
+                )
+            except Exception:
+                pass  # best-effort; never block the monitor loop
+
     return snapshots
 
 
@@ -2050,12 +2074,45 @@ def _render_evaluate_section() -> None:
 
     if view["table_rows"]:
         import pandas as pd  # already used elsewhere in gui.py
-        st.dataframe(pd.DataFrame(view["table_rows"]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(view["table_rows"]), width="stretch", hide_index=True)
 
     if st.button(view["button_label"], disabled=not view["button_enabled"], type="primary"):
-        st.info(
-            "Evaluation execution is not implemented yet. Cohort readiness is complete."
+        from multiverse.evaluation.cohort import cohort_path as _cohort_path
+        cpath = _cohort_path(output_path, cohort["launch_id"])
+        cmd = ["mvr-evaluate", "--config_path", str(cpath)]
+        ok = _stream_subprocess(cmd, "Running evaluation...")
+        if ok:
+            st.session_state["eval_done_for_launch"] = cohort["launch_id"]
+
+    if st.session_state.get("eval_done_for_launch") == cohort.get("launch_id"):
+        import pandas as pd
+        eval_base = (
+            output_path
+            / "evaluation"
+            / cohort["launch_id"]
         )
+        dataset_names = sorted(
+            {m["dataset_slug"] for m in cohort.get("members", []) if "dataset_slug" in m}
+        )
+        for dataset_name in dataset_names:
+            metrics_path = eval_base / f"dataset_{dataset_name}" / "evaluation_metrics.json"
+            if not metrics_path.exists():
+                continue
+            try:
+                with open(metrics_path, encoding="utf-8") as fh:
+                    raw = json.load(fh)
+                df = pd.DataFrame(raw)
+                def _fmt(v):
+                    n = pd.to_numeric(v, errors="coerce")
+                    return f"{n:.4g}" if pd.notna(n) else str(v) if v is not None else ""
+                df = df.apply(lambda col: col.map(_fmt))
+                st.markdown(f"**{dataset_name}**")
+                st.dataframe(df, width="stretch")
+                img_path = metrics_path.parent / "scib_results.svg"
+                if img_path.exists():
+                    st.image(str(img_path))
+            except Exception as exc:
+                st.warning(f"Could not load metrics for {dataset_name}: {exc}")
 
 
 def _render_execute_tab() -> None:

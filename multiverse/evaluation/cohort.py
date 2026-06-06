@@ -259,6 +259,74 @@ def write_cohort(
     return cpath
 
 
+def update_cohort_artifact_dirs(
+    *,
+    output_dir: Path,
+    launch_id: str,
+    completed_snapshots: List[Dict[str, Any]],
+) -> None:
+    """Back-fill artifact_dir (and completed_attempt_id) for submitted members.
+
+    Called after job(s) reach ARTIFACT_SUCCESS.  At cohort-write time the
+    jobs have not yet run, so artifact_dir is null; this function patches the
+    persisted cohort once the artifact directory is known.
+
+    Matching priority (mirrors update_cohort_submitted):
+      1. submitted_attempt_id == physical_attempt_id
+      2. logical_run_id
+    """
+    cpath = cohort_path(output_dir, launch_id)
+    if not cpath.exists():
+        return
+    try:
+        with open(cpath, encoding="utf-8") as fh:
+            cohort = json.load(fh)
+    except Exception as exc:
+        logger.warning(
+            "update_cohort_artifact_dirs: could not read cohort at %s: %s", cpath, exc
+        )
+        return
+
+    by_attempt: Dict[str, Dict[str, Any]] = {}
+    by_lrid: Dict[str, Dict[str, Any]] = {}
+    for snap in completed_snapshots:
+        adir = snap.get("artifact_dir") or ""
+        if not adir:
+            continue
+        attempt = str(snap.get("physical_attempt_id") or "")
+        lrid = str(snap.get("logical_run_id") or "")
+        if attempt:
+            by_attempt[attempt] = snap
+        if lrid:
+            by_lrid[lrid] = snap
+
+    updated = 0
+    for member in cohort.get("members", []):
+        if member.get("artifact_dir"):
+            continue
+        snap = by_attempt.get(member.get("submitted_attempt_id") or "") or by_lrid.get(
+            member.get("logical_run_id") or ""
+        )
+        if not snap:
+            continue
+        adir = snap.get("artifact_dir") or ""
+        if not adir:
+            continue
+        member["artifact_dir"] = adir
+        if not member.get("completed_attempt_id"):
+            member["completed_attempt_id"] = snap.get("physical_attempt_id") or None
+        updated += 1
+
+    if updated == 0:
+        return
+    try:
+        _atomic_write_json(cpath, cohort)
+    except Exception as exc:
+        logger.warning(
+            "update_cohort_artifact_dirs: could not write cohort at %s: %s", cpath, exc
+        )
+
+
 def write_latest_launch(
     *,
     output_dir: Path,
