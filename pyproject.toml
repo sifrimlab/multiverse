@@ -51,6 +51,7 @@ packages = ["multiverse"]
 
 [tool.uv.sources]
 cobolt = { git = "https://github.com/epurdom/cobolt.git" }
+mvr-worker = { path = "sdk/mvr-worker", editable = true }
 
 [build-system]
 requires = ["hatchling"]

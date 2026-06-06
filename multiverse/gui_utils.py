@@ -241,11 +241,11 @@ def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
     except ImportError:
         return []
 
-    _STATUS_ICONS = {
-        "RUNNING": "🔵 Running",
-        "FINISHED": "🟢 Finished",
-        "FAILED": "🔴 Failed",
-        "KILLED": "⚫ Killed",
+    _STATUS_LABELS = {
+        "RUNNING": "Running",
+        "FINISHED": "Finished",
+        "FAILED": "Failed",
+        "KILLED": "Killed",
     }
 
     try:
@@ -265,7 +265,7 @@ def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
             run_name = run.data.tags.get("mlflow.runName") or run.info.run_id[:8]
             row: dict = {
                 "Run": run_name,
-                "Status": _STATUS_ICONS.get(run.info.status, run.info.status),
+                "Status": _STATUS_LABELS.get(run.info.status, run.info.status),
             }
 
             available = set(run.data.metrics.keys())

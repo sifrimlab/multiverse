@@ -288,10 +288,10 @@ def _stream_subprocess(cmd: list[str], status_label: str) -> bool:
             st.write(line.rstrip())
         proc.wait()
         if proc.returncode == 0:
-            status.update(label=f"{status_label} — Done ✓", state="complete")
+            status.update(label=f"{status_label} — Done", state="complete")
             return True
         else:
-            status.update(label=f"{status_label} — Failed ✗", state="error")
+            status.update(label=f"{status_label} — Failed", state="error")
             return False
 
 
@@ -543,7 +543,7 @@ def _render_registry_tab() -> None:
     st.divider()
 
     # --- Register dataset ---
-    with st.expander("➕ Register New Dataset", expanded=False):
+    with st.expander("Register New Dataset", expanded=False):
         use_fields = st.toggle(
             "Build manifest from fields (I don't have a dataset.yaml yet)",
             key="ds_use_fields",
@@ -2203,8 +2203,7 @@ def _render_execute_tab() -> None:
         _gpu_status, _gpu_msg = _host_gpu_status()
         if _gpu_status == "ok":
             st.success(
-                f"GPU available — {len(_gpu_jobs)} job(s) will run with GPU access.",
-                icon="✅",
+                f"GPU available — {len(_gpu_jobs)} job(s) will run with GPU access."
             )
         else:
             st.warning(f"**GPU warning:** {_gpu_msg}")
@@ -2324,7 +2323,7 @@ def _render_execute_tab() -> None:
                 return
 
             if backend == "slurm":
-                st.info("🖥️ Slurm backend active — jobs will be submitted via sbatch")
+                st.info("Slurm backend active — jobs will be submitted via sbatch")
 
             manifest_text = manifest_file.read_text(encoding="utf-8")
             manifest_hash = compute_manifest_hash(manifest_text)
@@ -3018,8 +3017,8 @@ def _render_observability_sidebar() -> None:
 
     with st.sidebar:
         st.subheader("Services")
-        mf_status = "● MLflow online" if mlflow_up else "○ MLflow offline"
-        op_status = "● Optuna online" if optuna_up else "○ Optuna offline"
+        mf_status = "MLflow: online" if mlflow_up else "MLflow: offline"
+        op_status = "Optuna: online" if optuna_up else "Optuna: offline"
         st.write(mf_status)
         st.link_button("Open MLflow", mlflow_base, width="stretch")
         st.write(op_status)
