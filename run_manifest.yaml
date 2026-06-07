@@ -5,81 +5,24 @@ globals:
   run_gridsearch: false
 jobs:
 - dataset_slug: pbmc10k
-  model_name: MOFA
+  model_name: WNN
   model_params:
-    device: cuda:0
-    n_iterations: 10
-    n_factors: 2
-    umap_random_state: 92
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: pbmc10k
-  model_name: Mowgli
-  model_params:
-    device: cuda:0
-    latent_dimensions: 2
-    optimizer: adam
-    learning_rate: 0.001
-    tol_inner: 1.0e-06
-    max_iter_inner: 5
-    umap_random_state: 92
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: pbmc10k
-  model_name: MultiVI
-  model_params:
-    device: cuda:0
-    max_epochs: 5
-    learning_rate: 0.001
-    latent_dimensions: 2
-    umap_random_state: 92
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: teaseq
-  model_name: MOFA
-  model_params:
+    modality_1: rna
+    modality_2: atac
+    n_neighbors: 20
+    n_pcs_per_modality: 30
     device: cpu
-    n_iterations: 5000
-    n_factors: 20
     umap_random_state: 92
     umap_color_type: cell_type
   mem_limit: 16g
-  gpu: true
 - dataset_slug: teaseq
-  model_name: Mowgli
+  model_name: WNN
   model_params:
+    modality_1: rna
+    modality_2: atac
+    n_neighbors: 20
+    n_pcs_per_modality: 30
     device: cpu
-    latent_dimensions: 20
-    optimizer: adam
-    learning_rate: 0.001
-    tol_inner: 1.0e-06
-    max_iter_inner: 500
     umap_random_state: 92
     umap_color_type: cell_type
   mem_limit: 16g
-  gpu: true
-- dataset_slug: teaseq
-  model_name: MultiVI
-  model_params:
-    device: cuda:0
-    max_epochs: 400
-    learning_rate: 0.001
-    latent_dimensions: 20
-    umap_random_state: 92
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: teaseq
-  model_name: TotalVI
-  model_params:
-    device: cpu
-    max_epochs: 4
-    learning_rate: 0.001
-    latent_dimensions: 2
-    umap_random_state: 92
-    umap_color_type: cell_type
-  mem_limit: 16g
-  gpu: true

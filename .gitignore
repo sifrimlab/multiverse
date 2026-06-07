@@ -36,6 +36,7 @@ data/input/
 sample_data/input/
 store/artifacts/**
 store/datasets/**
+store/models/**
 store/workspaces/**
 optuna_demo.db
 run_manifests.yaml
