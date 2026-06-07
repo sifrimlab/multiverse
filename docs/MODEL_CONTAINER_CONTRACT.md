@@ -1,6 +1,6 @@
 # Model Container Contract
 
-This reference defines the I/O contract that every model container must honour to be runnable under the mvexp orchestrator. It is the canonical specification; both the built-in models under `store/models/` and any third-party model image must conform to it.
+This reference defines the I/O contract that every model container must honour to be runnable under the multiverse orchestrator. It is the canonical specification; both the built-in models under `store/models/` and any third-party model image must conform to it.
 
 ## Filesystem Boundary
 
@@ -11,9 +11,11 @@ This reference defines the I/O contract that every model container must honour t
 | `/output/embeddings.h5` | write | yes | HDF5 file containing exactly one top-level dataset named `latent`. |
 | `/output/metrics.json` | write | yes | JSON object with model-level metrics and (optionally) training history. |
 | `/output/umap.png` | write | yes | UMAP scatter of the latent space rendered by the container. |
-| `/output/model.log` | write | yes | Structured log (the `mvr_worker.setup_container_logging` helper writes this for you). |
+| `/output/run.log` | write | yes | Structured log (the `multiverse.worker.setup_container_logging` helper writes this for you). Honours `$MULTIVERSE_LOG_LEVEL`. |
 
 Model code must read no other host paths and write to no other host paths.
+
+In addition to `run.log`, the orchestrator captures the container's raw stdout/stderr to `container.log` and its own per-run reasoning to `orchestrator.log` in the same output directory. The container must not write those two files itself.
 
 ## `job_spec.json` Schema
 
@@ -73,12 +75,12 @@ assert latent.ndim == 2 and latent.shape[0] > 0 and latent.shape[1] > 0
 
 The `model_metrics` map should contain finite scalars only. `NaN` and `±Inf` values are sanitised by the tracking layer but degrade comparability across runs. `history` is optional and consumed by MLflow as a per-epoch metric stream when present.
 
-## Container Authoring with `mvr-worker`
+## Container Authoring with `multiverse.worker`
 
-The container-side SDK at `sdk/mvr-worker/` provides every helper needed to honour the contract. The expected import surface is:
+The file contract above is mandatory; the `multiverse.worker` SDK is an optional Python convenience that provides every helper needed to honour the contract. The expected import surface is:
 
 ```python
-from mvr_worker import (
+from multiverse.worker import (
     OUTPUT_DIR,              # "/output"
     load_input_mudata,       # reads /input/data.h5mu
     load_job_spec,           # parses /output/job_spec.json
@@ -86,7 +88,7 @@ from mvr_worker import (
     save_embeddings,         # writes /output/embeddings.h5 with the latent matrix
     save_umap,               # writes /output/umap.png
     anndata_concatenate,     # multimodal feature concatenation
-    setup_container_logging, # configures /output/model.log
+    setup_container_logging, # configures /output/run.log
     get_logger,              # named logger
     EpochLogger,             # context manager streaming epoch metrics to MLflow + JSONL
     resolve_device,          # CPU/CUDA selection
@@ -97,7 +99,7 @@ Reference implementation (PCA, paraphrased from `store/models/pca/container/run.
 
 ```python
 import random, numpy as np, scanpy as sc
-from mvr_worker import (
+from multiverse.worker import (
     OUTPUT_DIR, anndata_concatenate, build_model_config, get_logger,
     load_input_mudata, load_job_spec, save_embeddings, save_umap,
     setup_container_logging,
@@ -133,15 +135,17 @@ WORKDIR /app
 COPY store/models/<slug>/container/environment.yml /tmp/environment.yml
 RUN micromamba create -y -f /tmp/environment.yml && micromamba clean -afy
 ENV PATH=/opt/conda/envs/<env-name>/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/conda/envs/<env-name>/lib:$LD_LIBRARY_PATH
 
-COPY sdk/mvr-worker/ /tmp/mvr-worker/
-RUN pip install /tmp/mvr-worker/
+COPY pyproject.toml README.md /tmp/multiverse/
+COPY multiverse/ /tmp/multiverse/multiverse/
+RUN pip install "/tmp/multiverse[worker]"
 
 COPY store/models/<slug>/container/run.py /app/run.py
 ENTRYPOINT ["python", "/app/run.py"]
 ```
 
-The build context is the repository root so that `COPY sdk/mvr-worker/ ...` resolves correctly; see the `build:` block of `store/models/<slug>/model.yaml`.
+The build context is the repository root so that the `COPY` directives above resolve correctly; see the `build:` block of `store/models/<slug>/model.yaml`.
 
 ## Determinism Rules
 
@@ -154,7 +158,7 @@ The build context is the repository root so that `COPY sdk/mvr-worker/ ...` reso
 | Symptom | Cause | Fix |
 |---|---|---|
 | `embeddings.h5` missing on success path | Container exited before writing outputs. | Wrap I/O in a `try/finally`; flush before exit. |
-| `latent` key missing in HDF5 | Wrong dataset name. | Use `save_embeddings()` from `mvr_worker`. |
+| `latent` key missing in HDF5 | Wrong dataset name. | Use `save_embeddings()` from `multiverse.worker`. |
 | Row count mismatch with input | Filtering applied after `mdata.obs` was captured. | Filter the input once and reuse the same indexing. |
 | `metrics.json` invalid JSON | Manual string concatenation. | Use `json.dump` and write scalars only. |
 | Run unreproducible across hosts | Hidden state in CUDA kernels or library defaults. | Seed all RNGs; set `torch.use_deterministic_algorithms(True)` where supported. |

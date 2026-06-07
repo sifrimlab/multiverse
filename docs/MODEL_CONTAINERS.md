@@ -1,6 +1,6 @@
 # Model Containers
 
-mvexp runs every integration model in its own Docker container. The container boundary is what makes the platform reproducible across hosts and what isolates incompatible ML dependency stacks (scvi-tools, MOFA, Mowgli, Cobolt) from each other.
+multiverse runs every integration model in its own Docker container. The container boundary is what makes the platform reproducible across hosts and what isolates incompatible ML dependency stacks (scvi-tools, MOFA, Mowgli, Cobolt) from each other.
 
 This page is a short orientation. The two canonical references are:
 
@@ -18,14 +18,14 @@ flowchart LR
     D --> E
     E --> F[/output/embeddings.h5/]
     E --> G[/output/metrics.json/]
-    E --> H[/output/umap.png + model.log/]
+    E --> H[/output/umap.png + run.log/]
 ```
 
 Each container reads `/input/data.h5mu` plus `/output/job_spec.json`, then writes its outputs under `/output/`. No host path appears in model code, so the same image runs unchanged on a laptop, an HPC node, and a CI runner.
 
 ## Build Pattern
 
-All built-in images use a `mambaorg/micromamba` base, install a conda environment from the model's `environment.yml`, then install the `mvr-worker` SDK from the repository's `sdk/mvr-worker/` directory. The build context is the repository root; this is what allows the Dockerfile to `COPY sdk/mvr-worker/ /tmp/mvr-worker/`.
+All built-in images use a `mambaorg/micromamba` base, install a conda environment from the model's `environment.yml`, then install the `multiverse[worker]` SDK from the repository root build context. The build context is the repository root; this is what allows the Dockerfile to `COPY` the `multiverse` package sources into the image and `pip install "/tmp/multiverse[worker]"`.
 
 See [Model Container Contract — Build Pattern](MODEL_CONTAINER_CONTRACT.md#build-pattern) for the canonical template.
 

@@ -1,16 +1,20 @@
+"""Dataset loading and modality assembly for model containers."""
+
 from __future__ import annotations
 
-
 import importlib
+
 sc = None
 ad = None
 md = None
 mu = None
 import os
 from typing import Union
+
 from .config import load_config
 from .logging_utils import get_logger
-#Output type = anndata, mudata
+
+# Output type = anndata, mudata
 
 logger = get_logger(__name__)
 
@@ -34,6 +38,7 @@ def _ensure_ml_runtime() -> None:
     ad = _ad
     md = _md
     mu = _mu
+
 
 class DataLoader:
     """A data loader for reading and preprocessing single-cell datasets.
@@ -87,19 +92,19 @@ class DataLoader:
         """
         adata = None
         # Modality and file_path should be provided to load anndata object
-        if self.modality != "" and self.file_path != "": 
+        if self.modality != "" and self.file_path != "":
             if ".csv" in self.file_path:
                 adata = sc.read_csv(self.file_path)
             elif ".tsv" in self.file_path:
-                adata = sc.read(self.file_path, delimiter='\t').T
+                adata = sc.read(self.file_path, delimiter="\t").T
             elif ".h5ad" in self.file_path:
-                adata = sc.read_h5ad(self.file_path)  
+                adata = sc.read_h5ad(self.file_path)
             elif ".txt" in self.file_path:
                 adata = sc.read_text(self.file_path)
             elif ".mtx" in self.file_path:
                 if self.modality in ["rna", "atac"]:
                     path = os.path.dirname(self.file_path)
-                    mudata = mu.read_10x_mtx(path, extended=True) 
+                    mudata = mu.read_10x_mtx(path, extended=True)
                     adata = mudata[self.modality]
                 else:
                     adata = sc.read_mtx(self.file_path)
@@ -110,7 +115,7 @@ class DataLoader:
                 adata.obs["batch"] = mudata.obs["batch"]
                 adata.obs["mod_id"] = mudata.obs["mod_id"]
             elif ".h5" in self.file_path:
-                mudata =mu.read_10x_h5(self.file_path)
+                mudata = mu.read_10x_h5(self.file_path)
                 adata = mudata[self.modality]
 
             if adata:  # Check if adata is not None
@@ -130,9 +135,13 @@ class DataLoader:
                 self.data = adata
                 return self.data
             else:
-                raise ValueError("Could not read the file. Please check the file path and format.")
+                raise ValueError(
+                    "Could not read the file. Please check the file path and format."
+                )
         else:
-            raise ValueError("Modality and file_path must be provided for anndata loading.")
+            raise ValueError(
+                "Modality and file_path must be provided for anndata loading."
+            )
 
     def preprocessing(self) -> ad.AnnData:
         """Loads and preprocesses the AnnData object.
@@ -146,26 +155,28 @@ class DataLoader:
         Raises:
             ValueError: If the file path, modality is missing or preprocessing is not applicable.
         """
-         # Modality and file_path should be provided for the read_anndata() function to work
+        # Modality and file_path should be provided for the read_anndata() function to work
         if self.file_path != "":
-            if self.modality != "" :
+            if self.modality != "":
                 self.read_anndata()
                 self.data.var_names_make_unique()
                 self.data.layers["counts"] = self.data.X.copy()
                 if not self.is_preprocessed:
                     pre = Preprocessing(anndata=self.data, config_path=self.config_path)
                     # RNA preprocessing
-                    if self.modality=="rna":
+                    if self.modality == "rna":
                         self.data = pre.rna_preprocessing()
                     # ATAC preprocessing
-                    elif self.modality=="atac":
+                    elif self.modality == "atac":
                         self.data = pre.atac_preprocessing()
                     # ADT preprocessing
-                    elif self.modality=="adt":
+                    elif self.modality == "adt":
                         self.data = pre.adt_preprocessing()
                     # Not applicable
                     else:
-                        raise ValueError("Preprocessing for this modality is not applicable!")
+                        raise ValueError(
+                            "Preprocessing for this modality is not applicable!"
+                        )
             else:
                 raise ValueError("Modality must be provided to read anndata")
         else:
@@ -204,18 +215,40 @@ class Preprocessing:
 
         # Quality control - based on scanpy calculateQCmetrics - McCarthy et al., 2017
         self.data.var["mt"] = self.data.var_names.str.startswith("MT-")
-        sc.pp.calculate_qc_metrics(self.data, qc_vars=["mt"], inplace=rna_dict.get("qc_metric_inplace"), log1p=rna_dict.get("qc_metric_log1p"))
-        
+        sc.pp.calculate_qc_metrics(
+            self.data,
+            qc_vars=["mt"],
+            inplace=rna_dict.get("qc_metric_inplace"),
+            log1p=rna_dict.get("qc_metric_log1p"),
+        )
+
         # Filtering -> threshold metrics depend on the specific dataset and experimental conditions.
-        mu.pp.filter_obs(self.data, 'n_genes_by_counts', lambda x: (x >= rna_dict.get("min_genes_by_counts")) & (x < rna_dict.get("max_genes_by_counts")))
-        mu.pp.filter_obs(self.data, "total_counts", lambda x: x < rna_dict.get("max_total_counts_per_cell"))
-        mu.pp.filter_obs(self.data, "pct_counts_mt", lambda x: x < rna_dict.get("max_pct_counts_mt"))
+        mu.pp.filter_obs(
+            self.data,
+            "n_genes_by_counts",
+            lambda x: (x >= rna_dict.get("min_genes_by_counts"))
+            & (x < rna_dict.get("max_genes_by_counts")),
+        )
+        mu.pp.filter_obs(
+            self.data,
+            "total_counts",
+            lambda x: x < rna_dict.get("max_total_counts_per_cell"),
+        )
+        mu.pp.filter_obs(
+            self.data, "pct_counts_mt", lambda x: x < rna_dict.get("max_pct_counts_mt")
+        )
 
         # Filter genes by keeping only those that are expressed in at least 10 cells.
-        mu.pp.filter_var(self.data, "n_cells_by_counts", lambda x: x >= rna_dict.get("min_cells_by_counts"))        
-        
+        mu.pp.filter_var(
+            self.data,
+            "n_cells_by_counts",
+            lambda x: x >= rna_dict.get("min_cells_by_counts"),
+        )
+
         # Normalisation
-        sc.pp.normalize_total(self.data, target_sum=rna_dict.get("normalization_target_sum"))
+        sc.pp.normalize_total(
+            self.data, target_sum=rna_dict.get("normalization_target_sum")
+        )
         sc.pp.log1p(self.data)
 
         # Feature selection
@@ -238,18 +271,43 @@ class Preprocessing:
         atac_dict = self.config.get("atac_filtering")
 
         # Quality control
-        sc.pp.calculate_qc_metrics(self.data, percent_top=None, inplace=atac_dict.get("qc_metric_inplace"), log1p=atac_dict.get("qc_metric_log1p"))
+        sc.pp.calculate_qc_metrics(
+            self.data,
+            percent_top=None,
+            inplace=atac_dict.get("qc_metric_inplace"),
+            log1p=atac_dict.get("qc_metric_log1p"),
+        )
 
         # Filter cells based on QC metrics.
-        mu.pp.filter_obs(self.data, "n_genes_by_counts", lambda x: (x >= atac_dict.get("min_peaks_by_counts")) & (x <= atac_dict.get("max_peaks_by_counts")))
-        mu.pp.filter_obs(self.data, "total_counts", lambda x: (x >= atac_dict.get("min_total_counts_per_cell")) & (x <= atac_dict.get("max_total_counts_per_cell")))
-        
+        mu.pp.filter_obs(
+            self.data,
+            "n_genes_by_counts",
+            lambda x: (x >= atac_dict.get("min_peaks_by_counts"))
+            & (x <= atac_dict.get("max_peaks_by_counts")),
+        )
+        mu.pp.filter_obs(
+            self.data,
+            "total_counts",
+            lambda x: (x >= atac_dict.get("min_total_counts_per_cell"))
+            & (x <= atac_dict.get("max_total_counts_per_cell")),
+        )
+
         # Filter peaks based on number of cells where they are present.
-        mu.pp.filter_var(self.data, "n_cells_by_counts", lambda x: x < atac_dict.get("max_cells_by_counts"))
-        mu.pp.filter_var(self.data, "total_counts", lambda x: x < atac_dict.get("max_total_counts_by_gene"))
+        mu.pp.filter_var(
+            self.data,
+            "n_cells_by_counts",
+            lambda x: x < atac_dict.get("max_cells_by_counts"),
+        )
+        mu.pp.filter_var(
+            self.data,
+            "total_counts",
+            lambda x: x < atac_dict.get("max_total_counts_by_gene"),
+        )
 
         # Perform per-cell normalization.
-        sc.pp.normalize_total(self.data, target_sum=atac_dict.get("normalization_target_sum"))
+        sc.pp.normalize_total(
+            self.data, target_sum=atac_dict.get("normalization_target_sum")
+        )
         sc.pp.log1p(self.data)
 
         # Feature selection
@@ -284,4 +342,3 @@ class Preprocessing:
         self.data.var["genome"] = "GRCh38"
 
         return self.data
-

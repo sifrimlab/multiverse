@@ -5,13 +5,12 @@ channels:
   - conda-forge
 dependencies:
   - pip
-  - ipykernel
   - python=3.11
   - pytorch
   - scanpy==1.10.3
+  - scikit-misc==0.5.2
   - pip:
       - scib==1.1.5
       - scib-metrics>=0.5.0
       - muon==0.1.7
       - jaxlib==0.4.34
-      - louvain==0.8.2

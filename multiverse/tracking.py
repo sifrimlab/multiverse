@@ -1,6 +1,7 @@
+"""MLflow tracking helpers and metric sanitization for runs."""
+
 from __future__ import annotations
 
-import importlib
 import math
 import os
 from pathlib import Path
@@ -12,9 +13,21 @@ logger = get_logger(__name__)
 
 
 def sanitize_nan_inf(obj: Any) -> Any:
-    """Recursively replace NaN and +/-Inf float values with None."""
+    """Recursively replace NaN and +/-Inf float values with None, and convert non-serializable numeric types to Python natives."""
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
+    try:
+        import numpy as np
+
+        if isinstance(obj, np.floating):
+            v = float(obj)
+            return v if math.isfinite(v) else None
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.ndarray):
+            return [sanitize_nan_inf(x) for x in obj.tolist()]
+    except ImportError:
+        pass
     if isinstance(obj, dict):
         return {key: sanitize_nan_inf(value) for key, value in obj.items()}
     if isinstance(obj, list):
@@ -24,7 +37,9 @@ def sanitize_nan_inf(obj: Any) -> Any:
     return obj
 
 
-def _to_flat_float_metrics(metrics_obj: Dict[str, Any], prefix: str = "") -> Dict[str, float]:
+def _to_flat_float_metrics(
+    metrics_obj: Dict[str, Any], prefix: str = ""
+) -> Dict[str, float]:
     """Flatten nested metric payloads into scalar floats for MLflow."""
     flat: Dict[str, float] = {}
     for key, value in metrics_obj.items():
@@ -68,7 +83,9 @@ def _coerce_float_list(values: Any) -> List[float]:
     return out
 
 
-def split_metrics_payload(metrics: Dict[str, Any]) -> Tuple[Dict[str, float], Dict[str, List[float]]]:
+def split_metrics_payload(
+    metrics: Dict[str, Any]
+) -> Tuple[Dict[str, float], Dict[str, List[float]]]:
     """Split metrics.json into final scalars and per-epoch time series."""
     scalars: Dict[str, float] = {}
     histories: Dict[str, List[float]] = {}
@@ -121,7 +138,9 @@ def _log_final_scalars(
         mlflow.log_metrics(standalone)
 
 
-def _log_metric_histories_client(client: Any, run_id: str, histories: Dict[str, List[float]]) -> None:
+def _log_metric_histories_client(
+    client: Any, run_id: str, histories: Dict[str, List[float]]
+) -> None:
     for name, series in histories.items():
         for step, value in enumerate(series):
             client.log_metric(run_id, name, value, step=step)
@@ -150,7 +169,9 @@ def _log_system_metrics_snapshot_client(client: Any, run_id: str, *, step: int) 
 
         memory = psutil.virtual_memory()
         metrics = {
-            "system/cpu_utilization_percentage": float(psutil.cpu_percent(interval=None)),
+            "system/cpu_utilization_percentage": float(
+                psutil.cpu_percent(interval=None)
+            ),
             "system/system_memory_usage_megabytes": float(memory.used) / 1e6,
             "system/system_memory_usage_percentage": float(memory.percent),
         }
@@ -197,17 +218,23 @@ def _resolve_mlflow_settings(
 ) -> Tuple[Optional[Any], str, Dict[str, Any]]:
     """Return (mlflow module, experiment_name, run_settings) or (None, "", {}) on failure."""
     try:
-        mlflow = importlib.import_module("mlflow")
+        from multiverse.mlflow_sdk import import_mlflow
+
+        mlflow = import_mlflow()
     except Exception as exc:
         logger.warning(f"MLflow unavailable; skipping tracking. ({exc})")
         return None, "", {}
 
-    run_settings = job_spec.get("run_settings", {}) if isinstance(job_spec, dict) else {}
+    from multiverse.ports import default_mlflow_tracking_uri
+
+    run_settings = (
+        job_spec.get("run_settings", {}) if isinstance(job_spec, dict) else {}
+    )
     tracking_uri = (
         run_settings.get("mlflow_tracking_uri")
         or job_context.get("mlflow_tracking_uri")
         or os.getenv("MLFLOW_TRACKING_URI")
-        or "http://localhost:5000"
+        or default_mlflow_tracking_uri()
     )
     experiment_name = (
         run_settings.get("mlflow_experiment_name")
@@ -231,7 +258,9 @@ def start_parent_mlflow_run(
     EpochLogger can attach to the same run. Host-side finalization uses
     MlflowClient with explicit run IDs to avoid cross-job active-run conflicts.
     """
-    mlflow, experiment_name, run_settings = _resolve_mlflow_settings(job_context, job_spec)
+    mlflow, experiment_name, run_settings = _resolve_mlflow_settings(
+        job_context, job_spec
+    )
     if mlflow is None:
         return None
 
@@ -245,13 +274,17 @@ def start_parent_mlflow_run(
         )
         tags: Dict[str, str] = {"mlflow.runName": run_name}
         if isinstance(run_settings.get("mlflow_tags"), dict):
-            tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
+            tags.update(
+                {str(k): str(v) for k, v in run_settings["mlflow_tags"].items()}
+            )
         if "optuna_trial_id" in run_settings:
             tags["optuna_trial_id"] = str(run_settings["optuna_trial_id"])
 
         run = client.create_run(str(experiment_id), tags=tags)
         run_id = run.info.run_id
-        for key, value in _to_flat_str_params(job_spec.get("hyperparameters", {})).items():
+        for key, value in _to_flat_str_params(
+            job_spec.get("hyperparameters", {})
+        ).items():
             client.log_param(run_id, key, value)
         _log_system_metrics_snapshot_client(client, run_id, step=0)
         return run_id
@@ -296,7 +329,11 @@ def finalize_parent_mlflow_run(
             _log_final_scalars_client(client, run_id, scalars, histories)
         except Exception as exc:
             logger.warning("MLflow final scalar logging failed: %s", exc)
-        _log_system_metrics_snapshot_client(client, run_id, step=max((len(series) for series in histories.values()), default=1))
+        _log_system_metrics_snapshot_client(
+            client,
+            run_id,
+            step=max((len(series) for series in histories.values()), default=1),
+        )
         _log_artifacts_filtered_client(client, run_id, artifacts_dir)
     except Exception as exc:
         logger.warning("MLflow finalize body raised: %s", exc)
@@ -326,9 +363,7 @@ def log_successful_run_to_mlflow(
     params = _to_flat_str_params(job_spec.get("hyperparameters", {}))
     scalars, histories = split_metrics_payload(metrics)
     dataset_name = (
-        job_context.get("dataset_name")
-        or job_context.get("dataset_slug")
-        or "dataset"
+        job_context.get("dataset_name") or job_context.get("dataset_slug") or "dataset"
     )
     run_name = (
         f"{dataset_name}"
@@ -339,6 +374,7 @@ def log_successful_run_to_mlflow(
     start_kwargs: Dict[str, Any] = {"run_name": run_name}
     try:
         import inspect
+
         if "log_system_metrics" in inspect.signature(mlflow.start_run).parameters:
             start_kwargs["log_system_metrics"] = True
     except Exception:
@@ -348,7 +384,9 @@ def log_successful_run_to_mlflow(
         try:
             mlflow_tags: Dict[str, str] = {}
             if isinstance(run_settings.get("mlflow_tags"), dict):
-                mlflow_tags.update({str(k): str(v) for k, v in run_settings["mlflow_tags"].items()})
+                mlflow_tags.update(
+                    {str(k): str(v) for k, v in run_settings["mlflow_tags"].items()}
+                )
             if "optuna_trial_id" in run_settings:
                 mlflow_tags["optuna_trial_id"] = str(run_settings["optuna_trial_id"])
             if mlflow_tags:
@@ -372,7 +410,9 @@ def log_successful_run_to_mlflow(
                 logger.warning("MLflow final scalar logging failed: %s", exc)
             _log_artifacts_filtered(mlflow, artifacts_dir)
         except Exception as exc:
-            logger.warning("MLflow run body raised; marking FINISHED with partial data: %s", exc)
+            logger.warning(
+                "MLflow run body raised; marking FINISHED with partial data: %s", exc
+            )
 
 
 _ARTIFACT_SKIP_NAMES = {".promotion_complete"}
@@ -395,7 +435,9 @@ def _log_artifacts_filtered(mlflow: Any, artifacts_dir: str) -> None:
                 logger.warning("MLflow log_artifact failed for %s: %s", full, exc)
 
 
-def _log_artifacts_filtered_client(client: Any, run_id: str, artifacts_dir: str) -> None:
+def _log_artifacts_filtered_client(
+    client: Any, run_id: str, artifacts_dir: str
+) -> None:
     """Log every run artifact file with explicit run_id, preserving relative paths."""
     if not os.path.isdir(artifacts_dir):
         logger.warning("MLflow artifact directory missing: %s", artifacts_dir)

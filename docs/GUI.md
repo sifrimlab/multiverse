@@ -1,78 +1,56 @@
 # Streamlit GUI
 
-The Streamlit application at `multiverse/gui.py` is the primary entry point for researchers. It exposes the registry, the benchmark planner, the runner, and the results browser as a five-tab layout. Headless execution via `python -m multiverse.runner.cli run --manifest run_manifest.yaml` remains supported for scripted pipelines, but the GUI is the path tested against the day-to-day workflow.
+The Streamlit app at `multiverse/gui.py` is the primary researcher interface. It exposes registration, benchmark planning, execution, results browsing, and analysis dashboards.
 
 ## Layout
-
-The application is a single-page Streamlit app driven by query-parameter routing (`multiverse/gui_navigation.py`). Five canonical tabs are exposed:
 
 | Tab | Query parameter | Purpose |
 |---|---|---|
 | Registry | `?tab=registry` | Inspect, register, and refresh datasets and models. |
-| Configure | `?tab=configure` | Pick dataset × model pairs and set hyperparameters. |
-| Run | `?tab=run` | Launch and supervise a benchmark execution. |
+| Configure | `?tab=configure` | Pick dataset x model pairs and set hyperparameters. |
+| Run | `?tab=run` | Submit and monitor benchmark execution. |
 | Results | `?tab=results` | Browse completed runs, metrics, logs, and artifacts. |
 | Analysis | `?tab=analysis` | Embedded MLflow and Optuna views for cross-run analysis. |
 
-For backward compatibility the navigation layer rewrites the older URLs (`jobs`, `params`, `execute`, `mlflow`, `optuna`, `settings`) to their current counterparts. Bookmarks from earlier releases continue to work.
-
 ## Registry
 
-The Registry tab is the only point where dataset and model rows are created or refreshed against the SQLite database (`mvexp_state.db`).
-
-- **Datasets table** lists every registered dataset with its slug, omics, batch key, cell-type key, and status (`READY` / `STALE`).
-- **Register New Dataset** accepts either an existing `dataset.yaml` path or a "Build manifest from fields" form. Either path writes the manifest to `store/datasets/<slug>/dataset.yaml`, hashes it, and upserts the row.
-- **Models table** lists registered models with their version, contract version, supported omics, and Docker image tag.
-- **Register / Refresh Model** re-reads `store/models/<slug>/model.yaml` and re-validates the hyperparameter schema.
-
-Status `STALE` indicates the manifest on disk differs from the hash stored in the database; clicking refresh re-syncs the row.
+The Registry tab creates and refreshes dataset/model rows in the local SQLite index. Registration paths are hardened: path escapes are rejected, and elevated Docker options in model manifests require explicit opt-in.
 
 ## Configure
 
-Configure is the merger of what older releases called *Job Builder* and *Parameters*. It is organized as a single page so that the dataset-by-model matrix and the parameter forms stay in sync.
-
-- The compatibility matrix is computed by `multiverse.registry.generate_compatibility_matrix`. A cell is `Compatible` when all model-required omics are present; `Partial` when at least one is present; `Incompatible` otherwise. Only `Compatible` pairs are selectable.
-- Selected pairs become rows in the run manifest. For each row a parameter form is rendered from the model's hyperparameter JSON schema (`schemas/models/<slug>.hyperparameters.schema.json`).
-- Sweep controls appear next to each parameter when the schema marks the field as sweepable; toggling them switches the field to an Optuna distribution (`uniform`, `loguniform`, `int`, `categorical`).
-- The page emits a `run_manifest.yaml` preview and persists it to disk on demand.
+Configure builds `run_manifest.yaml` from selected compatible dataset/model pairs. The compatibility matrix is computed from registered dataset omics and model requirements. Hyperparameter forms are rendered from model JSON schemas.
 
 ## Run
 
-The Run tab invokes the same orchestrator that backs the CLI. It streams JSON events from the runner over stderr and renders them as a live status table.
+The Run tab uses the in-process mvd controller. It does not spawn `multiverse.runner.cli` as a subprocess and does not own Docker containers directly.
 
-- **Manifest path** defaults to `run_manifest.yaml` at the repository root.
-- **Output directory** defaults to `store/artifacts/<experiment_name>/`.
-- **Launch Run** triggers `multiverse.runner.cli run`. Jobs are pre-flighted (omics, batch key, cell-type key), then images are pulled or built in parallel, then container jobs run under an asyncio semaphore that respects host RAM and CPU.
-- The status table shows per-job state: `PENDING`, `RUNNING`, `SUCCESS`, `FAILED`, `SKIPPED`. A skipped job is informative, not an error — it usually means a metric requirement was not satisfied.
+- **Launch Run** parses the manifest, submits jobs through the kernel/client boundary, and records mvd attempt IDs.
+- **Cancel Run** calls the kernel cancellation verb; it does not kill a local process handle.
+- The status table renders kernel states such as `RUNNING`, `PROMOTING`, `ARTIFACT_SUCCESS`, `FAILED`, and `CANCELLED`.
+- The event panel shows state transitions observed from kernel queries. Container logs remain artifact files after the run produces or preserves a workspace.
+- **Evaluate Experiment** resolves the latest launch cohort, filters members to readiness `ready`, builds or reuses the `multiverse-evaluate` Docker image, and runs evaluation in that container. The GUI remains a thin host process and does not import muon, scanpy, or scib-metrics.
+
+Evaluation writes launch-scoped artifacts under `<output-dir>/.multiverse/launches/<launch_id>/`: `eval_config.json`, one `evaluations/<member_id>.json` file per evaluated member, `evaluation_report.json`, and scIB plots under `plots/dataset_<dataset_slug>/`. The GUI rebuilds the report from the full cohort plus live readiness so not-ready members appear in the same comparison table as evaluated members.
 
 ## Results
 
-The Results tab reads from the `runs` table and from the artifact tree on disk.
-
-- Filter by experiment, dataset, model, and status.
-- Selecting a run opens the artifact browser (`multiverse/gui_artifacts.py`) which shows `run_manifest.yaml`, `job_spec.json`, `metrics.json`, `embeddings.h5`, `umap.png`, and `container.log`.
-- The metrics table is grouped by metric family (bio-conservation, batch-correction, model history).
-- Artifact paths can be copied directly into a Jupyter session for downstream analysis.
+Results reads from SQLite for fast listing and from artifact directories for durable run evidence. A successful run is trustworthy only when its artifact manifest and checksum sidecar verify.
 
 ## Analysis
 
-The Analysis tab embeds the MLflow and Optuna dashboards that `make services-up` launches in Docker Compose.
-
-- **MLflow** at `http://localhost:5000` is the canonical home for cross-run comparison, parameter logging, and metric histories.
-- **Optuna Dashboard** at `http://localhost:8080` visualizes sweep trials and parameter importance for runs launched with `run_gridsearch: true`.
-
-The Analysis tab is iframe-based and assumes the services are reachable from the browser; if the panels are blank, verify with `docker compose ps` or `make status`.
+MLflow and Optuna are comparison/projection surfaces. They are not the source of scientific truth. If MLflow is offline, a run can still reach `ARTIFACT_SUCCESS`; sync can be retried later with `multiverse mlflow-sync`.
 
 ## Common Issues
 
 | Symptom | Likely cause | What to do |
 |---|---|---|
-| Dataset missing from Configure | Registry cache stale. | Open Registry → **Refresh Registry**. |
-| Model row is `Incompatible` | Dataset omics do not match model requirements. | Choose another model or re-register the dataset with the correct modality. |
-| Parameter controls missing | Model schema not registered or invalid. | Re-run `make register-model slug=<slug>`. |
-| Launch fails before container start | Manifest references stale dataset/model rows. | Regenerate the manifest from Configure. |
-| Analysis tab empty | MLflow or Optuna container not running. | `make services-up` and check `docker compose ps`. |
-| `database is locked` | Concurrent writes contending on SQLite. | The registry uses WAL mode; transient errors should self-recover. Persistent errors indicate stale shared-memory files (`.db-shm`, `.db-wal`); restart the GUI process. |
+| Dataset missing from Configure | Registry cache stale. | Open Registry and refresh. |
+| Launch fails before container start | Manifest references stale rows or Docker is unavailable. | Regenerate the manifest or run `multiverse doctor`. |
+| Run is `FAILED` | Container exit, validation refusal, or Docker error. | Inspect the event panel, `failure_reason`, and preserved logs. |
+| Evaluation button is disabled | No cohort member has readiness `ready`. | Wait for `ARTIFACT_SUCCESS`, inspect readiness reasons, or fix missing artifacts/datasets. |
+| Evaluation row is `evaluation_failed` | Dataset preprocessing or scIB failed for that member. | Open `.multiverse/launches/<launch_id>/evaluations/<member_id>.json` for the structured reason. |
+| MLflow panel is empty | Projection service is offline. | Start services or sync later; artifact bundles remain authoritative. |
+| SQLite listing looks stale | Index drift. | Run `multiverse rebuild-index`. |
 
 ## Telemetry
 

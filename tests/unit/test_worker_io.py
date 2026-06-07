@@ -8,10 +8,6 @@ import numpy as np
 import pandas as pd
 
 
-SDK_PATH = Path(__file__).resolve().parents[2] / "sdk" / "mvr-worker"
-if str(SDK_PATH) not in sys.path:
-    sys.path.insert(0, str(SDK_PATH))
-
 
 def test_save_umap_uses_png_temp_file_and_explicit_format(tmp_path, monkeypatch):
     class FakeAnnData:
@@ -60,7 +56,7 @@ def test_save_umap_uses_png_temp_file_and_explicit_format(tmp_path, monkeypatch)
     monkeypatch.setitem(sys.modules, "matplotlib.pyplot", pyplot)
     monkeypatch.setitem(sys.modules, "scanpy", scanpy)
 
-    from mvr_worker.io import save_umap
+    from multiverse.worker.io import save_umap
 
     obs = pd.DataFrame({"cell_type": ["a", "b", "a"]}, index=["c1", "c2", "c3"])
     latent = np.array([[0.0, 1.0], [1.0, 0.0], [0.5, 0.5]])

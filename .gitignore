@@ -34,8 +34,9 @@ outputs/
 results/
 data/input/
 sample_data/input/
-store/
-mvexp_state.db
+store/artifacts/**
+store/datasets/**
+store/workspaces/**
 optuna_demo.db
 run_manifests.yaml
 run_manifest.yaml
@@ -55,3 +56,7 @@ site/
 *.dvc
 .dvc/
 .pytest_cache/
+
+!store/models/**/Singularity.def
+*.pyc
+.claude

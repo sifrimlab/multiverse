@@ -8,6 +8,7 @@ import streamlit as st
 
 
 def _safe_float(v, fallback: float = 0.0) -> float:
+    """Coerce a value to float, returning ``fallback`` on failure."""
     try:
         return float(v)
     except (TypeError, ValueError):
@@ -15,6 +16,7 @@ def _safe_float(v, fallback: float = 0.0) -> float:
 
 
 def _safe_int(v, fallback: int = 0) -> int:
+    """Coerce a value to int, returning ``fallback`` on failure."""
     try:
         return int(v)
     except (TypeError, ValueError):
@@ -32,7 +34,9 @@ def _render_fixed_widget(key_prefix: str, param_name: str, spec: dict):
 
     if isinstance(enum_values, list) and enum_values:
         idx = enum_values.index(default) if default in enum_values else 0
-        return st.selectbox(label, options=enum_values, index=idx, key=widget_key, help=description)
+        return st.selectbox(
+            label, options=enum_values, index=idx, key=widget_key, help=description
+        )
 
     if param_type == "integer":
         schema_min = spec.get("minimum")
@@ -49,8 +53,16 @@ def _render_fixed_widget(key_prefix: str, param_name: str, spec: dict):
         )
 
     if param_type == "number":
-        schema_min = spec.get("minimum") if spec.get("minimum") is not None else spec.get("exclusiveMinimum")
-        schema_max = spec.get("maximum") if spec.get("maximum") is not None else spec.get("exclusiveMaximum")
+        schema_min = (
+            spec.get("minimum")
+            if spec.get("minimum") is not None
+            else spec.get("exclusiveMinimum")
+        )
+        schema_max = (
+            spec.get("maximum")
+            if spec.get("maximum") is not None
+            else spec.get("exclusiveMaximum")
+        )
         step = _safe_float(spec.get("multipleOf", 0.001), 0.001)
         if step <= 0:
             step = 0.001
@@ -141,10 +153,14 @@ def _render_sweep_widget(key_prefix: str, param_name: str, spec: dict):
     # Number → two number_inputs for low/high + distribution selector
     if param_type == "number":
         schema_min = (
-            spec.get("minimum") if spec.get("minimum") is not None else spec.get("exclusiveMinimum")
+            spec.get("minimum")
+            if spec.get("minimum") is not None
+            else spec.get("exclusiveMinimum")
         )
         schema_max = (
-            spec.get("maximum") if spec.get("maximum") is not None else spec.get("exclusiveMaximum")
+            spec.get("maximum")
+            if spec.get("maximum") is not None
+            else spec.get("exclusiveMaximum")
         )
         default_v = _safe_float(default, 0.001)
         min_v = _safe_float(schema_min, 1e-6) if schema_min is not None else 1e-6
@@ -170,7 +186,12 @@ def _render_sweep_widget(key_prefix: str, param_name: str, spec: dict):
             options=["float_uniform", "float_log_uniform"],
             key=f"{base_key}::dist",
         )
-        return {"type": "float", "low": lo, "high": hi, "log": dist == "float_log_uniform"}
+        return {
+            "type": "float",
+            "low": lo,
+            "high": hi,
+            "log": dist == "float_log_uniform",
+        }
 
     # Boolean → categorical sweep over both values
     if param_type == "boolean":
@@ -216,20 +237,17 @@ def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
     The @st.cache_data(ttl=5) ensures at most one real API round-trip per
     5-second window, shared across Streamlit sessions.
     """
-    try:
-        from mlflow.tracking import MlflowClient  # type: ignore[import-untyped]  # lazy
-    except ImportError:
-        return []
-
-    _STATUS_ICONS = {
-        "RUNNING": "🔵 Running",
-        "FINISHED": "🟢 Finished",
-        "FAILED": "🔴 Failed",
-        "KILLED": "⚫ Killed",
+    _STATUS_LABELS = {
+        "RUNNING": "Running",
+        "FINISHED": "Finished",
+        "FAILED": "Failed",
+        "KILLED": "Killed",
     }
 
     try:
-        client = MlflowClient(tracking_uri=tracking_uri)
+        from multiverse.mlflow_sdk import get_mlflow_client
+
+        client = get_mlflow_client(tracking_uri=tracking_uri)
         exp = client.get_experiment_by_name(experiment_name)
         if exp is None:
             return []
@@ -245,7 +263,7 @@ def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
             run_name = run.data.tags.get("mlflow.runName") or run.info.run_id[:8]
             row: dict = {
                 "Run": run_name,
-                "Status": _STATUS_ICONS.get(run.info.status, run.info.status),
+                "Status": _STATUS_LABELS.get(run.info.status, run.info.status),
             }
 
             available = set(run.data.metrics.keys())
@@ -292,7 +310,11 @@ def render_hyperparameters_form(schema: dict, key_prefix: str) -> dict:
 
         enum_values = param_spec.get("enum")
         param_type = param_spec.get("type")
-        is_sweepable = isinstance(enum_values, list) or param_type in ("integer", "number", "boolean")
+        is_sweepable = isinstance(enum_values, list) or param_type in (
+            "integer",
+            "number",
+            "boolean",
+        )
 
         if is_sweepable:
             c_label, c_toggle = st.columns([8, 2])
@@ -306,10 +328,16 @@ def render_hyperparameters_form(schema: dict, key_prefix: str) -> dict:
                     help=f"Enable Optuna sweep for {param_name}",
                 )
             if sweep_on:
-                result[param_name] = _render_sweep_widget(key_prefix, param_name, param_spec)
+                result[param_name] = _render_sweep_widget(
+                    key_prefix, param_name, param_spec
+                )
             else:
-                result[param_name] = _render_fixed_widget(key_prefix, param_name, param_spec)
+                result[param_name] = _render_fixed_widget(
+                    key_prefix, param_name, param_spec
+                )
         else:
-            result[param_name] = _render_fixed_widget(key_prefix, param_name, param_spec)
+            result[param_name] = _render_fixed_widget(
+                key_prefix, param_name, param_spec
+            )
 
     return result

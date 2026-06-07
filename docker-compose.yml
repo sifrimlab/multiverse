@@ -4,6 +4,10 @@ name: mvr-observability
 # All services share ./store as their data root so they see the same
 # SQLite databases and run artifacts as the host orchestrator.
 #
+# Host ports default to the high range in .env (25000 / 28080 / 28501) so
+# shared servers are less likely to collide with other users' services.
+# Override MLFLOW_PORT, OPTUNA_PORT, or STREAMLIT_PORT in .env or the shell.
+#
 # Usage:
 #   make services-up     — start mlflow + optuna-ui (background)
 #   make services-down   — stop and remove containers
@@ -20,7 +24,7 @@ services:
     container_name: mvr-mlflow
     restart: unless-stopped
     ports:
-      - "${MLFLOW_PORT:-5000}:5000"
+      - "${MLFLOW_PORT:-25000}:5000"
     volumes:
       - ./store:/data
     healthcheck:
@@ -37,7 +41,7 @@ services:
     container_name: mvr-optuna
     restart: unless-stopped
     ports:
-      - "${OPTUNA_PORT:-8080}:8080"
+      - "${OPTUNA_PORT:-28080}:8080"
     volumes:
       - ./store:/data
     healthcheck:
@@ -57,7 +61,7 @@ services:
     container_name: mvr-streamlit
     restart: unless-stopped
     ports:
-      - "${STREAMLIT_PORT:-8501}:8501"
+      - "${STREAMLIT_PORT:-28501}:8501"
     volumes:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock

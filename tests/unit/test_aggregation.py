@@ -8,7 +8,8 @@ def test_malformed_metrics_isolates_failure(tmp_path):
     output = tmp_path / "out"
     good = output / "good"
     bad = output / "bad"
-    good.mkdir(parents=True); bad.mkdir()
+    good.mkdir(parents=True)
+    bad.mkdir()
     (good / "metrics.json").write_text(json.dumps({"score": 0.7}), encoding="utf-8")
     (bad / "metrics.json").write_text("{bad", encoding="utf-8")
 
@@ -17,7 +18,10 @@ def test_malformed_metrics_isolates_failure(tmp_path):
 
 
 def test_nan_sanitizer_replaces_with_none():
-    assert sanitize_nan_inf({"x": float("nan"), "y": [float("inf")]}) == {"x": None, "y": [None]}
+    assert sanitize_nan_inf({"x": float("nan"), "y": [float("inf")]}) == {
+        "x": None,
+        "y": [None],
+    }
 
 
 def test_write_then_load_round_trip_nan(tmp_path):

@@ -1,27 +1,95 @@
-"""multiverse_config.py — read/write multiverse.config.yaml at project root."""
+"""multiverse_config.py — read/write the per-user multiverse config file.
+
+Before M1 this lived at ``<package install dir>/multiverse.config.yaml``,
+which collides on shared installs. The file now lives under the per-user
+config directory (XDG-aware), and ``docker_data_root`` defaults to a
+subdirectory of the resolved state root rather than the package dir.
+
+Legacy installs are honored read-only: if a config file exists at the
+old location and no per-user one does yet, we read it but never write
+back there. ``multiverse migrate-state-dir`` is the one-shot relocation.
+"""
 
 import os
+from pathlib import Path
+from typing import Optional
+
 import yaml
 
-from .registry_db import BASE_DIR
+from .state_paths import CONFIG_FILENAME
+from .state_paths import REPO_ROOT_GUESS as _REPO_ROOT_GUESS
+from .state_paths import find_config_file, resolve_state_root
 
-CONFIG_PATH = os.path.join(BASE_DIR, "multiverse.config.yaml")
-DEFAULT_DOCKER_DATA_ROOT = os.path.join(BASE_DIR, ".docker-data")
+
+def _default_user_config_path() -> Path:
+    """Where ``save_config`` writes when no file exists yet."""
+    env = os.environ
+    xdg = env.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "multiverse" / CONFIG_FILENAME
+    home = env.get("HOME")
+    if home:
+        return Path(home) / ".config" / "multiverse" / CONFIG_FILENAME
+    return Path.cwd() / CONFIG_FILENAME
+
+
+def _legacy_config_path() -> Path:
+    """Pre-M1 config location next to the package directory (read-only)."""
+    return _REPO_ROOT_GUESS / CONFIG_FILENAME
+
+
+def _resolve_config_path_for_read() -> Optional[Path]:
+    """First per-user location with a file; fall back to legacy if any."""
+    found = find_config_file()
+    if found is not None:
+        return found
+    legacy = _legacy_config_path()
+    return legacy if legacy.is_file() else None
+
+
+def _default_docker_data_root() -> str:
+    """Default Docker data root: a ``.docker-data`` dir under the state root."""
+    return str(resolve_state_root() / ".docker-data")
+
+
+# Kept as a module-level path for callers that import it directly. It now
+# points at the user-writable location chosen by the resolver.
+CONFIG_PATH = str(_default_user_config_path())
+DEFAULT_DOCKER_DATA_ROOT = _default_docker_data_root()
 
 
 def get_config() -> dict:
-    """Return the current config, falling back to defaults if the file is absent."""
-    if not os.path.exists(CONFIG_PATH):
-        return {"docker_data_root": DEFAULT_DOCKER_DATA_ROOT}
-    with open(CONFIG_PATH, "r") as f:
-        data = yaml.safe_load(f) or {}
-    data.setdefault("docker_data_root", DEFAULT_DOCKER_DATA_ROOT)
+    """Return the current config, falling back to defaults if absent.
+
+    Reads the first config file found by the resolver (per-user locations,
+    then the legacy package-dir file read-only). A missing file or read
+    error yields a minimal config carrying only ``docker_data_root``, which
+    is also always backfilled when absent from an existing file.
+
+    Returns:
+        Parsed config mapping with ``docker_data_root`` guaranteed present.
+    """
+    path = _resolve_config_path_for_read()
+    if path is None:
+        return {"docker_data_root": _default_docker_data_root()}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except OSError:
+        return {"docker_data_root": _default_docker_data_root()}
+    data.setdefault("docker_data_root", _default_docker_data_root())
     return data
 
 
 def save_config(config: dict) -> None:
-    """Persist *config* to multiverse.config.yaml."""
-    with open(CONFIG_PATH, "w") as f:
+    """Persist *config* to the per-user config file.
+
+    Writes never target the legacy package-directory location even if a
+    legacy file exists; reads honor it but writes migrate to user space.
+    """
+    target = _default_user_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as f:
         yaml.safe_dump(config, f)
 
 

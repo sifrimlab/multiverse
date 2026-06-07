@@ -1,177 +1,126 @@
 # Architecture
 
-This page is the system map for mvexp. It is intended for platform engineers, MLOps practitioners, and contributors. The biology vocabulary is kept light here — when a domain term is unavoidable it is glossed inline. Researchers should start at [Getting Started](GETTING_STARTED.md) instead.
+This page is the current system map for Multiverse.
 
 ## What the System Is
 
-mvexp is a Python 3.12 application built around four moving parts:
+Multiverse is built around these pieces:
 
-1. A **SQLite registry** (`mvexp_state.db`) that holds the canonical list of registered datasets, models, and runs.
-2. A **Streamlit GUI** (`multiverse/gui.py`) that operates the registry, plans benchmarks, and supervises execution.
-3. An **async orchestrator** (`multiverse/runner/`) that launches model containers in parallel against a manifest.
-4. A pair of **observability services** (MLflow + Optuna Dashboard) shipped as Docker Compose containers in `docker-compose.yml`.
-
-Models themselves run in per-method containers built from recipes under `store/models/<slug>/container/`. They depend only on a minimal SDK, `mvr-worker`, installed into each image at build time.
+1. **Artifact store** under `store/`, which is the durable scientific record.
+2. **mvd kernel**, which owns run state transitions, execution supervision (Docker or Slurm), cancellation, validation, and promotion.
+3. **SQLite index** (`multiverse_state.db`), which gives the GUI fast registry/run listings and is rebuildable from the journal and artifact store.
+4. **Asset registry** (`asset_registry.db`), which holds dataset and model catalog rows and is separate from the run index.
+5. **Streamlit GUI**, which plans benchmarks and talks to the in-process mvd controller for execution.
+6. **Projection services** such as MLflow and Optuna, which are useful comparison surfaces but not the source of run truth.
 
 ## System Diagram
 
 ```mermaid
 flowchart TD
-    A[Researcher's notebook<br/>AnnData / MuData] --> B[store/datasets/&lt;slug&gt;/]
-    B --> C[SQLite registry<br/>mvexp_state.db]
-    C --> D[Streamlit GUI<br/>multiverse/gui.py]
+    A[Notebook prepared AnnData/MuData] --> B[Dataset registration]
+    B --> C[Asset registry DB]
+    C --> D[Streamlit GUI]
     D --> E[run_manifest.yaml]
-    E --> F[Runner CLI<br/>multiverse.runner.cli]
-    F --> G[Docker orchestrator<br/>docker_runner.py]
-    G --> H[Model containers<br/>store/models/&lt;slug&gt;/]
-    G --> I[Evaluation container<br/>docker-env/evaluation.Dockerfile]
-    H --> J[Ephemeral workspace]
-    I --> J
-    J --> K[store/artifacts/]
-    G --> L[MLflow tracking server]
-    F --> M[Optuna study DB]
+    E --> F[mvd kernel]
+    F --> G[Resource broker]
+    F --> H1[Docker supervisor]
+    F --> H2[Slurm + Apptainer executor]
+    H1 --> I[Model container]
+    H2 --> I
+    I --> J[Workspace]
+    J --> K[Promotion saga]
+    K --> L[Verified artifact bundle]
+    L --> M[rebuild-index → multiverse_state.db]
+    L --> N[MLflow projection]
+    L --> O[Evaluation cohort/report]
 ```
 
 ## Repository Layout
 
 ```text
-multiverse/                Python application package
+multiverse/
   gui.py                   Streamlit entry point
-  gui_navigation.py        Query-param routing across the 5 tabs
-  gui_state.py             Session-state helpers
-  gui_artifacts.py         Artifact tree browser
-  gui_telemetry.py         Opt-in anonymous counters
-  registry.py              Compatibility matrix logic
-  registry_db.py           SQLite schema and connection (WAL mode)
-  ingestion.py             Dataset manifest parsing and registration
-  models_ingest.py         Model manifest parsing and registration
-  multiverse_config.py     Top-level platform config
-  config.py                Legacy config loader (pre-container era)
-  dataloader.py            AnnData / MuData I/O with lazy ML imports
-  data_utils.py            Concatenation, modality fusion, metadata gating
-  evaluate.py              scib-metrics wrapper with metric gating
-  tracking.py              MLflow integration
-  builder.py               Local Docker image build helper
-  migrate_data.py          Legacy-data migration utilities
-  models/                  Model-class wrappers used by the local runner
+  cli_entrypoints.py       First-class maintenance CLI commands (doctor, rebuild-index, gc, slurm-submit, …)
+  state_paths.py           M1 state-root resolver (MULTIVERSE_STATE_DIR > config > XDG > $HOME/.multiverse)
   runner/
-    cli.py                 init-db, register-*, run subcommands
-    docker_runner.py       Async container supervision and promotion
-    local_runner.py        Non-Docker Python execution path
-    tuner.py               Optuna sweep driver
+    cli.py                 CLI parser: run, register-dataset, init-db, migrate-asset-registry, …
+    mvd_entrypoint.py      Headless mvd-backed run bridge
+    mvd_inprocess.py       GUI in-process mvd controller
+  mvd/                     Kernel, state machine, executor interface
+    docker_executor.py     MvdDockerExecutor (Docker path)
+    slurm_executor.py      MvdSlurmExecutor (Slurm + Apptainer path)
+    kernel.py              KernelConfig, run-state machine
+  docker_supervisor/       Container engine protocol, RealDockerEngine, labels, leases, cancel saga
+  slurm/                   SlurmEngine Protocol, RealSlurmEngine, InMemorySlurmEngine (fake)
+  apptainer/               ApptainerEngine Protocol, RealApptainerEngine (with OOM detection)
+  simple/                  Simple-mode runner: contract-only execution without mvd/SQLite/MLflow
+  client/                  Line-delimited JSON protocol for kernel ↔ client RPC
+  builder.py               Docker image build helper (NFS-safe tar, used by register-model --build)
+  promotion/               Validation/promotion saga and quarantine helpers
+  artifact/                Artifact manifest, checksums, validators, bundle writer
+  evaluation/              Launch cohorts, readiness, Docker evaluation runner, reports
+  journal/                 Append-only journal writer/reader
+  index/                   SQLite rebuild support (multiverse_state.db — run index)
+  index_projection.py      Read-only facade over the SQLite run index
+  asset_registry.py        Canonical dataset/model catalog (asset_registry.db)
+  registry_db.py           Legacy shim: kept for backward-compat monkey-patching in tests
+  gc/ doctor/ projection/  Maintenance and projection commands
+  registration/            Defensive registration checks
 
-sdk/mvr-worker/            Container-side SDK (installed into every model image)
-  mvr_worker/
-    __init__.py            Public exports
-    io.py                  HDF5 + job_spec I/O
-    epoch_logger.py        Streaming metric logger
-    device.py              CUDA detection
-    logging.py             Structured container logging
-
-schemas/                   JSON schemas for hyperparameters
-store/                     Persistent state (gitignored except .dvc pointers)
+store/
   datasets/<slug>/         Dataset manifests and data files
-  models/<slug>/           Model manifests and container build context
-  workspaces/              Ephemeral per-job working directories
-  artifacts/               Promoted, immutable run outputs
-  mlflow.db, optuna.db     Observability databases
-
-docker-env/                Dockerfiles for observability + evaluation
-docker-compose.yml         MLflow + Optuna + (optional) Streamlit profile
-Makefile                   Bootstrap, registration, build, and run targets
-tests/                     Unit + integration + Playwright GUI tests
+  models/<slug>/           Model manifests and build contexts
+  workspaces/              In-flight workspaces
+  artifacts/               Promoted immutable run bundles
+  quarantine/              Recovery evidence requiring user decision
 ```
 
-## Filesystem Conventions
+## Artifact Store and SQLite
 
-A registered dataset lives at:
+The artifact bundle is the scientific contract. A successful bundle includes `artifact_manifest.json` and `artifact_manifest.sha256`, plus validated artifact entries with checksums.
 
-```text
-store/datasets/<slug>/
-  dataset.yaml             Manifest (name, omics, raw_files, metadata_keys)
-  data/                    *.h5ad or *.h5mu files referenced by the manifest
-```
+For Slurm runs, the manifest carries a **dual-digest pair**: the OCI registry digest of the source image and the sha256 of the SIF file that was physically executed. This ties the scientific result to both the registry provenance and the exact binary used on the cluster.
 
-A registered model lives at:
+SQLite is split into two databases:
 
-```text
-store/models/<slug>/
-  model.yaml               Manifest (version, supported_omics, runtime image, schema)
-  container/
-    Dockerfile             Micromamba-based recipe
-    environment.yml        Conda environment spec
-    run.py                 Container entrypoint
-```
+- **`multiverse_state.db`** — the rebuildable run index. It is allowed to be stale or lost; `multiverse rebuild-index` reconstructs run visibility from journals and artifact manifests without deleting result-like data. As of schema v4 it also holds a `reservation_events` table rebuilt from journal `RESERVATION_GRANTED` / `RESERVATION_RELEASED` records.
+- **`asset_registry.db`** — the dataset and model catalog. Written only by `asset_registry.py`; never rebuilt from scratch (it is authoritative, not derived). Migrate from a pre-split install with `multiverse migrate-asset-registry`.
 
-A successful run is promoted to:
+The sole-writer invariant (`test_sqlite_writer_isolation.py`) enforces that raw SQL mutations appear only in the designated writer modules (`index/`, `index_projection`, `asset_registry`, `registry_db`, `models_ingest`). This is a CI gate.
 
-```text
-store/artifacts/<experiment>/<dataset>/<model>/<run_id>/
-  run_manifest.yaml job_spec.json metrics.json
-  embeddings.h5 umap.png container.log
-```
+## Launch Evaluation
 
-## Registry Schema
+Each mvd-backed launch writes a cohort under `<output-dir>/.multiverse/launches/<launch_id>/`. The cohort records every planned member, including skipped/resumed members, submitted attempt IDs, artifact directories, dataset paths, `batch_key`, `label_key`, and requested metrics.
 
-The SQLite database, opened in WAL mode with `PRAGMA synchronous = NORMAL` and a 30-second busy timeout, exposes three tables:
+Evaluation is a separate containerized workflow. The host resolves readiness, writes a trimmed `eval_config.json` for ready members, mounts datasets/artifacts read-only and the output tree read-write, then runs `multiverse-evaluate`. The container writes `evaluations/<member_id>.json` files and a derived `evaluation_report.json` under the launch directory. scIB plots are stored under `plots/dataset_<dataset_slug>/`. Promoted artifact directories are not mutated by evaluation.
 
-| Table | Key columns | Purpose |
-|---|---|---|
-| `datasets` | `slug`, `name`, `omics_available`, `batch_key`, `cell_type_key`, `manifest_path`, `manifest_hash`, `status` | One row per registered dataset. `status=STALE` when the on-disk manifest hash diverges from the row. |
-| `models` | `slug`, `version`, `docker_image`, `supported_omics`, `hyperparameters_schema`, `status` | One row per registered model. |
-| `runs` | `run_id`, `model_slug`, `model_version`, `dataset_slug`, `experiment_name`, `status`, `started_at`, `finished_at`, `artifact_dir` | One row per launched job. |
+Readiness statuses (`ready`, `running`, `training_failed`, `cancelled`, `not_submitted`, `missing_artifact_dir`, `bad_artifact_manifest`, `no_embeddings`, `missing_dataset`, `unsupported_dataset`) are pre-evaluation. Evaluation statuses (`pending`, `running`, `done`, `training_failed`, `not_ready`, `no_embeddings`, `missing_dataset`, `bad_manifest`, `obs_mismatch`, `unsupported_dataset`, `evaluation_failed`) are per-member outcomes in the report.
 
-WAL mode is what lets the Streamlit process, the runner, and ad-hoc CLI commands write concurrently without thrashing on lock errors. Transient `database is locked` exceptions self-recover; persistent ones indicate stale `*.db-shm` / `*.db-wal` companion files and resolve by restarting every process touching the database.
+## Container Boundary
 
-## The Container Boundary
-
-Every model container reads and writes through a fixed, host-agnostic path layout:
+Every model container uses the same contract:
 
 | Path | Contents |
 |---|---|
-| `/input/data.h5mu` | Dataset, materialized from `store/datasets/<slug>/data/`. |
-| `/output/job_spec.json` | Per-job runtime instruction including hyperparameters and seed. |
-| `/output/embeddings.h5` | Required output: HDF5 dataset `latent` of shape `(n_cells, n_dim)`. |
-| `/output/metrics.json` | Required output: model-level metrics and optional training history. |
-| `/output/umap.png` | Required output: UMAP plot of the latent space. |
-| `/output/model.log` | Required output: structured log from the container. |
+| `/input/data.h5mu` | Read-only dataset mount. |
+| `/output/job_spec.json` | Runtime instruction: dataset slug, model version, hyperparameters, seed. |
+| `/output/` | Writable model outputs. |
 
-No host path appears in container code. This is what makes the same image runnable on a laptop, an HPC node, and a CI runner with no edits. The full contract is documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
+Host paths do not appear inside model code.
 
-## Observability
+## Execution Ownership
 
-`docker-compose.yml` ships two long-running services:
+The GUI and CLI do not directly supervise containers. They submit work through the mvd kernel path. The kernel composes:
 
-| Service | Image | Port | Backing store |
-|---|---|---|---|
-| `mlflow` | `docker-env/mlflow.Dockerfile` | `MLFLOW_PORT` (default 5000) | `store/mlflow.db` |
-| `optuna-ui` | `docker-env/optuna.Dockerfile` | `OPTUNA_PORT` (default 8080) | `store/optuna.db` |
+- resource admission (broker);
+- container launch/reconcile — via `RealDockerEngine` on workstations, or via `RealSlurmEngine` + `RealApptainerEngine` on HPC clusters;
+- explicit state transitions with an append-only journal;
+- cancellation saga;
+- output validation;
+- atomic promotion saga;
+- projection status reporting.
 
-Both mount `./store` at `/data` so they share the same SQLite databases as the orchestrator. The optional `streamlit` service (profile `gui`) runs the GUI inside Docker as well; it mounts `/var/run/docker.sock` so it can launch model containers from inside the container. Most users prefer `make setup` on the host instead.
+The two executors have different defaults for image identity:
 
-See [Observability](OBSERVABILITY.md) for the data model of MLflow runs and the Optuna study layout.
-
-## Concurrency and Atomicity
-
-Two invariants keep the system safe under parallel execution:
-
-1. **Workspaces are ephemeral; artifacts are immutable.** Each job writes to a fresh workspace under `store/workspaces/`. On success, the workspace directory is moved (single `rename(2)`) under `store/artifacts/` and the `runs` row transitions to `SUCCESS`. The DB write happens after the move; a crash in between is recoverable because no successful row points at a missing directory.
-2. **The registry is the source of truth, not the filesystem.** Dataset and model rows carry a hash of their on-disk manifest. A divergence flips `status` to `STALE` and the GUI prompts a refresh. The GUI never relies on filesystem state to decide what is registered.
-
-## Why This Design
-
-| Question | Answer |
-|---|---|
-| Why a SQLite registry rather than YAML files? | Atomic, transactional updates and concurrent reads from GUI + runner + CLI without a separate service. |
-| Why per-model containers? | ML dependency stacks (scvi-tools, MOFA, Mowgli, Cobolt) conflict heavily; isolation is the only sustainable answer. |
-| Why a fixed `/input` and `/output` boundary? | Model code becomes portable across hosts and remains a usable reference implementation for new methods. |
-| Why MLflow alongside the artifact tree? | The artifact tree is the durable Methods record; MLflow is the cross-run comparison surface. They serve different audiences. |
-| Why Optuna, separate from MLflow? | Optuna's sampler and pruner state is a study, not a metric history. Keeping them separate keeps each tool's UI useful. |
-
-## Where to Read Next
-
-- [Runner & Orchestration](RUNNER.md) — the execution pipeline in detail.
-- [Model Container Contract](MODEL_CONTAINER_CONTRACT.md) — the I/O boundary.
-- [Adding a Model](ADDING_A_MODEL.md) — extension procedure for a new method.
-- [Observability](OBSERVABILITY.md) — MLflow + Optuna integration.
-- [Developer Guide](DEVELOPER_GUIDE.md) — test layout and contribution workflow.
+- **Docker executor** — `accept_degraded=True` by default. Locally-built images (`make build-pca`) are the normal development workflow; no OCI digest is expected. Pass `--strict` to opt into publication mode, which requires a registry digest.
+- **Slurm executor** — `accept_degraded=False` by default. HPC runs should have a verified OCI source digest; a SIF of unknown provenance is genuinely degraded. Pass `--accept-degraded` if you need to run an unverified SIF.

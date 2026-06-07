@@ -1,15 +1,18 @@
+"""Dataset ingestion, manifest hashing, and registry registration."""
+
 from __future__ import annotations
 
-import os
 import hashlib
+import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import re
 import yaml
-from pydantic import BaseModel, Field, field_validator
-from .logging_utils import get_logger
+from pydantic import BaseModel, Field, field_validator, model_validator
+
 from . import registry_db
+from .logging_utils import get_logger
 
 # scanpy / mudata / muon are imported lazily inside functions that load data so that
 # metadata-only paths (e.g. register_from_manifest) do not trigger noisy third-party warnings.
@@ -20,7 +23,15 @@ logger = get_logger(__name__)
 class DatasetManifest(BaseModel):
     name: str
     omics: List[str]
-    raw_files: Dict[str, str]
+    # A dataset can be registered in one of two modes (issue #23):
+    #   * raw ingestion: provide ``raw_files`` and run ``preprocess_dataset``
+    #     to fuse them into ``data/processed.h5mu``.
+    #   * processed registration: provide ``processed_path`` pointing at an
+    #     already-processed ``.h5mu``/``.h5ad`` and skip preprocessing.
+    # Exactly the field the chosen mode needs is required; ``raw_files`` is no
+    # longer mandatory for every manifest.
+    raw_files: Dict[str, str] = Field(default_factory=dict)
+    processed_path: Optional[str] = None
     metadata_keys: Dict[str, str] = Field(default_factory=dict)
 
     @field_validator("name")
@@ -37,12 +48,24 @@ class DatasetManifest(BaseModel):
             raise ValueError("Manifest field 'omics' must not be empty.")
         return value
 
-    @field_validator("raw_files")
-    @classmethod
-    def validate_raw_files(cls, value: Dict[str, str]) -> Dict[str, str]:
-        if not value:
-            raise ValueError("Manifest field 'raw_files' must not be empty.")
-        return value
+    @model_validator(mode="after")
+    def _require_exactly_one_mode(self) -> "DatasetManifest":
+        # A manifest registers in exactly one mode (issue #23): raw ingestion
+        # (raw_files) or processed registration (processed_path). Requiring
+        # exactly one keeps the contract unambiguous — a manifest carrying both
+        # would leave it unclear which artifact is authoritative.
+        if not self.raw_files and not self.processed_path:
+            raise ValueError(
+                "Manifest must provide either 'raw_files' (raw ingestion) or "
+                "'processed_path' (processed dataset registration)."
+            )
+        if self.raw_files and self.processed_path:
+            raise ValueError(
+                "Manifest must provide exactly one of 'raw_files' (raw ingestion) "
+                "or 'processed_path' (processed dataset registration), not both."
+            )
+        return self
+
 
 def load_dataset(file_path: str) -> Any:
     """Loads a single-cell dataset from a file.
@@ -59,8 +82,8 @@ def load_dataset(file_path: str) -> Any:
         FileNotFoundError: If the file does not exist.
         ValueError: If the file format is not supported.
     """
-    import scanpy as sc
     import muon as mu
+    import scanpy as sc
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"Dataset file not found at {file_path}")
@@ -74,10 +97,9 @@ def load_dataset(file_path: str) -> Any:
     else:
         raise ValueError(f"Unsupported file format: {file_path}. Use .h5ad or .h5mu.")
 
+
 def validate_dataset_structure(
-    data: Any,
-    batch_key: str,
-    cell_type_key: Optional[str] = None
+    data: Any, batch_key: str, cell_type_key: Optional[str] = None
 ) -> List[str]:
     """Verifies internal structural requirements of the dataset.
 
@@ -97,15 +119,17 @@ def validate_dataset_structure(
         ValueError: If required keys are missing from the dataset observations.
         TypeError: If the input data is not an AnnData or MuData object.
     """
-    import scanpy as sc
     import mudata as md
+    import scanpy as sc
 
     # Check if keys exist in observations
     if batch_key not in data.obs.columns:
         raise ValueError(f"Batch key '{batch_key}' not found in dataset observations.")
 
     if cell_type_key and cell_type_key not in data.obs.columns:
-        raise ValueError(f"Cell type key '{cell_type_key}' not found in dataset observations.")
+        raise ValueError(
+            f"Cell type key '{cell_type_key}' not found in dataset observations."
+        )
 
     # Extract available omics
     if isinstance(data, md.MuData):
@@ -119,6 +143,7 @@ def validate_dataset_structure(
     logger.info(f"Dataset validated. Available omics: {omics}")
     return omics
 
+
 def sanitize_slug(slug: str) -> str:
     if not slug or "/" in slug or ".." in slug:
         raise ValueError("Invalid slug.")
@@ -128,7 +153,9 @@ def sanitize_slug(slug: str) -> str:
     return safe
 
 
-def resolve_manifest_path(*, manifest_path: Optional[str] = None, slug: Optional[str] = None) -> Path:
+def resolve_manifest_path(
+    *, manifest_path: Optional[str] = None, slug: Optional[str] = None
+) -> Path:
     if manifest_path:
         return Path(manifest_path).resolve()
     if not slug:
@@ -150,8 +177,16 @@ def _processed_placeholder_path(manifest_path: Path) -> str:
     return str((dataset_dir / "data" / "processed.h5mu").resolve())
 
 
-def register_from_manifest(manifest_path: str, update: Optional[bool] = None) -> Dict[str, Any]:
-    """Register a dataset manifest into SQLite, metadata only and idempotent."""
+def register_from_manifest(
+    manifest_path: str, update: Optional[bool] = None
+) -> Dict[str, Any]:
+    """Register a dataset manifest into SQLite, metadata only and idempotent.
+
+    STRATEGY v2 §8: every declared path goes through the registration
+    hardening pipeline before any side-effect. ``raw_files`` entries that
+    escape the dataset directory after symlink canonicalisation are
+    rejected by :class:`multiverse.registration.PathEscapeError`.
+    """
     path = Path(manifest_path).resolve()
     if not path.exists():
         raise FileNotFoundError(f"Manifest not found: {path}")
@@ -161,27 +196,49 @@ def register_from_manifest(manifest_path: str, update: Optional[bool] = None) ->
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("Manifest must parse to a YAML mapping.")
+
+    dataset_dir = path.parent
+
+    # Activate registration hardening (STRATEGY v2 §8). Path escapes are
+    # refused at parse time — before SQLite is even opened.
+    from .registration import validate_paths_in_mapping
+
+    validate_paths_in_mapping(raw, root=dataset_dir)
+
     manifest = DatasetManifest(**raw)
     manifest_hash = _compute_file_sha256(path)
 
-    dataset_dir = path.parent
     slug = sanitize_slug(dataset_dir.name)
 
-    # Validate referenced raw files exist.
-    for _, rel in manifest.raw_files.items():
-        candidate = (dataset_dir / rel).resolve()
-        if not candidate.exists():
-            raise FileNotFoundError(f"raw_files entry does not exist: {rel} -> {candidate}")
+    batch_key = manifest.metadata_keys.get("batch_key")
+    cell_type_key = manifest.metadata_keys.get("cell_type_key")
 
-    batch_key = manifest.metadata_keys.get("batch")
-    cell_type_key = manifest.metadata_keys.get("cell_type")
-    processed_path = _processed_placeholder_path(path)
+    if manifest.processed_path:
+        # Processed registration (issue #23): the manifest points at an
+        # already-processed artifact. Validate it exists and register it
+        # directly — no raw files, no preprocessing step.
+        processed_path = str((dataset_dir / manifest.processed_path).resolve())
+        if not Path(processed_path).exists():
+            raise FileNotFoundError(
+                f"processed_path does not exist: {manifest.processed_path} -> {processed_path}"
+            )
+    else:
+        # Raw ingestion: validate every referenced raw file exists, and point
+        # the dataset row at the placeholder where ``preprocess_dataset`` will
+        # write ``data/processed.h5mu``.
+        for _, rel in manifest.raw_files.items():
+            candidate = (dataset_dir / rel).resolve()
+            if not candidate.exists():
+                raise FileNotFoundError(
+                    f"raw_files entry does not exist: {rel} -> {candidate}"
+                )
+        processed_path = _processed_placeholder_path(path)
 
     registry_db.init_db()
     existing = registry_db.get_dataset_by_slug(slug)
     if existing:
         existing_hash = existing.get("manifest_hash")
-        if existing_hash == manifest_hash:
+        if existing_hash == manifest_hash and not update:
             return {
                 "action": "noop",
                 "dataset_id": existing["id"],
@@ -239,6 +296,13 @@ def preprocess_dataset(manifest_path: str) -> str:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     manifest = DatasetManifest(**raw)
     dataset_dir = path.parent
+
+    if not manifest.raw_files:
+        raise ValueError(
+            "preprocess_dataset requires 'raw_files'; this manifest registers an "
+            "already-processed dataset via 'processed_path' and has nothing to preprocess."
+        )
+
     processed_path = Path(_processed_placeholder_path(path))
 
     # If registration created an empty directory at this path, remove it first.
@@ -255,6 +319,7 @@ def preprocess_dataset(manifest_path: str) -> str:
             modalities[mod_name] = ad.read_h5ad(str(file_path))
         elif suffix == ".h5":
             import scanpy as sc
+
             modalities[mod_name] = sc.read_10x_h5(str(file_path))
         else:
             raise ValueError(
@@ -276,7 +341,8 @@ def preprocess_dataset(manifest_path: str) -> str:
                     mdata.obs[key] = mod_adata.obs[key].reindex(mdata.obs.index)
                     logger.info(
                         "Promoted metadata key '%s' from modality '%s' to mdata.obs.",
-                        key, mod_name,
+                        key,
+                        mod_name,
                     )
                     break
             else:

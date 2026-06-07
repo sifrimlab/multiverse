@@ -6,7 +6,11 @@ supported_omics:
   - atac
 runtime:
   image: multiverse-cobolt:1.0.0
-hyperparameters_schema: schemas/models/cobolt.hyperparameters.schema.json
+hyperparameters_schema: store/models/cobolt/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/cobolt/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/cobolt/container/Singularity.def
+  gpu_required: true

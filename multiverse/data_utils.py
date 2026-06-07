@@ -1,17 +1,21 @@
+"""MuData fusion and AnnData concatenation (container-only ML runtime)."""
+
 from __future__ import annotations
 
 import importlib
 from typing import Any
+
 ad = Any
 md = Any
 mu = None
-import numpy as np
 import os
 from typing import List, Union
-from .logging_utils import get_logger
-from .dataloader import DataLoader
-from .config import load_config
 
+import numpy as np
+
+from .config import load_config
+from .dataloader import DataLoader
+from .logging_utils import get_logger
 
 logger = get_logger(__name__)
 
@@ -36,7 +40,9 @@ def _ensure_ml_runtime() -> None:
     mu = _mu
 
 
-def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None) -> md.MuData:
+def fuse_mudata(
+    list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None
+) -> md.MuData:
     """Fuses a list of AnnData objects into a single MuData object.
 
     Uses `muon.pp.intersect_obs` to ensure that the observation indices are consistent across
@@ -65,7 +71,9 @@ def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] 
                 pass
 
     data = mu.MuData(data_dict)
-    mu.pp.intersect_obs(data)   # Make sure number of cells are the same for all modalities
+    mu.pp.intersect_obs(
+        data
+    )  # Make sure number of cells are the same for all modalities
 
     # Ensures consistency in cell type annotations by using 'rna' modality's labels
     # if available, otherwise creates a default column.
@@ -79,7 +87,10 @@ def fuse_mudata(list_anndata: List[ad.AnnData] = None, list_modality: List[str] 
 
     return data
 
-def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None) -> ad.AnnData:
+
+def anndata_concatenate(
+    list_anndata: List[ad.AnnData] = None, list_modality: List[str] = None
+) -> ad.AnnData:
     """Concatenates multiple AnnData objects along the variable axis.
 
     First fuses the data into a MuData object to ensure alignment of observations,
@@ -98,7 +109,9 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
     for mod in list_modality:
         list_ann.append(mudata[mod])
 
-    anndata = ad.concat(list_ann, axis="var", label="cell_type", merge="unique", uns_merge="unique")
+    anndata = ad.concat(
+        list_ann, axis="var", label="cell_type", merge="unique", uns_merge="unique"
+    )
 
     # Propagates cell type annotations from the fused MuData to the concatenated object.
     num_obs = anndata.n_obs
@@ -109,7 +122,7 @@ def anndata_concatenate(list_anndata: List[ad.AnnData] = None, list_modality: Li
             "No 'cell_type' annotation found after modality concatenation — supervised metrics will be unavailable."
         )
         anndata.obs["cell_type"] = "unknown"
-    
+
     # Initialize modality mapping for compatibility with models like MultiVI.
     anndata.obs["modality"] = np.zeros(num_obs, dtype=int)
     return anndata

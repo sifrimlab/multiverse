@@ -1,0 +1,15 @@
+name: MOFA-Cpu
+version: 1.0.0
+contract_version: 1.0.0
+supported_omics:
+  - any
+runtime:
+  image: multiverse-mofa-cpu:1.0.0
+hyperparameters_schema: store/models/mofa-cpu/hyperparameters.schema.json
+build:
+  context: ../../..
+  dockerfile: store/models/mofa-cpu/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/mofa-cpu/container/Singularity.def
+  gpu_required: false

@@ -78,7 +78,9 @@ def _default_dataset_name_from_slug(slug: str) -> str:
     tokens = [t for t in re.split(r"[-_]+", slug.strip()) if t]
     if not tokens:
         return slug
-    return " ".join(t.upper() if any(ch.isdigit() for ch in t) else t.capitalize() for t in tokens)
+    return " ".join(
+        t.upper() if any(ch.isdigit() for ch in t) else t.capitalize() for t in tokens
+    )
 
 
 def _should_replace_generic_name(name: str) -> bool:
@@ -124,7 +126,13 @@ def safe_copy_file(src: Path, dst: Path) -> str:
         os.link(src, dst)
         return "hardlink"
     except OSError as exc:
-        if exc.errno in {errno.EXDEV, errno.EPERM, errno.EACCES, errno.ENOTSUP, errno.EMLINK}:
+        if exc.errno in {
+            errno.EXDEV,
+            errno.EPERM,
+            errno.EACCES,
+            errno.ENOTSUP,
+            errno.EMLINK,
+        }:
             shutil.copy2(src, dst)
             return "copy2"
         raise
@@ -158,8 +166,10 @@ def _render_yaml_with_notes(manifest: Dict[str, Any]) -> str:
 
 
 def _validate_manifest(manifest: Dict[str, Any]) -> Optional[str]:
-    if not manifest.get("raw_files"):
-        return "No raw files inferred by DatasetHeuristics."
+    # A manifest is valid in either mode (issue #23): raw ingestion
+    # (raw_files) or processed registration (processed_path).
+    if not manifest.get("raw_files") and not manifest.get("processed_path"):
+        return "No raw files or processed dataset inferred by DatasetHeuristics."
     if not manifest.get("omics"):
         return "No omics inferred by DatasetHeuristics."
     return None
@@ -171,7 +181,9 @@ def _already_exists_guard(dataset_dir: Path) -> Optional[str]:
     return None
 
 
-def _print_dry_run_preview(dest_dataset: Path, yaml_text: str, files: Sequence[Path]) -> None:
+def _print_dry_run_preview(
+    dest_dataset: Path, yaml_text: str, files: Sequence[Path]
+) -> None:
     tree = Tree(f"[bold cyan]{dest_dataset}[/bold cyan]")
     tree.add("[green]data/[/green]")
     for f in files:
@@ -197,10 +209,18 @@ def migrate_one(
     try:
         manifest = guesser.generate_manifest(source_dir)
     except Exception as exc:  # noqa: BLE001
-        return MigrationResult(source_dir, dest_dataset, "failed", f"heuristic failed: {exc}")
+        return MigrationResult(
+            source_dir, dest_dataset, "failed", f"heuristic failed: {exc}"
+        )
 
     if _should_replace_generic_name(str(manifest.get("name", ""))):
         manifest["name"] = _default_dataset_name_from_slug(slug)
+
+    # Migration flattens every source file into ``<dataset>/data/<name>``, so a
+    # processed_path guessed against the source layout must be rewritten to the
+    # post-migration location (issue #23).
+    if manifest.get("processed_path"):
+        manifest["processed_path"] = f"data/{Path(manifest['processed_path']).name}"
 
     validation_error = _validate_manifest(manifest)
     if validation_error:
@@ -213,8 +233,16 @@ def migrate_one(
     yaml_text = _render_yaml_with_notes(manifest)
     files = _list_raw_files_in_dir(source_dir)
     needs_verify = bool(
-        (manifest.get("guesser_notes", {}).get("peek", {}).get("batch_key_alternatives"))
-        or (manifest.get("guesser_notes", {}).get("peek", {}).get("cell_type_key_alternatives"))
+        (
+            manifest.get("guesser_notes", {})
+            .get("peek", {})
+            .get("batch_key_alternatives")
+        )
+        or (
+            manifest.get("guesser_notes", {})
+            .get("peek", {})
+            .get("cell_type_key_alternatives")
+        )
     )
 
     if dry_run:
@@ -232,14 +260,18 @@ def migrate_one(
     for src in files:
         dst = dest_data / src.name
         if dst.exists():
-            return MigrationResult(source_dir, dest_dataset, "failed", f"target exists: {dst}")
+            return MigrationResult(
+                source_dir, dest_dataset, "failed", f"target exists: {dst}"
+            )
         method = safe_copy_file(src, dst)
         link_stats[method] = link_stats.get(method, 0) + 1
 
     with (dest_dataset / "dataset.yaml").open("w", encoding="utf-8") as fh:
         fh.write(yaml_text)
 
-    msg = f"hardlink={link_stats.get('hardlink', 0)}, copy2={link_stats.get('copy2', 0)}"
+    msg = (
+        f"hardlink={link_stats.get('hardlink', 0)}, copy2={link_stats.get('copy2', 0)}"
+    )
     status = "verify" if needs_verify else "migrated"
     if needs_verify:
         msg += " (metadata alternatives detected)"
@@ -271,7 +303,9 @@ def run_migration(source: Path, dest_store: Path, *, dry_run: bool) -> int:
         return 0
 
     if not dry_run:
-        required = _total_size([f for d in candidates for f in _list_raw_files_in_dir(d)])
+        required = _total_size(
+            [f for d in candidates for f in _list_raw_files_in_dir(d)]
+        )
         ok, msg = _ensure_disk_space(dest_store, required)
         if not ok:
             console.print(f"[red]ERROR:[/red] {msg}")
@@ -279,7 +313,9 @@ def run_migration(source: Path, dest_store: Path, *, dry_run: bool) -> int:
 
     results: List[MigrationResult] = []
     for directory in candidates:
-        results.append(migrate_one(source, directory, dest_store, guesser, dry_run=dry_run))
+        results.append(
+            migrate_one(source, directory, dest_store, guesser, dry_run=dry_run)
+        )
 
     summary = Table(title="Migration Summary")
     summary.add_column("Source", style="cyan")
@@ -316,7 +352,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Migrate legacy folders into store/datasets/<slug>/data/ using DatasetHeuristics.",
     )
-    parser.add_argument("--source", required=True, type=Path, help="Legacy root directory.")
+    parser.add_argument(
+        "--source", required=True, type=Path, help="Legacy root directory."
+    )
     parser.add_argument(
         "--dest",
         type=Path,

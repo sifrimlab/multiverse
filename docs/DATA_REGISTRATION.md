@@ -1,12 +1,12 @@
 # Data Registration
 
-This how-to explains how to make a prepared dataset visible to mvexp through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` (or `python -m multiverse.runner.cli register-dataset --slug <slug>`).
+This how-to explains how to make a prepared dataset visible to multiverse through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` or `uv run multiverse register-dataset --slug <slug>`.
 
 Use [Data Preparation](DATA_PREPARATION.md) for notebook-side formatting details. This page focuses on onboarding the prepared files into the platform.
 
 ## What Registration Does
 
-Registration tells mvexp:
+Registration tells multiverse:
 
 - what the dataset is called;
 - which modalities are available;
@@ -14,13 +14,11 @@ Registration tells mvexp:
 - which `.obs` column is the batch key;
 - which `.obs` column is the cell-type key.
 
-Registration does not change your biology. It creates a reproducible dataset record for benchmarking.
-
 [IMAGE: Registry Tab Ingestion Wizard]
 
 ## Tutorial: Register a Dataset Visually
 
-1. Start mvexp and open the Streamlit GUI.
+1. Start multiverse and open the Streamlit GUI.
 2. Open the **Registry** tab.
 3. Expand **Register New Dataset**.
 4. Switch on **Build manifest from fields** if you do not already have a `dataset.yaml`.
@@ -68,19 +66,60 @@ assert adata.n_obs > 0
 assert adata.n_vars > 0
 ```
 
+
+## Two registration modes
+
+A dataset can be registered in one of two ways:
+
+- **Raw ingestion** — declare `raw_files` and run preprocessing to fuse them
+  into `data/processed.h5mu` (shown above).
+- **Processed registration** — you already have a processed `.h5mu`/`.h5ad`
+  and want to register it directly, skipping preprocessing. Declare
+  `processed_path` instead of `raw_files`:
+
+```yaml
+name: "Hello PBMC (processed)"
+omics: ["rna"]
+processed_path: "data/processed.h5mu"
+metadata_keys:
+  batch: "batch"
+  cell_type: "cell_type"
+```
+
+The manifest must provide exactly one of `raw_files` or `processed_path`.
+Model runs always consume the processed `.h5mu`; `raw_files` belongs only to
+the raw-ingestion workflow.
+
+## Register from the CLI
+
+For a dataset stored at `store/datasets/hello_pbmc/dataset.yaml`:
+
+```bash
+uv run multiverse register-dataset --slug hello_pbmc
+# or with an explicit manifest path
+uv run multiverse register-dataset --manifest store/datasets/hello_pbmc/dataset.yaml
+```
+
+Use `--update` when you intentionally changed an existing manifest:
+
+```bash
+uv run multiverse register-dataset --slug hello_pbmc --update
+```
+
 ## Reference: `dataset.yaml` Fields
 
 | Field | Required | Meaning | Example |
 |---|---|---|---|
 | `name` | Yes | Human-readable dataset name. | `PBMC Multiome RNA+ATAC` |
 | `omics` | Yes | Modalities available in the dataset. | `["rna", "atac"]` |
-| `raw_files` | Yes | Mapping from modality to file path relative to the dataset folder. | `rna: "data/rna.h5ad"` |
+| `raw_files` | Conditional | Mapping from modality to raw file path relative to the dataset folder. Required for raw ingestion; omit when using `processed_path`. | `rna: "data/rna.h5ad"` |
+| `processed_path` | Conditional | Path (relative to the dataset folder) to an already-processed `.h5mu`/`.h5ad`. Required for processed registration; omit when using `raw_files`. | `data/processed.h5mu` |
 | `metadata_keys.batch` | Recommended | `.obs` column used for batch-correction metrics. | `donor_id` |
 | `metadata_keys.cell_type` | Optional | `.obs` column used for supervised bio-conservation metrics. | `cell_type` |
 
 ## Explanation: Why Metadata Keys Matter
 
-The same embedding can look good or bad depending on the biological question. `batch_key` tells mvexp which technical or donor grouping should be mixed. `cell_type_key` tells mvexp which biological labels should be preserved.
+The same embedding can look good or bad depending on the biological question. `batch_key` tells multiverse which technical or donor grouping should be mixed. `cell_type_key` tells multiverse which biological labels should be preserved.
 
 ```mermaid
 flowchart TD

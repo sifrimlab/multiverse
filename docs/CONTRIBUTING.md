@@ -1,23 +1,10 @@
 # Contributing
 
-This guide explains how to contribute to mvexp without weakening the researcher-facing workflow. Contributions should preserve the GUI-first, reproducible, notebook-compatible experience.
-
-## Documentation Principles
-
-Use Diátaxis:
-
-| Type | Use for |
-|---|---|
-| Tutorial | First successful outcome. |
-| How-to | Task-oriented recipes. |
-| Reference | Complete field lists and contracts. |
-| Explanation | Design rationale and tradeoffs. |
-
-Write for academic bioinformaticians first. Translate infrastructure details into benefits: reproducibility, fewer path errors, comparable model outputs, and publication-ready provenance.
+This guide explains how to contribute to Multiverse. Contributions should preserve the GUI-first reproducible experience.
 
 ## Code Contribution Checklist
 
-- Keep the GUI path working for researchers.
+- Keep the GUI path working for all users.
 - Preserve Zero-Path execution for models.
 - Write or update tests for planner, ingestion, metrics, or model contract changes.
 - Update docs when user-visible behavior changes.
@@ -34,7 +21,7 @@ Write for academic bioinformaticians first. Translate infrastructure details int
 ## How-To: Add a Built-In Model
 
 1. Add the model package under `store/models/<slug>/` (`model.yaml`, `container/Dockerfile`, `container/environment.yml`, `container/run.py`).
-2. Add or update `schemas/models/<slug>.hyperparameters.schema.json`.
+2. Add or update `store/models/<slug>/hyperparameters.schema.json`.
 3. Ensure the container follows [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
 4. Register it with `make register-model slug=<slug>`.
 5. Build the image with `make build-<slug>` and confirm it pulls cleanly.
@@ -44,21 +31,11 @@ Write for academic bioinformaticians first. Translate infrastructure details int
 
 ## How-To: Add a Metric or Report Field
 
-1. Define whether it is bio-conservation, batch-correction, or model-specific.
-2. Document required metadata keys.
-3. Ensure missing metadata leads to a clear warning, not a silent failure.
-4. Surface it in Results or MLflow where appropriate.
-5. Update [Evaluation Metrics](reference/EVALUATION_METRICS.md).
-
-## Common Errors
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| Docs and GUI disagree | UI changed without doc update. | Update the relevant tutorial/how-to in the same PR. |
-| New model is hard to configure | Schema fields are missing or unclear. | Add defaults, enums, minimums, and descriptions. |
-| Researcher must use Docker manually | Workflow leaked implementation detail. | Route the task through GUI or maintainer-only docs. |
-| Report metric is not interpretable | Metric lacks biological explanation. | Add definition, assumptions, and caveats. |
+1. Document required metadata keys.
+2. Ensure missing metadata leads to a clear warning, not a silent failure.
+3. Surface it in Results or MLflow where appropriate.
+4. Update [Evaluation Metrics](reference/EVALUATION_METRICS.md).
 
 ## How to Cite Contributions
 
-If your contribution adds a scientific method, cite the original method and document how mvexp calls it. If you publish results generated with a development version, cite the commit hash and archive the run artifacts.
+If your contribution adds a scientific method, cite the original method and document how multiverse calls it. If you publish results generated with a development version, cite the commit hash and archive the run artifacts.

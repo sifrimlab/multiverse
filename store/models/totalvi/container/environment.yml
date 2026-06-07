@@ -11,6 +11,7 @@ dependencies:
   - pytorch::pytorch-cuda=12.1
   - scvi-tools==1.2.0
   - scanpy==1.10.3
+  - scikit-misc==0.5.2 
   - pip:
       - muon==0.1.7
-      - louvain==0.8.2
+

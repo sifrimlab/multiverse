@@ -1,235 +1,214 @@
+"""Post-training evaluation metrics for integration model outputs.
+
+Heavy scientific dependencies (muon, anndata, h5py, numpy, scib-metrics) are
+imported lazily so ``import multiverse.evaluate`` succeeds in a thin host
+environment.  They are only required when evaluation functionality is actually
+called.  Install them with:
+
+    pip install "multiverse[eval]"
+
+The evaluator runs one grouped scIB benchmark per dataset (efficient — all of a
+dataset's model embeddings are scored in a single pass) and then fans the
+results back out to **per-member** result files, one structured outcome per
+cohort member, under the launch directory. See
+:mod:`multiverse.evaluation.result` for the status vocabulary and schema.
+"""
+
 import argparse
-import os
 import json
-import h5py
-import anndata as ad
-import numpy as np
-from typing import Union
-from scib_metrics.benchmark import BioConservation, BatchCorrection, Benchmarker
-from .config import load_config
-from .data_utils import load_datasets, dataset_select
-from .logging_utils import get_logger, setup_logging
-from .tracking import sanitize_nan_inf
+import logging
+import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-logger = get_logger(__name__)
+from multiverse.evaluation import result as eval_result
+from multiverse.evaluation.cohort import launch_dir
+from multiverse.evaluation.result import MemberResult
+
+logger = logging.getLogger(__name__)
+
+_EVAL_INSTALL_HINT = (
+    "Evaluation dependencies are not installed. "
+    "Run: pip install \"multiverse[eval]\""
+)
 
 
-def _warn_unrequested_result_columns(results_df, requested_metrics: dict | None) -> None:
-    if not requested_metrics:
-        return
-    requested = set()
-    for values in requested_metrics.values():
-        if isinstance(values, list):
-            requested.update(str(v) for v in values)
-    if not requested:
-        return
-    returned = set(map(str, results_df.columns))
-    extra = returned - requested
-    missing = requested - returned
-    if extra:
-        logger.warning("Benchmark returned unrequested metric columns: %s", sorted(extra))
+def _require_eval_deps():
+    """Raise a helpful ImportError if eval dependencies are absent."""
+    missing = []
+    for pkg in ("muon", "anndata", "h5py", "numpy", "scib_metrics"):
+        try:
+            __import__(pkg)
+        except ImportError:
+            missing.append(pkg)
     if missing:
-        logger.warning("Benchmark did not return requested metric columns: %s", sorted(missing))
+        raise ImportError(
+            f"Missing eval dependencies: {missing}. {_EVAL_INSTALL_HINT}"
+        )
 
 
-def determine_valid_metrics(
-    config: dict, dataset: ad.AnnData, requested_metrics: dict = None
-):
-    """Filters evaluation metrics based on dataset properties.
+def _require_worker_deps():
+    """Raise a helpful ImportError if worker dependencies are absent."""
+    try:
+        import multiverse.worker  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            f"multiverse.worker not available: {exc}. "
+            "Run: pip install \"multiverse[eval]\""
+        ) from exc
 
-    Supervised metrics (e.g., ARI, NMI) are only valid if a cell type key is present.
-    Batch correction metrics are only valid if multiple batches exist.
 
-    Args:
-        config (dict): The system configuration.
-        dataset (ad.AnnData): The dataset to be evaluated.
-        requested_metrics (dict, optional): A dictionary specifying the desired
-            bio-conservation and batch-correction metrics.
+def _now_iso() -> str:
+    """UTC ISO-8601 timestamp."""
+    return datetime.now(timezone.utc).isoformat()
 
-    Returns:
-        dict: A dictionary containing the lists of validated metrics.
+
+def _extract_member_metrics(full_metrics: Dict[str, Any], latent_key: str) -> Dict[str, Any]:
+    """Pull one embedding's metrics out of the grouped scIB results dict.
+
+    ``full_metrics`` is ``results_df.to_dict("dict")`` — a nested mapping whose
+    orientation depends on the scIB version (latent keys may be the outer or the
+    inner keys). This handles both: if ``latent_key`` is an outer key, return its
+    sub-dict; otherwise collect the inner value keyed by ``latent_key`` from each
+    metric column.
     """
-    if requested_metrics is None:
-        requested_metrics = {
-            "bio_conservation": ["isolated_labels", "nmi_ari_cluster_labels_leiden", "nmi_ari_cluster_labels_kmeans", "silhouette_label", "clisi_knn"],
-            "batch_correction": ["bras", "ilisi_knn", "kbet_per_label", "graph_connectivity", "pcr_comparison"]
-        }
-
-    valid_metrics = {
-        "bio_conservation": [],
-        "batch_correction": []
-    }
-
-    batch_key = config.get("batch_key", "batch")
-    label_key = config.get("cell_type_key")
-
-    # Bio-conservation metrics generally require cell type labels.
-    if label_key and label_key in dataset.obs.columns:
-        valid_metrics["bio_conservation"] = requested_metrics["bio_conservation"]
-    else:
-        logger.warning(f"Label key {label_key} not found or not provided. Skipping supervised metrics.")
-        # Remove metrics that strictly require labels.
-        supervised_keywords = ["nmi", "ari", "isolated_labels", "clisi", "label"]
-        valid_metrics["bio_conservation"] = [
-            m for m in requested_metrics["bio_conservation"]
-            if not any(kw in m.lower() for kw in supervised_keywords)
-        ]
-
-    # Batch correction metrics require at least two distinct batches to be meaningful.
-    if batch_key in dataset.obs.columns:
-        num_batches = dataset.obs[batch_key].nunique()
-        if num_batches > 1:
-            valid_metrics["batch_correction"] = requested_metrics["batch_correction"]
-        else:
-            logger.warning(f"Only one batch found ({num_batches}). Skipping batch-correction metrics.")
-            valid_metrics["batch_correction"] = []
-    else:
-        logger.warning(f"Batch key {batch_key} not found. Skipping batch-correction metrics.")
-        valid_metrics["batch_correction"] = []
-
-    return valid_metrics
-
-
-def aggregate_results(model_status: dict, output_dir: str):
-    """Aggregates metrics from successful model runs into a single JSON file.
-
-    Args:
-        model_status (dict): Mapping of model names to their execution status.
-        output_dir (str): The directory containing model outputs.
-
-    Returns:
-        dict: The aggregated results dictionary.
-    """
-    final_results = {}
-
-    for model_name, status in model_status.items():
-        if status != "success":
-            continue
-
-        model_metrics_path = os.path.join(output_dir, model_name, "metrics.json")
-        if os.path.exists(model_metrics_path):
-            try:
-                with open(model_metrics_path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict) and loaded:
-                    final_results[model_name] = sanitize_nan_inf(loaded)
-                else:
-                    logger.warning("Metrics for %s were empty or not a JSON object; omitting.", model_name)
-            except (json.JSONDecodeError, OSError) as exc:
-                logger.warning("Failed reading metrics for %s from %s: %s", model_name, model_metrics_path, exc)
-        else:
-            final_results[model_name] = {"status": "success", "info": "Metrics file not found, but model succeeded."}
-
-    results_file = os.path.join(output_dir, "results.json")
-    with open(results_file, "w", encoding="utf-8") as f:
-        json.dump(sanitize_nan_inf(final_results), f, indent=4)
-
-    logger.info(f"Aggregated results saved to {results_file}")
-    return final_results
+    if latent_key in full_metrics and isinstance(full_metrics[latent_key], dict):
+        return dict(full_metrics[latent_key])
+    out: Dict[str, Any] = {}
+    for metric, by_embedding in full_metrics.items():
+        if isinstance(by_embedding, dict) and latent_key in by_embedding:
+            out[metric] = by_embedding[latent_key]
+    return out
 
 
 class Evaluator:
-    """A class for evaluating data integration models using scIB metrics.
+    """Evaluate a dataset's model embeddings with scIB metrics.
 
-    Attributes:
-        dataset (ad.AnnData): The dataset containing model embeddings.
-        dataset_name (str): The name of the dataset.
-        output_dir (str): Directory for saving evaluation results.
-        metrics_filepath (str): Path to the final metrics JSON file.
+    Each ``model_configs`` entry must carry ``member_id``, ``model_name`` and
+    ``output_embedding_path``. Embeddings are stored in ``obsm`` keyed by
+    ``X_<member_id>`` so that two members sharing a model (different params) on
+    the same dataset never collide, and each results row maps to exactly one
+    member.
     """
 
     def __init__(
         self,
-        dataset: ad.AnnData,
+        dataset,
         dataset_name: str,
-        config_path: Union[str, dict],
-        is_gridsearch: bool = False,
+        model_configs: List[Dict[str, Any]],
+        output_dir: str,
     ):
-        """Initializes the Evaluator.
-
-        Args:
-            dataset (ad.AnnData): The dataset containing latent representations.
-            dataset_name (str): Name of the dataset.
-            config_path: Path to the configuration file or an in-memory config dict.
-            is_gridsearch (bool): Flag indicating if this is a grid search run.
-        """
+        _require_eval_deps()
         logger.info("Initializing Evaluator")
-        self.config_dict = load_config(config_path)
-        self.model_params = self.config_dict.get("model")
+        self.model_configs = model_configs
         self.dataset = dataset
         self.dataset_name = dataset_name
-        self.output_dir = os.path.join(
-            self.config_dict["output_dir"],
-            self.dataset_name,
-        )
-        self.metrics_filepath = os.path.join(
-            self.output_dir,
-            "evaluation_metrics.json",
-        )
+        self.output_dir = output_dir
+        self.metrics_filepath = os.path.join(self.output_dir, "evaluation_metrics.json")
         os.makedirs(self.output_dir, exist_ok=True)
-
-        self.models_list = [
-            model_name for model_name in self.config_dict.get("model", {}).keys()
-        ]
-        self.latent_keys = []
-
+        # member_id -> latent key (X_<member_id>) for members that loaded cleanly.
+        self.member_latent_key: Dict[str, str] = {}
+        # member_id -> (status, reason) for members that failed pre-flight.
+        self.member_preflight: Dict[str, "tuple[str, str]"] = {}
         logger.info(f"Evaluator initialized for {self.dataset_name}")
 
-    def load_embeddings(self):
-        """Loads latent embeddings for each model from the output directory.
+    def latent_key_for(self, member_id: str) -> str:
+        return f"X_{member_id}"
 
-        Iterates through the models defined in the configuration and attempts
-        to load their saved embeddings from HDF5 files.
+    def load_embeddings(self) -> None:
+        """Load each member's latent embedding, recording pre-flight failures.
+
+        Detects missing ``embeddings.h5`` (``no_embeddings``) and latent/obs row
+        mismatches (``obs_mismatch``) up front rather than letting anndata raise
+        an opaque error mid-benchmark.
         """
-        for model_name in self.models_list:
-            logger.info(f"Loading embeddings for model: {model_name}")
-            if os.path.exists(
-                os.path.join(self.output_dir, model_name, "embeddings.h5")
-            ):
-                latent_key = f"X_{model_name}"
-                self.latent_keys.append(latent_key)
-                self.dataset.obsm[latent_key] = h5py.File(
-                    os.path.join(self.output_dir, model_name, "embeddings.h5"), "r"
-                )["latent"][:]
-            else:
-                logger.warning(f"Embeddings file for model {model_name} not found.")
-        logger.info(f"Loaded latent embeddings for: {self.latent_keys}")
+        import h5py  # type: ignore[import-untyped]
 
-    def evaluate_models(self, batch_key: str = "batch", label_key: str = "cell_type"):
-        """Runs the scIB-metrics benchmark suite on all loaded model embeddings.
+        n_obs = self.dataset.n_obs
+        for cfg in self.model_configs:
+            member_id = cfg["member_id"]
+            emb_path = cfg["output_embedding_path"]
+            if not os.path.exists(emb_path):
+                logger.warning("Embeddings not found for member %s at %s", member_id, emb_path)
+                self.member_preflight[member_id] = (
+                    eval_result.EVAL_STATUS_NO_EMBEDDINGS,
+                    f"embeddings.h5 not found at {emb_path}",
+                )
+                continue
+            try:
+                with h5py.File(emb_path, "r") as f:
+                    latent = f["latent"]
+                    if latent.shape[0] != n_obs:
+                        self.member_preflight[member_id] = (
+                            eval_result.EVAL_STATUS_OBS_MISMATCH,
+                            f"latent rows ({latent.shape[0]}) != dataset observations ({n_obs})",
+                        )
+                        continue
+                    data = latent[:]
+            except Exception as exc:  # noqa: BLE001
+                self.member_preflight[member_id] = (
+                    eval_result.EVAL_STATUS_EVALUATION_FAILED,
+                    f"could not read embeddings: {exc}",
+                )
+                continue
+            latent_key = self.latent_key_for(member_id)
+            self.dataset.obsm[latent_key] = data
+            self.member_latent_key[member_id] = latent_key
+        logger.info("Loaded latent embeddings for: %s", list(self.member_latent_key.values()))
 
-        Calculates bio-conservation and batch-correction metrics and saves
-        the results to a JSON file and a summary table plot.
+    def evaluate_models(
+        self, batch_key: str = "batch", label_key: str = "cell_type"
+    ) -> Dict[str, Any]:
+        """Run scIB on all cleanly-loaded embeddings; return grouped metrics dict.
 
-        Args:
-            batch_key (str): The observation key for batch labels. Defaults to "batch".
-            label_key (str): The observation key for cell type labels. Defaults to "cell_type".
-
-        Returns:
-            dict: The calculated metrics.
+        Returns ``results_df.to_dict("dict")`` (sanitized), or ``{}`` if there is
+        nothing to score. Per-member attribution is done by the caller via
+        :func:`_extract_member_metrics`.
         """
+        import numpy as np  # type: ignore[import-untyped]
+        from scib_metrics.benchmark import (  # type: ignore[import-untyped]
+            BatchCorrection, Benchmarker, BioConservation)
+
+        from multiverse.worker import sanitize_nan_inf
+
+        latent_keys = list(self.member_latent_key.values())
+        if not latent_keys:
+            logger.warning("No embeddings loaded for %s; skipping benchmark.", self.dataset_name)
+            return {}
+
         logger.info("Evaluating model with scib-metrics.")
-
-        if batch_key not in self.dataset.obs.columns:
+        if (
+            batch_key not in self.dataset.obs.columns
+            or self.dataset.obs[batch_key].nunique() < 2
+        ):
             logger.warning(
-                f"Batch key '{batch_key}' not found in .obs, assigning samples randomly to two batches."
+                f"Batch key '{batch_key}' not found in .obs, assigning dummy batch labels."
             )
             rng = np.random.default_rng()
             self.dataset.obs[batch_key] = rng.choice(
-                ["batch_1", "batch_2"], size=self.dataset.n_obs
+                [f"batch_{i}" for i in range(10)], size=self.dataset.n_obs
             )
 
-        if label_key not in self.dataset.obs.columns:
+        if (
+            label_key not in self.dataset.obs.columns
+            or self.dataset.obs[label_key].nunique() < 2
+        ):
             logger.warning(
-                f"Label key '{label_key}' not found in .obs, skipping metrics that require it."
+                f"Label key '{label_key}' not found in .obs, assigning dummy cell type labels."
             )
-            label_key = None
+            rng = np.random.default_rng()
+            self.dataset.obs[label_key] = rng.choice(
+                [f"cell_type_{i}" for i in range(10)], size=self.dataset.n_obs
+            )
 
         bm = Benchmarker(
             self.dataset,
+            progress_bar=False,
             batch_key=batch_key,
             label_key=label_key,
-            embedding_obsm_keys=self.latent_keys,
+            embedding_obsm_keys=latent_keys,
             bio_conservation_metrics=BioConservation(
                 isolated_labels=True,
                 nmi_ari_cluster_labels_leiden=True,
@@ -248,202 +227,283 @@ class Evaluator:
 
         bm.benchmark()
         results_df = bm.get_results(min_max_scale=False)
-        requested_metrics = self.config_dict.get("metrics")
-        _warn_unrequested_result_columns(results_df, requested_metrics)
         bm.plot_results_table(min_max_scale=False, show=False, save_dir=self.output_dir)
         if results_df.empty:
             logger.warning(f"No results found for {self.dataset_name}.")
-            return
+            return {}
 
         metrics = sanitize_nan_inf(results_df.to_dict("dict"))
-        logger.info(f"Evaluation metrics: {metrics}")
         try:
             with open(self.metrics_filepath, "w", encoding="utf-8") as f:
                 json.dump(metrics, f, indent=4)
             logger.info(f"Metrics saved to {self.metrics_filepath}")
         except IOError as e:
-            logger.error(
-                f"Could not write metrics file to {self.metrics_filepath}: {e}"
-            )
-            raise
+            logger.error(f"Could not write metrics file to {self.metrics_filepath}: {e}")
         return metrics
 
 
-def _mudata_to_evaluation_anndata(
-    mdata,
-    *,
-    batch_key: str | None,
-    label_key: str | None,
-) -> "ad.AnnData":
-    """Build a minimal AnnData from a MuData suitable for scIB evaluation.
+def _group_members_by_dataset(
+    members: List[Dict[str, Any]]
+) -> "tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Dict[str, Any]]]":
+    """Group cohort members by dataset slug.
 
-    Top-level mdata.obs is used as the base. Any declared batch/label keys that
-    are absent from top-level obs are promoted from the first modality that
-    contains them (aligned by barcode index).
+    Returns ``(members_by_dataset, dataset_cfg_by_dataset)`` where the dataset
+    config carries the resolved path and the batch/label keys.
     """
-    obs = mdata.obs.copy()
-    keys_to_promote = [k for k in (batch_key, label_key) if k and k not in obs.columns]
-    for key in keys_to_promote:
-        for mod_adata in mdata.mod.values():
-            if key in mod_adata.obs.columns:
-                obs[key] = mod_adata.obs[key].reindex(obs.index)
-                logger.info("Promoted obs key '%s' from modality to top-level obs.", key)
-                break
-        else:
-            logger.warning("Key '%s' not found in any modality obs; it will be absent.", key)
-    return ad.AnnData(obs=obs)
+    members_by_dataset: Dict[str, List[Dict[str, Any]]] = {}
+    dataset_cfg: Dict[str, Dict[str, Any]] = {}
+    for member in members:
+        dataset_name = member.get("dataset_slug") or member.get("dataset_name") or ""
+        members_by_dataset.setdefault(dataset_name, []).append(member)
+        if dataset_name not in dataset_cfg:
+            dataset_cfg[dataset_name] = {
+                "data_path": member.get("dataset_path_resolved") or member.get("dataset_path"),
+                "batch_key": member.get("batch_key", "batch"),
+                "label_key": member.get("label_key", "cell_type"),
+                "modalities": (member.get("job") or {}).get("omics_available"),
+            }
+    return members_by_dataset, dataset_cfg
 
 
-def evaluate_single_run(
-    output_dir: str,
-    dataset_path: str,
-    batch_key: str | None,
-    label_key: str | None,
-) -> dict:
-    """Run per-job scIB evaluation after a model container completes.
+def _emb_path(member: Dict[str, Any]) -> str:
+    return os.path.join(member.get("artifact_dir") or "", "embeddings.h5")
 
-    Loads the dataset, attaches embeddings from output_dir/embeddings.h5, runs
-    scib-metrics, and writes results to output_dir/metrics.json.
-    Returns the metrics dict (empty if embeddings are missing).
+
+def evaluate_cohort(config: Dict[str, Any], *, force: bool = False) -> List[MemberResult]:
+    """Evaluate every member in ``config`` and write per-member result files.
+
+    ``config`` is the trimmed eval cohort written by
+    :func:`multiverse.evaluation.docker_runner.prepare_evaluation`. Returns the
+    list of :class:`MemberResult` written (also persisted under
+    ``<output_dir>/.multiverse/launches/<launch_id>/evaluations/``).
+
+    Re-run is idempotent: a member whose ``evaluations/<member_id>.json`` already
+    records ``done`` for the same artifact dir is preserved and not re-evaluated,
+    unless ``force`` is set.
     """
-    embeddings_path = os.path.join(output_dir, "embeddings.h5")
-    if not os.path.exists(embeddings_path):
-        logger.warning("No embeddings.h5 in %s; skipping per-job evaluation.", output_dir)
-        return {}
+    import muon as mu  # type: ignore[import-untyped]
 
-    embedding_only = False
-    if dataset_path.endswith(".h5mu"):
+    from multiverse.worker import anndata_concatenate, preprocess_mudata
+
+    output_dir = Path(config["output_dir"])
+    launch_id = config["launch_id"]
+    members: List[Dict[str, Any]] = config.get("members", [])
+
+    results: Dict[str, MemberResult] = {}
+    started: Dict[str, float] = {}
+
+    # Existing results enable idempotent re-run: keep already-``done`` members
+    # (same artifact dir) instead of recomputing them.
+    existing = {res.member_id: res for res in eval_result.load_member_results(output_dir, launch_id)}
+
+    def _already_done(member: Dict[str, Any]) -> bool:
+        if force:
+            return False
+        prev = existing.get(member["member_id"])
+        return (
+            prev is not None
+            and prev.status == eval_result.EVAL_STATUS_DONE
+            and (prev.artifact_dir or "") == (member.get("artifact_dir") or "")
+        )
+
+    to_eval: List[Dict[str, Any]] = []
+    for member in members:
+        mid = member["member_id"]
+        if _already_done(member):
+            results[mid] = existing[mid]  # preserve prior outcome
+            continue
+        to_eval.append(member)
+        started[mid] = time.monotonic()
+        res = MemberResult(
+            member_id=mid,
+            status=eval_result.EVAL_STATUS_RUNNING,
+            artifact_dir=member.get("artifact_dir"),
+            dataset_path=member.get("dataset_path_resolved") or member.get("dataset_path"),
+            started_at=_now_iso(),
+        )
+        results[mid] = res
+        eval_result.write_member_result(output_dir=output_dir, launch_id=launch_id, result=res)
+
+    members_by_dataset, dataset_cfg = _group_members_by_dataset(to_eval)
+
+    for dataset_name, ds_members in members_by_dataset.items():
+        cfg = dataset_cfg[dataset_name]
+        batch_key = cfg["batch_key"]
+        label_key = cfg["label_key"]
+        data_path = cfg["data_path"]
+
+        # Per-dataset load/preprocess. A failure here fails every member of the
+        # dataset with a structured status rather than aborting the run.
         try:
-            import mudata as md
-            mdata = md.read_h5mu(dataset_path)
-            adata = _mudata_to_evaluation_anndata(
-                mdata, batch_key=batch_key, label_key=label_key
+            mudata_obj = mu.read_h5mu(data_path)
+            modalities = list(mudata_obj.mod.keys())
+            mudata_obj = preprocess_mudata(
+                mudata_obj,
+                {
+                    "n_top_genes": 2000,
+                    "scale": {modality: False for modality in modalities},
+                    "normalization_target_sum": None,
+                    "log_normalization": False,
+                },
+                cell_type_key=label_key,
+                batch_key=batch_key,
             )
-            embedding_only = True
-        except Exception as exc:
-            logger.warning("Failed to load/convert MuData from %s: %s", dataset_path, exc)
-            return {}
-    elif dataset_path.endswith(".h5ad"):
-        adata = ad.read_h5ad(dataset_path)
-        embedding_only = adata.n_vars == 0
-    else:
-        logger.warning("Unsupported dataset format for evaluation: %s", dataset_path)
-        return {}
+            data_concat = anndata_concatenate(
+                mdata=mudata_obj,
+                selected_modalities=modalities,
+                cell_type_key=label_key,
+                batch_key=batch_key,
+            )
+        except FileNotFoundError as exc:
+            _fail_members(
+                results, ds_members, started, output_dir, launch_id,
+                eval_result.EVAL_STATUS_MISSING_DATASET, str(exc),
+            )
+            continue
+        except Exception as exc:  # noqa: BLE001
+            _fail_members(
+                results, ds_members, started, output_dir, launch_id,
+                eval_result.EVAL_STATUS_EVALUATION_FAILED,
+                f"dataset load/preprocess failed: {exc}",
+            )
+            continue
 
-    with h5py.File(embeddings_path, "r") as f:
-        latent = f["latent"][:]
-
-    if latent.shape[0] != adata.n_obs:
-        logger.warning(
-            "Embedding row count (%d) != dataset obs count (%d); skipping evaluation.",
-            latent.shape[0],
-            adata.n_obs,
+        model_configs = [
+            {
+                "member_id": m["member_id"],
+                "model_name": m.get("model_slug") or "",
+                "output_embedding_path": _emb_path(m),
+            }
+            for m in ds_members
+        ]
+        plot_dir = str(launch_dir(output_dir, launch_id) / "plots" / f"dataset_{dataset_name}")
+        evaluator = Evaluator(
+            dataset=data_concat,
+            dataset_name=dataset_name,
+            model_configs=model_configs,
+            output_dir=plot_dir,
         )
-        return {}
-
-    latent_key = "X_model"
-    adata.obsm[latent_key] = latent
-
-    effective_batch_key = batch_key if (batch_key and batch_key in adata.obs.columns) else None
-    if not effective_batch_key:
-        logger.warning(
-            "batch_key '%s' not found in obs; batch-correction metrics will be disabled.",
-            batch_key,
-        )
-        # scib-metrics requires a batch_key argument even when all batch metrics
-        # are disabled. A constant internal column satisfies API validation without
-        # creating artificial batch-correction scores.
-        adata.obs["_batch_unavailable"] = "batch_unavailable"
-
-    effective_label_key = label_key if (label_key and label_key in adata.obs.columns) else None
-    if label_key and not effective_label_key:
-        logger.warning(
-            "label_key '%s' not found in obs; supervised metrics will be skipped.", label_key
-        )
-
-    have_labels = bool(effective_label_key)
-    have_batch = bool(effective_batch_key)
-    # pcr_comparison requires a valid expression matrix; skip when only obs metadata is available.
-    have_matrix = not embedding_only
-
-    bm = Benchmarker(
-        adata,
-        batch_key=effective_batch_key or "_batch_unavailable",
-        label_key=effective_label_key,
-        embedding_obsm_keys=[latent_key],
-        bio_conservation_metrics=BioConservation(
-            isolated_labels=have_labels,
-            nmi_ari_cluster_labels_leiden=have_labels,
-            nmi_ari_cluster_labels_kmeans=have_labels,
-            silhouette_label=have_labels,
-            clisi_knn=have_labels,
-        ),
-        batch_correction_metrics=BatchCorrection(
-            bras=have_batch,
-            ilisi_knn=have_batch,
-            kbet_per_label=have_batch and have_labels,
-            graph_connectivity=have_batch,
-            pcr_comparison=have_batch and have_matrix,
-        ),
-    )
-
-    bm.benchmark()
-    results_df = bm.get_results(min_max_scale=False)
-    evaluation_metrics = sanitize_nan_inf(results_df.to_dict("dict")) if not results_df.empty else {}
-
-    out_path = os.path.join(output_dir, "metrics.json")
-    existing_metrics = {}
-    if os.path.exists(out_path):
+        evaluator.load_embeddings()
         try:
-            with open(out_path, "r", encoding="utf-8") as fp:
-                loaded = json.load(fp)
-            if isinstance(loaded, dict):
-                existing_metrics = loaded
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Could not merge existing metrics from %s: %s", out_path, exc)
+            full_metrics = evaluator.evaluate_models(batch_key=batch_key, label_key=label_key)
+            benchmark_error: Optional[str] = None
+        except Exception as exc:  # noqa: BLE001
+            full_metrics = {}
+            benchmark_error = f"scIB benchmark raised: {exc}"
 
-    merged_metrics = sanitize_nan_inf({**existing_metrics, "evaluation": evaluation_metrics})
-    with open(out_path, "w", encoding="utf-8") as fp:
-        json.dump(merged_metrics, fp, indent=4)
-    logger.info("Per-job evaluation metrics merged into %s", out_path)
-    return merged_metrics
+        for member in ds_members:
+            mid = member["member_id"]
+            if mid in evaluator.member_preflight:
+                status, reason = evaluator.member_preflight[mid]
+                _finalize(results, mid, started, output_dir, launch_id, status, reason)
+                continue
+            latent_key = evaluator.member_latent_key.get(mid)
+            member_metrics = (
+                _extract_member_metrics(full_metrics, latent_key) if latent_key else {}
+            )
+            if benchmark_error is not None:
+                _finalize(
+                    results, mid, started, output_dir, launch_id,
+                    eval_result.EVAL_STATUS_EVALUATION_FAILED, benchmark_error,
+                )
+            elif member_metrics:
+                _finalize(
+                    results, mid, started, output_dir, launch_id,
+                    eval_result.EVAL_STATUS_DONE, "",
+                    metrics={"evaluation": member_metrics},
+                )
+            else:
+                _finalize(
+                    results, mid, started, output_dir, launch_id,
+                    eval_result.EVAL_STATUS_EVALUATION_FAILED,
+                    "scIB produced no metrics for this member",
+                )
+
+    return list(results.values())
+
+
+def _finalize(
+    results: Dict[str, MemberResult],
+    member_id: str,
+    started: Dict[str, float],
+    output_dir: Path,
+    launch_id: str,
+    status: str,
+    reason: str,
+    *,
+    metrics: Optional[Dict[str, Any]] = None,
+) -> None:
+    res = results[member_id]
+    res.status = status
+    res.reason = reason
+    res.finished_at = _now_iso()
+    res.duration_seconds = round(time.monotonic() - started[member_id], 3)
+    if metrics is not None:
+        res.metrics = metrics
+    if status in {
+        eval_result.EVAL_STATUS_EVALUATION_FAILED,
+        eval_result.EVAL_STATUS_OBS_MISMATCH,
+        eval_result.EVAL_STATUS_NO_EMBEDDINGS,
+        eval_result.EVAL_STATUS_MISSING_DATASET,
+    } and reason:
+        res.error = {"message": reason}
+    eval_result.write_member_result(output_dir=output_dir, launch_id=launch_id, result=res)
+
+
+def _fail_members(
+    results: Dict[str, MemberResult],
+    ds_members: List[Dict[str, Any]],
+    started: Dict[str, float],
+    output_dir: Path,
+    launch_id: str,
+    status: str,
+    reason: str,
+) -> None:
+    for member in ds_members:
+        _finalize(results, member["member_id"], started, output_dir, launch_id, status, reason)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Evaluator")
+    _require_eval_deps()
+    _require_worker_deps()
+
+    from multiverse.evaluation.cohort import resolve_cohort_readiness
+    from multiverse.worker import load_config
+
+    parser = argparse.ArgumentParser(description="Run cohort evaluation")
     parser.add_argument(
         "--config_path",
         type=str,
         default="/app/config_alldatasets.json",
-        help="Path to the configuration file",
+        help="Path to the trimmed evaluation config (eval_config.json)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-evaluate members even if a prior 'done' result exists.",
     )
     args = parser.parse_args()
+    config = load_config(args.config_path)
 
-    config = load_config(config_path=args.config_path)
-    os.makedirs(config["output_dir"], exist_ok=True)
-    setup_logging(config["output_dir"])
+    member_results = evaluate_cohort(config, force=args.force)
 
-    # Data information from config file
-    datasets = load_datasets(args.config_path)
-    data_concat = dataset_select(datasets_dict=datasets, data_type="concatenate")
-
-    try:
-        for dataset_name, data_dict in data_concat.items():
-            # Instantiate and run model
-            evaluator = Evaluator(
-                dataset=data_dict,
-                dataset_name=dataset_name,
-                config_path=args.config_path,
-            )
-            # Run the model pipeline
-            evaluator.load_embeddings()
-            evaluator.evaluate_models()
-
-            logger.info(f"Evaluation completed for {dataset_name}.")
-    except Exception as e:
-        logger.error(f"An error occurred during evaluation: {e}")
-        # Optionally, re-raise the exception to indicate failure to the container runner
-        raise
+    # Write a launch-level report from the members the container saw. The host
+    # GUI rebuilds the authoritative report with live readiness on render.
+    output_dir = Path(config["output_dir"])
+    launch_id = config["launch_id"]
+    members_with_status = resolve_cohort_readiness(config)
+    report = eval_result.build_evaluation_report(
+        cohort=config,
+        members_with_status=members_with_status,
+        member_results=member_results,
+    )
+    eval_result.write_evaluation_report(
+        output_dir=output_dir, launch_id=launch_id, report=report
+    )
+    logger.info(
+        "Evaluation complete: %s members, status counts %s",
+        report["total"], report["status_counts"],
+    )
 
 
 if __name__ == "__main__":

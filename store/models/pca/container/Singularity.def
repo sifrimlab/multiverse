@@ -1,0 +1,21 @@
+Bootstrap: docker
+From: mambaorg/micromamba:1.5.1
+
+%files
+    store/models/pca/container/environment.yml /opt/environment.yml
+    store/models/pca/container/run.py /app/run.py
+    pyproject.toml /opt/multiverse/pyproject.toml
+    README.md /opt/multiverse/README.md
+    multiverse/ /opt/multiverse/multiverse/
+
+%post
+    micromamba install -y -n base -f /opt/environment.yml
+    micromamba clean --all --yes
+    # --no-deps: model conda env already provides scientific deps (h5py, numpy, mudata, anndata, pandas)
+    pip install "/opt/multiverse[worker]" --no-deps
+
+%environment
+    export LD_LIBRARY_PATH=/opt/conda/lib:$LD_LIBRARY_PATH
+
+%runscript
+    exec python /app/run.py "$@"

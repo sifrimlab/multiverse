@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from streamlit.testing.v1 import AppTest
 
-
 APP_PATH = "multiverse/gui.py"
 
 
 def _button_labels(at: AppTest) -> list[str]:
-    return [getattr(button, "label", getattr(button, "value", "")) for button in at.button]
+    return [
+        getattr(button, "label", getattr(button, "value", "")) for button in at.button
+    ]
 
 
 def test_app_renders_button_navigation(monkeypatch):

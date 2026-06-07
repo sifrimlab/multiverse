@@ -2,11 +2,14 @@ name: MOFA
 version: 1.0.0
 contract_version: 1.0.0
 supported_omics:
-  - rna
-  - atac
+  - any
 runtime:
   image: multiverse-mofa:1.0.0
-hyperparameters_schema: schemas/models/mofa.hyperparameters.schema.json
+hyperparameters_schema: store/models/mofa/hyperparameters.schema.json
 build:
   context: ../../..
   dockerfile: store/models/mofa/container/Dockerfile
+apptainer:
+  build_from: def_file
+  def_file: store/models/mofa/container/Singularity.def
+  gpu_required: false
