@@ -1,35 +1,49 @@
 [project]
-name = "multi-verse"
+name = "multiverse"
 version = "0.1.0"
-description = "A package for comparing multimodal data integration methods"
+description = "A platform for comparing multimodal data integration methods"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
     "docker>=6.1.3",
     "rich>=13.0",
     "pyyaml",
-    "optuna",
     "psutil>=5.9.0",
     "mlflow>=2.16.0",
-    "mvr-worker",
+    "optuna",
+    "streamlit>=1.55.0",
+    # h5py is a control-plane dependency: run planning peeks into dataset .obs
+    # (obs count, batch/cell-type columns) via h5py before any container runs.
+    "h5py",
 ]
 
 [project.scripts]
 multiverse = "multiverse.cli_entrypoints:main"
 multiverse-cli = "multiverse.runner.cli:main"
 multiverse-rebuild-metrics = "multiverse.tools.rebuild_run_metrics:main"
-mvr-evaluate = "multiverse.evaluate:main"
+multiverse-evaluate = "multiverse.evaluate:main"
 
-[dependency-groups]
-dev = [
-    "pytest",
-    "pytest-asyncio>=1.3.0",
-    "playwright>=1.58.0",
-    "pytest-playwright>=0.7.2",
+[project.optional-dependencies]
+worker = [
+    "h5py",
+    "numpy",
+    "mudata",
+    "anndata",
+    "pandas",
 ]
+
+eval = [
+    "h5py",
+    "numpy",
+    "mudata",
+    "anndata",
+    "pandas",
+    "muon==0.1.7",
+    "scib-metrics",
+]
+
 ml-legacy = [
-    "streamlit>=1.55.0",
     "scvi-tools==1.2.0",
     "scanpy==1.10.3",
     "muon==0.1.7",
@@ -46,12 +60,19 @@ ml-legacy = [
     "torch",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio>=1.3.0",
+    "playwright>=1.58.0",
+    "pytest-playwright>=0.7.2",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["multiverse"]
 
 [tool.uv.sources]
 cobolt = { git = "https://github.com/epurdom/cobolt.git" }
-mvr-worker = { path = "sdk/mvr-worker", editable = true }
 
 [build-system]
 requires = ["hatchling"]

@@ -20,7 +20,7 @@ def _isolate(monkeypatch, base):
     datasets = store / "datasets"
     for attr, path in {
         "BASE_DIR": base,
-        "DB_NAME": base / "mvexp_state.db",
+        "DB_NAME": base / "multiverse_state.db",
         "STORE_DIR": store,
         "DATASETS_DIR": datasets,
         "RAW_DATASETS_DIR": datasets / "raw",

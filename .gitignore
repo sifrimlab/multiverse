@@ -60,3 +60,4 @@ site/
 
 !store/models/**/Singularity.def
 *.pyc
+.claude

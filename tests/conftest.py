@@ -114,7 +114,7 @@ def dummy_registry_file(tmp_path):
 def test_data_dir():
     """Create a temporary directory with minimal anndata test data."""
     ad = _require("anndata")
-    temp_dir = tempfile.mkdtemp(prefix="mvexp_test_")
+    temp_dir = tempfile.mkdtemp(prefix="multiverse_test_")
     data_dir = os.path.join(temp_dir, "test_data")
     os.makedirs(data_dir, exist_ok=True)
 

@@ -62,7 +62,7 @@ def test_register_from_manifest_inserts_row(tmp_path, monkeypatch):
     )
 
     monkeypatch.setattr(registry_db, "BASE_DIR", str(base))
-    monkeypatch.setattr(registry_db, "DB_NAME", str(base / "mvexp_state.db"))
+    monkeypatch.setattr(registry_db, "DB_NAME", str(base / "multiverse_state.db"))
     monkeypatch.setattr(registry_db, "STORE_DIR", str(store))
     monkeypatch.setattr(registry_db, "DATASETS_DIR", str(datasets))
     monkeypatch.setattr(registry_db, "RAW_DATASETS_DIR", str(datasets / "raw"))

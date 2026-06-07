@@ -230,7 +230,7 @@ def test_rebuild_index_populates_user_id(tmp_path: Path) -> None:
 
     attempt = asyncio.run(_run())
 
-    db_path = state_root / "mvexp_state.db"
+    db_path = state_root / "multiverse_state.db"
     with open_index(db_path) as idx:
         result = rebuild_index(
             index=idx,
@@ -307,7 +307,7 @@ def test_rebuild_index_null_user_id_for_pre_g2_journal(tmp_path: Path) -> None:
 
     attempt = asyncio.run(_run())
 
-    db_path = state_root / "mvexp_state.db"
+    db_path = state_root / "multiverse_state.db"
     with open_index(db_path) as idx:
         rebuild_index(index=idx, state_root=state_root, store=store, truncate=True)
         row = idx.get_run(attempt)

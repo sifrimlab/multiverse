@@ -8,8 +8,9 @@ RUN micromamba create -y -f /tmp/environment.yml && micromamba clean -afy
 
 ENV PATH=/opt/conda/envs/multiverse_totalvi/bin:$PATH
 
-COPY sdk/mvr-worker/ /tmp/mvr-worker/
-RUN pip install /tmp/mvr-worker/
+COPY pyproject.toml README.md /tmp/multiverse/
+COPY multiverse/ /tmp/multiverse/multiverse/
+RUN pip install "/tmp/multiverse[worker]"
 
 COPY store/models/totalvi/container/run.py /app/run.py
 ENTRYPOINT ["python", "/app/run.py"]

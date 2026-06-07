@@ -51,7 +51,7 @@ def test_rebuild_index_does_not_delete_incomplete_promotion(tmp_path: Path) -> N
     writer.close()
 
     snapshot_files = sorted(p.name for p in artifact_dir.iterdir())
-    with open_index(state_root / "mvexp_state.db") as idx:
+    with open_index(state_root / "multiverse_state.db") as idx:
         result = rebuild_index(index=idx, state_root=state_root, store=store)
         run = idx.get_run("att-recover")
 

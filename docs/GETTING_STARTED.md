@@ -1,6 +1,6 @@
 # Getting Started
 
-This tutorial walks through a first mvexp benchmark, from a Jupyter-prepared object to a model embedding you can inspect again in Scanpy. The guiding idea is to keep the biology in your notebook and let mvexp handle the repeatable execution between curation and interpretation.
+This tutorial walks through a first multiverse benchmark, from a Jupyter-prepared object to a model embedding you can inspect again in Scanpy. The guiding idea is to keep the biology in your notebook and let multiverse handle the repeatable execution between curation and interpretation.
 
 ## What You Will Do
 
@@ -8,7 +8,8 @@ This tutorial walks through a first mvexp benchmark, from a Jupyter-prepared obj
 2. Register it in the Streamlit GUI.
 3. Configure a benchmark plan.
 4. Launch the run.
-5. Read `embeddings.h5` back into Jupyter.
+5. Evaluate completed artifacts in the Run tab.
+6. Read `embeddings.h5` back into Jupyter.
 
 ## Before You Start
 
@@ -19,6 +20,7 @@ make bootstrap      # uv sync --group dev + init registry + register built-in mo
 make register-all-datasets # add all the datasets
 make services-up    # optional: MLflow on :25000, Optuna Dashboard on :28080
 make setup          # optional: GUI and ML model wrapper extras (Streamlit, Scanpy, scvi-tools)
+make build-evaluate # optional: prebuild the evaluation image used by Evaluate
 make gui            # Streamlit on :28501
 ```
 
@@ -73,7 +75,7 @@ mdata.write_h5mu(dataset_dir / "data" / "processed.h5mu")
 
 ## Step 2: Create a Dataset Manifest
 
-The manifest describes what you saved and lets mvexp register the dataset consistently.
+The manifest describes what you saved and lets multiverse register the dataset consistently.
 
 ```python
 import yaml
@@ -88,7 +90,7 @@ with open("store/datasets/pbmc_rna/dataset.yaml", "w") as f:
     yaml.safe_dump(manifest, f, sort_keys=False)
 ```
 
-The `batch` key identifies the technical or donor grouping that batch-correction metrics will evaluate. The `cell_type` key identifies biological labels used by supervised metrics. If either column is absent, mvexp logs the value `"unknown"` for affected cells and disables the metrics that depend on the missing column. It does not silently invent biological labels.
+The `batch` key identifies the technical or donor grouping that batch-correction metrics will evaluate. The `cell_type` key identifies biological labels used by supervised metrics. If either column is absent, multiverse logs the value `"unknown"` for affected cells and disables the metrics that depend on the missing column. It does not silently invent biological labels.
 
 See [Data Preparation](DATA_PREPARATION.md) for additional recipes (RNA+ATAC, RNA+ADT).
 
@@ -138,12 +140,14 @@ uv run multiverse run --manifest run_manifest.yaml --output store/artifacts/run_
 ```
 
 
-## Step 6: Inspect Results
+## Step 6: Evaluate and Inspect Results
 
-1. Open the **Results** tab.
-2. Filter by experiment, dataset, model, or status.
-3. Select a run to view metrics, the model log, `job_spec.json`, and the artifact tree.
-4. Copy the artifact directory for notebook analysis.
+1. In the **Run** tab, find **Evaluate Experiment** after at least one job reaches `ARTIFACT_SUCCESS`.
+2. Click **Evaluate experiment**. The host prepares `.multiverse/launches/<launch_id>/eval_config.json` and runs the `multiverse-evaluate` container; the heavy evaluation stack is not imported by the GUI.
+3. Review the launch-level comparison table. It is derived from `.multiverse/launches/<launch_id>/evaluation_report.json` and includes one row per cohort member, with statuses such as `done`, `pending`, `not_ready`, `no_embeddings`, `obs_mismatch`, or `evaluation_failed`.
+4. Open the **Results** tab to filter by experiment, dataset, model, or status.
+5. Select a run to view metrics, the model log, `job_spec.json`, and the artifact tree.
+6. Copy the artifact directory for notebook analysis.
 
 The artifact layout is:
 
@@ -155,7 +159,7 @@ The artifact layout is:
   embeddings.h5
   metrics.json        # optional
   umap.png            # optional
-  run.log             # model SDK log (mvr_worker)
+  run.log             # model SDK log (multiverse.worker)
   container.log       # host-captured container stdout/stderr
   orchestrator.log    # host-side run reasoning (state transitions, failures)
 ```
@@ -166,13 +170,24 @@ Each run carries up to three logs, surfaced together under **Logs** in the Resul
 
 | File | Written by | Use it to debug |
 |---|---|---|
-| `run.log` | The model container via `mvr_worker` | Model-internal progress, metrics, warnings. |
+| `run.log` | The model container via `multiverse.worker` | Model-internal progress, metrics, warnings. |
 | `container.log` | The host (captured container stdout/stderr) | Crashes, tracebacks, OOMs, or non-SDK images that never wrote `run.log`. |
 | `orchestrator.log` | The host executor | Admission, launch, exit code, promotion outcome, and the exact failure reason. |
 
 Successful runs are promoted to `store/artifacts/<artifact-id>/`. Runs that fail before promotion keep their logs in the run's workspace at `<output-dir>/store/workspaces/<attempt-id>/`, and cancelled runs under `<output-dir>/store/cancelled/<date>/<attempt-id>/`. Session-wide CLI events are written to `<output-dir>/multiverse.log`, and kernel state-machine events to `<output-dir>/journal/current.log`.
 
-Set `MVEXP_LOG_LEVEL=DEBUG` (a level name or numeric value) before launching to raise verbosity across the host logs and the in-container `run.log`.
+Set `MULTIVERSE_LOG_LEVEL=DEBUG` (a level name or numeric value) before launching to raise verbosity across the host logs and the in-container `run.log`.
+
+Evaluation state for a launch lives beside the cohort, not inside promoted artifact directories:
+
+```text
+<output-dir>/.multiverse/launches/<launch_id>/
+  cohort.json
+  eval_config.json
+  evaluations/<member_id>.json
+  evaluation_report.json
+  plots/dataset_<dataset_slug>/scib_results.svg
+```
 
 For cross-run comparison and metric histories, open the **Analysis** tab or visit MLflow at `http://localhost:25000` directly.
 
@@ -190,9 +205,9 @@ with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
     embedding = f["latent"][:]
 
 adata = sc.read_h5ad("store/datasets/pbmc_rna/data/rna.h5ad")
-adata.obsm["X_mvexp_pca"] = embedding
+adata.obsm["X_multiverse_pca"] = embedding
 
-sc.pp.neighbors(adata, use_rep="X_mvexp_pca")
+sc.pp.neighbors(adata, use_rep="X_multiverse_pca")
 sc.tl.umap(adata)
 sc.pl.umap(adata, color=["batch", "cell_type"])
 ```
@@ -214,12 +229,14 @@ For a publication, keep these artifacts with the analysis:
 - `run_manifest.yaml`: datasets, models, parameters, seed, metric selection.
 - `job_spec.json`: exact per-job runtime instruction passed to the model container.
 - `metrics.json`: model metrics and training histories where available.
+- `.multiverse/launches/<launch_id>/evaluation_report.json`: launch-level scIB comparison and per-member evaluation statuses.
+- `.multiverse/launches/<launch_id>/evaluations/<member_id>.json`: structured outcome for each evaluated member.
 - `run.log` / `container.log`: model and host-captured execution logs.
 - `provenance.json`: additional provenance when present.
 
 A Methods paragraph can state:
 
-> Integration benchmarks were run with mvexp (commit `<sha>`). Datasets were registered with batch key `batch` and cell-type key `cell_type`. The benchmark plan, model parameters, random seed, and metric configuration are provided in Supplementary File X (`run_manifest.yaml`). Per-model runtime specifications and output provenance are archived with each run artifact.
+> Integration benchmarks were run with multiverse (commit `<sha>`). Datasets were registered with batch key `batch` and cell-type key `cell_type`. The benchmark plan, model parameters, random seed, and metric configuration are provided in Supplementary File X (`run_manifest.yaml`). Per-model runtime specifications and output provenance are archived with each run artifact.
 
 ## Where to Go Next
 

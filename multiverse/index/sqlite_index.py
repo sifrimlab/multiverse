@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-INDEX_FILENAME = "mvexp_state.db"
+INDEX_FILENAME = "multiverse_state.db"
 SCHEMA_VERSION = "4"
 
 

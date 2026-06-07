@@ -6,9 +6,9 @@ RUN pip install --no-cache-dir uv && \
 
 WORKDIR /app
 
-# Install only the GUI dependencies (ml-legacy group)
+# Install GUI dependencies from the project base deps (includes streamlit).
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --group ml-legacy --no-dev
+RUN uv sync --no-dev
 
 EXPOSE 8501
 

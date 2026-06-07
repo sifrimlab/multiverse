@@ -108,7 +108,7 @@ def test_simple_job_preprocessing_must_be_mapping():
 
 def _resolver():
     pytest.importorskip("mudata")
-    from mvr_worker import resolve_preprocess_params
+    from multiverse.worker import resolve_preprocess_params
 
     return resolve_preprocess_params
 

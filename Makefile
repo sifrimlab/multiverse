@@ -1,8 +1,8 @@
 # Makefile for the Multi-verse project
 
 # Keep state in the project directory for local development.
-# MVEXP_STATE_DIR can be overridden from the environment to point elsewhere.
-export MVEXP_STATE_DIR ?= $(CURDIR)
+# MULTIVERSE_STATE_DIR can be overridden from the environment to point elsewhere.
+export MULTIVERSE_STATE_DIR ?= $(CURDIR)
 
 # Observability host ports (.env overrides; high defaults for shared servers).
 MLFLOW_PORT ?= 25000
@@ -26,8 +26,8 @@ init:
 
 .PHONY: setup
 setup:
-	@echo "Installing GUI/local-runner dependencies using uv (dev + ml-legacy)..."
-	uv sync --group dev --group ml-legacy
+	@echo "Installing GUI/local-runner dependencies (dev + ml-legacy)..."
+	uv sync --group dev --extra ml-legacy
 
 .PHONY: gui
 gui:
@@ -112,7 +112,7 @@ build-totalvi:
 .PHONY: build-evaluate
 build-evaluate:
 	@echo "Building evaluation image..."
-	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/evaluation.Dockerfile -t multiverse-evaluate .
+	docker build $(DOCKER_BUILD_FLAGS) -f $(DOCKER_ENV)/evaluation.Dockerfile -t multiverse-evaluate:1.0.0 -t multiverse-evaluate:latest .
 
 
 # --- Observability Services ---

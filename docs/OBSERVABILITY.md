@@ -1,6 +1,6 @@
 # Observability
 
-mvexp ships two observability services as part of `docker-compose.yml`: an MLflow tracking server and an Optuna Dashboard. They are launched by `make services-up` and stopped by `make services-down`. The Streamlit **Analysis** tab embeds both, but each is also a fully featured standalone web UI.
+multiverse ships two observability services as part of `docker-compose.yml`: an MLflow tracking server and an Optuna Dashboard. They are launched by `make services-up` and stopped by `make services-down`. The Streamlit **Analysis** tab embeds both, but each is also a fully featured standalone web UI.
 
 This page documents what gets logged where, how the components are wired, and how to verify connectivity. It is written for platform operators; researchers can usually rely on the embedded views without thinking about the plumbing.
 
@@ -20,7 +20,7 @@ Each containerized model execution corresponds to **one MLflow run**, opened by 
 
 1. **Hyperparameters and tags** — logged at run start by `multiverse.tracking.start_parent_mlflow_run()`, so they are visible in MLflow before training begins.
 2. **System metrics** — CPU, GPU, and RAM utilization sampled by MLflow's built-in monitor while the parent run is open (i.e., the duration of the container).
-3. **Per-epoch metrics** — streamed from inside the container by `mvr_worker.EpochLogger`. The host injects `MLFLOW_RUN_ID` into the container environment, and `EpochLogger` attaches to that run instead of opening a duplicate. Models without per-epoch hooks (e.g. PCA) skip this step.
+3. **Per-epoch metrics** — streamed from inside the container by `multiverse.worker.EpochLogger`. The host injects `MLFLOW_RUN_ID` into the container environment, and `EpochLogger` attaches to that run instead of opening a duplicate. Models without per-epoch hooks (e.g. PCA) skip this step.
 4. **Final scalars and artifacts** — appended by the host after the container exits via `log_successful_run_to_mlflow()`, which sanitises `NaN`/`±Inf`, flattens nested metric dictionaries, and then closes the run with status `FINISHED` or `FAILED`.
 
 Optuna sweeps appear as **child runs** under a parent MLflow run that represents the study, so a sweep's trials remain navigable as a group.
@@ -74,6 +74,6 @@ Inside a model container, the SDK's `EpochLogger` will log a warning and fall ba
 |---|---|---|
 | `Analysis` tab is blank | Service not running. | `make services-up`; check `make status`. |
 | MLflow has no entry for a successful run | Container could not reach the tracking server. | Confirm `MLFLOW_TRACKING_URI` resolves from inside the container. |
-| Duplicate runs in MLflow | A model container opened its own run instead of attaching to `MLFLOW_RUN_ID`. | Use `EpochLogger` from `mvr-worker`; do not call `mlflow.start_run()` directly in container code. |
+| Duplicate runs in MLflow | A model container opened its own run instead of attaching to `MLFLOW_RUN_ID`. | Use `EpochLogger` from `multiverse.worker`; do not call `mlflow.start_run()` directly in container code. |
 | Optuna Dashboard empty | No study has been created yet. | Run a manifest with `run_gridsearch: true`. |
 | `store/mlflow.db-wal` growing large | Many concurrent writes. | Expected during heavy benchmarking; SQLite checkpoints periodically. |

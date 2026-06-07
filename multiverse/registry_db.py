@@ -1,7 +1,7 @@
 """Legacy registry — dataset and model tables (STRATEGY G6 / M5).
 
 This module owns the **datasets** and **models** tables in the legacy
-combined ``mvexp_state.db``. The canonical NEW location for this code
+combined ``multiverse_state.db``. The canonical NEW location for this code
 is :mod:`multiverse.asset_registry`, which writes to a separate
 ``asset_registry.db`` and does not share a DB file with the kernel's
 projection index.
@@ -38,7 +38,7 @@ BASE_DIR = str(_PACKAGE_DIR.parent)
 # Kept as rebindable names so ``monkeypatch.setattr(registry_db, "DB_NAME",
 # ...)`` in the test suite continues to work.
 _DEFAULT_STATE_ROOT = str(_resolve_state_root())
-DB_NAME = os.path.join(_DEFAULT_STATE_ROOT, "mvexp_state.db")
+DB_NAME = os.path.join(_DEFAULT_STATE_ROOT, "multiverse_state.db")
 STORE_DIR = os.path.join(_DEFAULT_STATE_ROOT, "store")
 DATASETS_DIR = os.path.join(STORE_DIR, "datasets")
 # Legacy/backwards-compatible scaffolding (issue #23): the current dataset
@@ -54,16 +54,16 @@ WORKSPACES_DIR = os.path.join(STORE_DIR, "workspaces")
 
 
 class LegacyStateDirError(RuntimeError):
-    """Raised when a pre-M1 ``mvexp_state.db`` exists inside the package
+    """Raised when a pre-M1 ``multiverse_state.db`` exists inside the package
     directory and the caller has not explicitly opted into using it."""
 
 
 def _check_legacy_db_refusal() -> None:
-    if os.environ.get("MVEXP_ALLOW_LEGACY_DB") == "1":
+    if os.environ.get("MULTIVERSE_ALLOW_LEGACY_DB") == "1":
         return
     configured_db = os.path.abspath(DB_NAME)
     current_default = os.path.abspath(
-        os.path.join(str(_resolve_state_root()), "mvexp_state.db")
+        os.path.join(str(_resolve_state_root()), "multiverse_state.db")
     )
     if configured_db != current_default:
         return
@@ -77,11 +77,11 @@ def _check_legacy_db_refusal() -> None:
         f"pre-M1 database still exists at {str(legacy)!r}.\n"
         "\n"
         "Pick one:\n"
-        "  1. Move it: run `mvexp migrate-state-dir` (recommended).\n"
-        "  2. Keep using the legacy location: set MVEXP_STATE_DIR to "
+        "  1. Move it: run `multiverse migrate-state-dir` (recommended).\n"
+        "  2. Keep using the legacy location: set MULTIVERSE_STATE_DIR to "
         f"{str(legacy.parent)!r}.\n"
         "  3. Acknowledge and proceed regardless: set "
-        "MVEXP_ALLOW_LEGACY_DB=1 (NOT recommended; orphans the legacy data).\n"
+        "MULTIVERSE_ALLOW_LEGACY_DB=1 (NOT recommended; orphans the legacy data).\n"
     )
 
 
@@ -104,7 +104,7 @@ def init_db() -> None:
     """Initialize the legacy combined DB schema.
 
     Creates directories, then creates the datasets, models, and legacy
-    runs/run_metrics stub tables in ``mvexp_state.db``.
+    runs/run_metrics stub tables in ``multiverse_state.db``.
     """
     for directory in [RAW_DATASETS_DIR, MODELS_DIR, ARTIFACTS_DIR, WORKSPACES_DIR]:
         os.makedirs(directory, exist_ok=True)

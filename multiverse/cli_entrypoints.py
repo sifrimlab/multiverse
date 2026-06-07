@@ -56,7 +56,7 @@ def doctor_main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         default=None,
         help="State root for the state-paths probe "
-        "(default: $MVEXP_STATE_DIR / config / $XDG_STATE_HOME/mvexp / $HOME/.mvexp).",
+        "(default: $MULTIVERSE_STATE_DIR / config / $XDG_STATE_HOME/multiverse / $HOME/.multiverse).",
     )
     parser.add_argument(
         "--repair-health-probes",
@@ -239,7 +239,7 @@ def rebuild_index_main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         default=None,
         help="State root containing journal/ "
-        "(default: $MVEXP_STATE_DIR / config / $XDG_STATE_HOME/mvexp / $HOME/.mvexp).",
+        "(default: $MULTIVERSE_STATE_DIR / config / $XDG_STATE_HOME/multiverse / $HOME/.multiverse).",
     )
     parser.add_argument(
         "--store-root",
@@ -251,7 +251,7 @@ def rebuild_index_main(argv: Optional[List[str]] = None) -> int:
         "--db",
         type=Path,
         default=None,
-        help="SQLite index file (default <state-root>/mvexp_state.db).",
+        help="SQLite index file (default <state-root>/multiverse_state.db).",
     )
     parser.add_argument(
         "--no-truncate",
@@ -448,6 +448,69 @@ def mlflow_sync_main(argv: Optional[List[str]] = None) -> int:
     return 0 if result.outcome is SyncOutcome.SYNCED else 1
 
 
+# ---------------------------------------------------------------------------
+# multiverse evaluate
+# ---------------------------------------------------------------------------
+
+
+def evaluate_main(argv: Optional[List[str]] = None) -> int:
+    """Run cohort evaluation inside the ``multiverse-evaluate`` container.
+
+    Keeps the host thin: the heavy scientific stack lives only in the image.
+    """
+    parser = argparse.ArgumentParser(prog="multiverse evaluate")
+    parser.add_argument(
+        "--cohort",
+        type=Path,
+        required=True,
+        help="Path to a launch cohort.json (under <output>/.multiverse/launches/<id>/).",
+    )
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="Evaluation image tag (default: $MULTIVERSE_EVALUATION_IMAGE or "
+        "multiverse-evaluate:latest).",
+    )
+    parser.add_argument(
+        "--all-members",
+        action="store_true",
+        help="Evaluate every cohort member, not just the ready ones (advanced; "
+        "may fail on incomplete runs).",
+    )
+    parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Rebuild the evaluation image before running, even if it exists.",
+    )
+    parser.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Do not auto-build a missing image; fail with a build hint instead.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-evaluate members already recorded as 'done' instead of skipping "
+        "them (evaluation is idempotent by default).",
+    )
+    args = parser.parse_args(argv)
+
+    from .evaluation.docker_runner import EvaluationError, run_cohort_evaluation
+
+    try:
+        return run_cohort_evaluation(
+            args.cohort,
+            image=args.image,
+            ready_members_only=not args.all_members,
+            force=args.force,
+            auto_build=not args.no_build,
+            force_build=args.force_build,
+        )
+    except EvaluationError as exc:
+        print(f"evaluate: {exc}", file=sys.stderr)
+        return 2
+
+
 def _build_mlflow_target(tracking_uri: Optional[str]):
     """Lazy-construct a real MLflow target. Tests substitute via
     ``--bundle`` against an unreachable URI to exercise the failure
@@ -456,12 +519,15 @@ def _build_mlflow_target(tracking_uri: Optional[str]):
     import os
 
     try:
-        import mlflow  # type: ignore  # noqa: F401
+        from multiverse.mlflow_sdk import import_mlflow
+
+        import_mlflow()
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise RuntimeError(
-            "the mlflow package is required for mlflow-sync; install the "
-            "ml-legacy extra"
+            "the mlflow package is required for mlflow-sync; install multiverse"
         ) from exc
+
+    mlflow = import_mlflow()
 
     from multiverse.ports import default_mlflow_tracking_uri
 
@@ -566,7 +632,7 @@ def migrate_state_dir_main(argv: Optional[List[str]] = None) -> int:
         )
         return 0
 
-    src_db = src / "mvexp_state.db"
+    src_db = src / "multiverse_state.db"
     src_store = src / "store"
     src_journal = src / "journal"
 
@@ -576,7 +642,7 @@ def migrate_state_dir_main(argv: Optional[List[str]] = None) -> int:
     if src_store.is_dir():
         plan.append((src_store, dst / "store", "store/"))
     if src_db.is_file():
-        plan.append((src_db, dst / "mvexp_state.db", "mvexp_state.db"))
+        plan.append((src_db, dst / "multiverse_state.db", "multiverse_state.db"))
 
     if not plan:
         print(f"migrate-state-dir: nothing to migrate at {str(src)!r}.")
@@ -612,7 +678,7 @@ def migrate_state_dir_main(argv: Optional[List[str]] = None) -> int:
     dst.mkdir(parents=True, exist_ok=True)
     # Move the DB last; a failure mid-flight in store/ leaves the legacy
     # install fully bootable.
-    plan_ordered = sorted(plan, key=lambda item: item[2] == "mvexp_state.db")
+    plan_ordered = sorted(plan, key=lambda item: item[2] == "multiverse_state.db")
     for source, target, label in plan_ordered:
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -634,7 +700,7 @@ def migrate_state_dir_main(argv: Optional[List[str]] = None) -> int:
         try:
             breadcrumb.write_text(
                 f"multiverse state migrated to {str(dst)!r} by "
-                "`mvexp migrate-state-dir --apply`.\n",
+                "`multiverse migrate-state-dir --apply`.\n",
                 encoding="utf-8",
             )
         except OSError:
@@ -665,7 +731,7 @@ def slurm_submit_main(argv: Optional[List[str]] = None) -> int:
         "--state-root",
         type=Path,
         default=None,
-        help="State root (default: $MVEXP_STATE_DIR / config / $XDG_STATE_HOME/mvexp / $HOME/.mvexp).",
+        help="State root (default: $MULTIVERSE_STATE_DIR / config / $XDG_STATE_HOME/multiverse / $HOME/.multiverse).",
     )
     parser.add_argument("--model-slug", required=True)
     parser.add_argument(
@@ -1073,6 +1139,7 @@ COMMANDS = {
     "rebuild-index": rebuild_index_main,
     "gc": gc_main,
     "mlflow-sync": mlflow_sync_main,
+    "evaluate": evaluate_main,
     "migrate-state-dir": migrate_state_dir_main,
     "slurm-submit": slurm_submit_main,
     "build-sif": build_sif_main,
@@ -1140,6 +1207,7 @@ def _print_usage() -> None:
         "  rebuild-index   rebuild the SQLite index from journal + artifacts\n"
         "  gc              dry-run by default; --apply to delete (Tier-2 gates)\n"
         "  mlflow-sync     push an artifact bundle into MLflow\n"
+        "  evaluate        run cohort evaluation in the multiverse-evaluate container\n"
         "  migrate-state-dir  move a pre-M1 state directory to the resolver location\n"
         "  slurm-submit    submit one job through MvdSlurmExecutor (M4)\n"
         "  build-sif       build an Apptainer SIF from a model's Dockerfile or Singularity.def",

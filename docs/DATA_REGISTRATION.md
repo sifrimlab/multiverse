@@ -1,12 +1,12 @@
 # Data Registration
 
-This how-to explains how to make a prepared dataset visible to mvexp through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` or `uv run multiverse register-dataset --slug <slug>`.
+This how-to explains how to make a prepared dataset visible to multiverse through the Streamlit **Registry** tab. The CLI equivalent is `make register slug=<slug>` or `uv run multiverse register-dataset --slug <slug>`.
 
 Use [Data Preparation](DATA_PREPARATION.md) for notebook-side formatting details. This page focuses on onboarding the prepared files into the platform.
 
 ## What Registration Does
 
-Registration tells mvexp:
+Registration tells multiverse:
 
 - what the dataset is called;
 - which modalities are available;
@@ -20,7 +20,7 @@ Registration does not change your biology. It creates a reproducible dataset rec
 
 ## Tutorial: Register a Dataset Visually
 
-1. Start mvexp and open the Streamlit GUI.
+1. Start multiverse and open the Streamlit GUI.
 2. Open the **Registry** tab.
 3. Expand **Register New Dataset**.
 4. Switch on **Build manifest from fields** if you do not already have a `dataset.yaml`.
@@ -121,7 +121,7 @@ uv run multiverse register-dataset --slug hello_pbmc --update
 
 ## Explanation: Why Metadata Keys Matter
 
-The same embedding can look good or bad depending on the biological question. `batch_key` tells mvexp which technical or donor grouping should be mixed. `cell_type_key` tells mvexp which biological labels should be preserved.
+The same embedding can look good or bad depending on the biological question. `batch_key` tells multiverse which technical or donor grouping should be mixed. `cell_type_key` tells multiverse which biological labels should be preserved.
 
 ```mermaid
 flowchart TD

@@ -143,7 +143,7 @@ def test_grant_release_produces_two_rows(tmp_path: Path) -> None:
 
     attempt = asyncio.run(_run())
 
-    db_path = state_root / "mvexp_state.db"
+    db_path = state_root / "multiverse_state.db"
     with open_index(db_path) as idx:
         rebuild_index(index=idx, state_root=state_root, store=store, truncate=True)
         events = idx.list_reservation_events(attempt)
@@ -196,7 +196,7 @@ def test_grant_without_release_produces_one_row_no_drift(tmp_path: Path) -> None
     )
     journal.commit()
 
-    db_path = state_root / "mvexp_state.db"
+    db_path = state_root / "multiverse_state.db"
     with open_index(db_path) as idx:
         rebuild_index(index=idx, state_root=state_root, store=store, truncate=True)
         events = idx.list_reservation_events(attempt_id)
@@ -290,7 +290,7 @@ def test_full_rebuild_restores_timeline_for_three_attempts(tmp_path: Path) -> No
     journal3.commit()
 
     # Delete the DB and rebuild from scratch.
-    db_path = state_root / "mvexp_state.db"
+    db_path = state_root / "multiverse_state.db"
     if db_path.exists():
         db_path.unlink()
 

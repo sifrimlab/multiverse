@@ -26,7 +26,8 @@ def _build_context_tar(context_path: Path, dockerfile_rel: str) -> io.BytesIO:
     storage driver's UID map.
 
     Only includes what each Dockerfile actually COPYs:
-      - sdk/mvr-worker/  (pip install target)
+      - pyproject.toml + README.md  (package metadata)
+      - multiverse/                 (orchestrator + worker SDK)
       - store/models/<model>/container/  (Dockerfile, environment.yml, run.py)
     """
     buf = io.BytesIO()
@@ -42,9 +43,15 @@ def _build_context_tar(context_path: Path, dockerfile_rel: str) -> io.BytesIO:
         tar.add(str(abs_path), arcname=arcname, recursive=True, filter=_strip_uid)
 
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        sdk_dir = context_path / "sdk" / "mvr-worker"
-        if sdk_dir.exists():
-            _add(tar, sdk_dir, "sdk/mvr-worker")
+        # Package metadata
+        for fname in ("pyproject.toml", "README.md"):
+            meta_file = context_path / fname
+            if meta_file.exists():
+                tar.add(str(meta_file), arcname=fname, filter=_strip_uid)
+        # Package source
+        multiverse_dir = context_path / "multiverse"
+        if multiverse_dir.exists():
+            _add(tar, multiverse_dir, "multiverse")
         container_dir = (context_path / dockerfile_rel).parent
         container_arcdir = str(Path(dockerfile_rel).parent)
         _add(tar, container_dir, container_arcdir)

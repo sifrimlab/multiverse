@@ -177,6 +177,52 @@ def test_build_cohort_mixed_submitted_and_skipped():
     assert members[1]["logical_run_id"] == "lrid-abc"
 
 
+def test_build_cohort_maps_cell_type_key_to_label_key():
+    """Phase 0 / Gap 9: the registry-side ``cell_type_key`` must surface on the
+    cohort member as ``label_key`` (scIB nomenclature) so the evaluator reads a
+    field that actually exists, instead of silently defaulting to "cell_type".
+    """
+    job = _job("pbmc", "pca")
+    job["cell_type_key"] = "celltype_annot"
+    job["batch_key"] = "donor"
+    cohort = build_cohort(
+        launch_id="lid",
+        manifest_hash=MANIFEST_HASH,
+        manifest_path="/tmp/m.yaml",
+        output_dir="/out",
+        experiment_name="exp",
+        seed=SEED,
+        backend=BACKEND,
+        pending_jobs=[job],
+        created_at=CREATED_AT,
+    )
+    member = cohort["members"][0]
+    assert member["label_key"] == "celltype_annot"
+    assert member["batch_key"] == "donor"
+    # The member carries no ``cell_type_key`` field — the evaluator must read
+    # ``label_key`` (regression guard for the dropped-key bug).
+    assert "cell_type_key" not in member
+
+
+def test_prepare_evaluation_config_preserves_label_key(tmp_path):
+    """Phase 0 / Gap 9: the trimmed eval_config the container consumes must
+    carry ``label_key`` end-to-end. Uses ready_members_only=False to bypass the
+    artifact-readiness gate (covered separately) and isolate the key flow.
+    """
+    from multiverse.evaluation.docker_runner import prepare_evaluation
+
+    job = _job("pbmc", "pca")
+    job["cell_type_key"] = "celltype_annot"
+    launch_id, _cohort = _write_fake_cohort(tmp_path, [job])
+
+    plan = prepare_evaluation(
+        cohort_path(tmp_path, launch_id), ready_members_only=False
+    )
+    with open(plan.config_path, encoding="utf-8") as fh:
+        eval_cohort = json.load(fh)
+    assert eval_cohort["members"][0]["label_key"] == "celltype_annot"
+
+
 def test_build_cohort_all_skipped():
     jobs = [
         _job("ds1", "m1", skipped=True, completed_attempt_id="a1", completed_artifact_dir="/a1"),

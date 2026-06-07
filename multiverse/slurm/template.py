@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from ..contract import JOB_SPEC_FILENAME
+
 
 @dataclass(frozen=True)
 class SlurmJobSpec:
@@ -109,6 +111,13 @@ def render_sbatch_script(spec: SlurmJobSpec) -> str:
                 "cp " + shlex.quote(str(spec.image_sif)) + ' "$SLURM_TMPDIR/image.sif"'
             )
         lines.append('mkdir -p "$SLURM_TMPDIR/output"')
+        # The orchestrator wrote job_spec.json into the workspace before
+        # sbatch. In tmpdir mode /output is bound to scratch, not the
+        # workspace, so stage the spec into scratch before launch — otherwise
+        # /output/job_spec.json is missing inside the container. The trailing
+        # copy-back step below preserves it in the workspace too.
+        job_spec_src = shlex.quote(str(spec.workspace / JOB_SPEC_FILENAME))
+        lines.append(f'cp {job_spec_src} "$SLURM_TMPDIR/output/{JOB_SPEC_FILENAME}"')
         lines.append("")
 
     # Apptainer invocation: bind the dataset (RO) and an output dir (RW) into

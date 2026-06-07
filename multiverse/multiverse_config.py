@@ -7,7 +7,7 @@ subdirectory of the resolved state root rather than the package dir.
 
 Legacy installs are honored read-only: if a config file exists at the
 old location and no per-user one does yet, we read it but never write
-back there. ``mvexp migrate-state-dir`` is the one-shot relocation.
+back there. ``multiverse migrate-state-dir`` is the one-shot relocation.
 """
 
 import os
@@ -26,10 +26,10 @@ def _default_user_config_path() -> Path:
     env = os.environ
     xdg = env.get("XDG_CONFIG_HOME")
     if xdg:
-        return Path(xdg) / "mvexp" / CONFIG_FILENAME
+        return Path(xdg) / "multiverse" / CONFIG_FILENAME
     home = env.get("HOME")
     if home:
-        return Path(home) / ".config" / "mvexp" / CONFIG_FILENAME
+        return Path(home) / ".config" / "multiverse" / CONFIG_FILENAME
     return Path.cwd() / CONFIG_FILENAME
 
 

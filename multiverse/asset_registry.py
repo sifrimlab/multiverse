@@ -4,7 +4,7 @@ Owns the **datasets** and **models** SQLite tables. These are
 user-supplied registrations — not journal projections — and are
 therefore NOT rebuildable from the journal. The data here is canonical
 and lives in its own DB file (``asset_registry.db``) under the state
-root, separate from the kernel's ``mvexp_state.db`` projection.
+root, separate from the kernel's ``multiverse_state.db`` projection.
 
 Migration path from the legacy combined DB: run
 ``multiverse migrate-asset-registry`` to copy the tables across.
@@ -407,7 +407,7 @@ def migrate_from_legacy_db(
     state_root: Optional[Path] = None,
     dry_run: bool = False,
 ) -> Dict[str, int]:
-    """Copy datasets and models rows from a legacy mvexp_state.db.
+    """Copy datasets and models rows from a legacy multiverse_state.db.
 
     Returns ``{"datasets": N, "models": N}`` counts.
     Raises ``RuntimeError`` if the target asset_registry.db already has rows

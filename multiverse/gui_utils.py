@@ -235,12 +235,6 @@ def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
     The @st.cache_data(ttl=5) ensures at most one real API round-trip per
     5-second window, shared across Streamlit sessions.
     """
-    try:
-        from mlflow.tracking import \
-            MlflowClient  # type: ignore[import-untyped]  # lazy
-    except ImportError:
-        return []
-
     _STATUS_LABELS = {
         "RUNNING": "Running",
         "FINISHED": "Finished",
@@ -249,7 +243,9 @@ def fetch_live_metrics(experiment_name: str, tracking_uri: str) -> list[dict]:
     }
 
     try:
-        client = MlflowClient(tracking_uri=tracking_uri)
+        from multiverse.mlflow_sdk import get_mlflow_client
+
+        client = get_mlflow_client(tracking_uri=tracking_uri)
         exp = client.get_experiment_by_name(experiment_name)
         if exp is None:
             return []

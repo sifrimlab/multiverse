@@ -40,6 +40,7 @@ from ..artifact import (ArtifactManifest, BootContext, ImageIdentity,
                         produced_at_now, runtime_identity_fingerprint,
                         verify_runtime_identity_matches_source)
 from ..broker import ResourceBroker, ResourceRequest
+from ..contract import job_spec_payload, write_job_spec
 from ..journal import JournalKind, JournalWriter
 from ..logging_utils import resolve_log_level
 from ..promotion import PromotionOutcome, PromotionSaga, StoreLayout
@@ -151,6 +152,14 @@ class MvdSlurmExecutor:
                 identity.kind.value,
                 spec.dataset_slug,
             )
+
+            # Write job_spec.json into the workspace before sbatch so the
+            # container sees it at /output/job_spec.json (workspace is bound
+            # to /output).  This mirrors what MvdDockerExecutor does and
+            # satisfies the host-side contract: the orchestrator writes the
+            # spec, not the container.
+            self._write_job_spec(spec, workspace)
+            run_logger.info("wrote job_spec.json to workspace")
 
             job_spec = SlurmJobSpec(
                 job_name=f"mvd-{record.physical_attempt_id[:8]}",
@@ -305,6 +314,26 @@ class MvdSlurmExecutor:
     # internals
     # ------------------------------------------------------------------
 
+    def _write_job_spec(self, spec: "_SlurmJobSpec", workspace: Path) -> None:
+        """Write job_spec.json into workspace before sbatch submission.
+
+        The workspace is bound to /output inside the container, so the file
+        is visible as /output/job_spec.json — exactly what the container SDK
+        expects.  Uses the same contract writer as MvdDockerExecutor so both
+        backends produce byte-identical payloads for the same logical job.
+        """
+        payload = job_spec_payload(
+            model_name=spec.model_slug,
+            model_version=spec.model_version,
+            dataset_slug=spec.dataset_slug,
+            hyperparameters={spec.model_slug: dict(spec.params)},
+            seed=spec.seed,
+            batch_key=spec.batch_key,
+            cell_type_key=spec.cell_type_key,
+            preprocessing=dict(spec.preprocessing) if spec.preprocessing else None,
+        )
+        write_job_spec(workspace / "job_spec.json", payload)
+
     def _open_run_logger(
         self, workspace: Path, attempt_id: str
     ) -> "tuple[logging.Logger, logging.Handler]":
@@ -312,7 +341,7 @@ class MvdSlurmExecutor:
 
         Mirrors :meth:`MvdDockerExecutor._open_run_logger`. The handler is
         attached to a dedicated, non-propagating logger keyed on the attempt
-        id; level honours ``$MVEXP_LOG_LEVEL``.
+        id; level honours ``$MULTIVERSE_LOG_LEVEL``.
         """
         level = resolve_log_level()
         handler = logging.FileHandler(
@@ -497,6 +526,7 @@ class _SlurmJobSpec:
     seed: Optional[int]
     batch_key: Optional[str] = None
     cell_type_key: Optional[str] = None
+    preprocessing: Optional[Dict[str, Any]] = None
     env_extra: Dict[str, str] = field(default_factory=dict)
     # Slurm-specific knobs.
     partition: Optional[str] = None
@@ -592,6 +622,9 @@ class _SlurmJobSpec:
             ),
             validators=validators,
             seed=(int(options["seed"]) if options.get("seed") is not None else None),
+            preprocessing=(
+                dict(options["preprocessing"]) if options.get("preprocessing") else None
+            ),
             env_extra=env_extra,
             partition=slurm_block.get("partition"),
             account=slurm_block.get("account"),
@@ -624,9 +657,9 @@ class _SlurmJobSpec:
             "MVR_OUTPUT_DIR": "/output",
             "MVR_JOB_SPEC_PATH": "/output/job_spec.json",
         }
-        host_level = os.environ.get("MVEXP_LOG_LEVEL")
+        host_level = os.environ.get("MULTIVERSE_LOG_LEVEL")
         if host_level:
-            base["MVEXP_LOG_LEVEL"] = str(host_level)
+            base["MULTIVERSE_LOG_LEVEL"] = str(host_level)
         base.update(self.env_extra)
         return base
 

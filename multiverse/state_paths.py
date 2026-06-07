@@ -12,13 +12,13 @@ cheap to call repeatedly and safe to monkey-patch in tests.
 
 Precedence for ``state_root`` (first match wins):
 
-1. ``$MVEXP_STATE_DIR``
+1. ``$MULTIVERSE_STATE_DIR``
 2. ``state_root:`` in the multiverse config file
-3. ``$XDG_STATE_HOME/mvexp``
-4. ``$HOME/.mvexp``
+3. ``$XDG_STATE_HOME/multiverse``
+4. ``$HOME/.multiverse``
 
 ``user_id`` defaults to ``getpass.getuser()`` and may be overridden by
-``$MVEXP_USER_ID``. Today the field is informational; the multi-user
+``$MULTIVERSE_USER_ID``. Today the field is informational; the multi-user
 future just changes where it comes from. The point of capturing it now
 is to avoid retrofitting tenancy into paths and journal records later.
 """
@@ -43,12 +43,12 @@ the repo root; on wheel installs it is site-packages. Either way, it is
 *not* a sensible default for state."""
 
 CONFIG_FILENAME = "multiverse.config.yaml"
-"""Name of the per-user config file. Searched in $XDG_CONFIG_HOME/mvexp
-and $HOME/.config/mvexp."""
+"""Name of the per-user config file. Searched in $XDG_CONFIG_HOME/multiverse
+and $HOME/.config/multiverse."""
 
-LEGACY_STATE_FILENAME = "mvexp_state.db"
-"""SQLite filename used to detect legacy installations whose state lived
-inside the package directory."""
+STATE_FILENAME = "multiverse_state.db"
+"""SQLite filename for the combined state DB, including detecting a legacy
+install whose state lived inside the package directory."""
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ class StatePaths:
 
     @property
     def db_path(self) -> Path:
-        return self.state_root / LEGACY_STATE_FILENAME
+        return self.state_root / STATE_FILENAME
 
     @property
     def store_root(self) -> Path:
@@ -93,10 +93,10 @@ def _candidate_config_paths(env: Mapping[str, str]) -> list[Path]:
     home = env.get("HOME")
     out: list[Path] = []
     if xdg:
-        out.append(Path(xdg) / "mvexp" / CONFIG_FILENAME)
+        out.append(Path(xdg) / "multiverse" / CONFIG_FILENAME)
     if home:
-        out.append(Path(home) / ".config" / "mvexp" / CONFIG_FILENAME)
-        out.append(Path(home) / ".mvexp" / CONFIG_FILENAME)
+        out.append(Path(home) / ".config" / "multiverse" / CONFIG_FILENAME)
+        out.append(Path(home) / ".multiverse" / CONFIG_FILENAME)
     return out
 
 
@@ -104,15 +104,15 @@ def find_config_file(env: Optional[Mapping[str, str]] = None) -> Optional[Path]:
     """Return the first existing config file, or None.
 
     Searches per-user XDG/home locations first. Falls back to the
-    legacy repo-root ``multiverse.config.yaml`` so that a project-level
-    config (with ``state_root:`` set) is honoured for direct CLI
-    invocations from the checkout directory.
+    repo-root ``multiverse.config.yaml`` so that a project-level config
+    (with ``state_root:`` set) is honoured for direct CLI invocations from
+    the checkout directory.
     """
     e = env if env is not None else os.environ
     for p in _candidate_config_paths(e):
         if p.is_file():
             return p
-    # Legacy fallback: project-level config next to the package directory.
+    # Project-level config next to the package directory.
     legacy = REPO_ROOT_GUESS / CONFIG_FILENAME
     if legacy.is_file():
         return legacy
@@ -140,7 +140,7 @@ def resolve_state_root(env: Optional[Mapping[str, str]] = None) -> Path:
     """
     e = env if env is not None else os.environ
 
-    explicit = e.get("MVEXP_STATE_DIR")
+    explicit = e.get("MULTIVERSE_STATE_DIR")
     if explicit:
         return Path(explicit).expanduser().resolve()
 
@@ -152,26 +152,27 @@ def resolve_state_root(env: Optional[Mapping[str, str]] = None) -> Path:
 
     xdg_state = e.get("XDG_STATE_HOME")
     if xdg_state:
-        return (Path(xdg_state) / "mvexp").expanduser().resolve()
+        return (Path(xdg_state) / "multiverse").expanduser().resolve()
 
     home = e.get("HOME")
     if home:
-        return (Path(home) / ".mvexp").resolve()
+        return (Path(home) / ".multiverse").resolve()
 
     # Last resort: current working directory. We deliberately do NOT fall
     # back to the package directory; that's the bug M1 exists to fix.
-    return (Path.cwd() / ".mvexp").resolve()
+    return (Path.cwd() / ".multiverse").resolve()
 
 
 def resolve_user_id(env: Optional[Mapping[str, str]] = None) -> str:
     """Return the current user id.
 
-    Defaults to ``getpass.getuser()``; overridable via ``$MVEXP_USER_ID``
-    so tests and HPC job scripts can pin it explicitly. The value should
-    be filesystem-safe; this function does not validate that.
+    Defaults to ``getpass.getuser()``; overridable via
+    ``$MULTIVERSE_USER_ID`` so tests and HPC job scripts can pin it
+    explicitly. The value should be filesystem-safe; this function does not
+    validate that.
     """
     e = env if env is not None else os.environ
-    override = e.get("MVEXP_USER_ID")
+    override = e.get("MULTIVERSE_USER_ID")
     if override:
         return override
     try:
@@ -207,20 +208,21 @@ def is_inside_package_dir(path: Path) -> bool:
 
 
 def legacy_db_search_locations() -> list[Path]:
-    """Locations where a pre-M1 install might have left its SQLite DB.
+    """Locations where a misconfigured install might have left its SQLite
+    DB inside the package tree (the pre-M1 anti-pattern).
 
-    Used by the legacy-refusal check in ``registry_db.get_db_connection``
-    and by ``mvexp migrate-state-dir``. The first hit is what we report
-    to the user.
+    Used by the in-package-dir refusal check in
+    ``registry_db.get_db_connection`` and by ``multiverse
+    migrate-state-dir``. The first hit is what we report to the user.
     """
     return [
-        REPO_ROOT_GUESS / LEGACY_STATE_FILENAME,
-        PACKAGE_DIR / LEGACY_STATE_FILENAME,
+        REPO_ROOT_GUESS / STATE_FILENAME,
+        PACKAGE_DIR / STATE_FILENAME,
     ]
 
 
 def find_legacy_db() -> Optional[Path]:
-    """Return the first legacy DB found, or None."""
+    """Return the first in-package-dir DB found, or None."""
     for p in legacy_db_search_locations():
         if p.is_file():
             return p

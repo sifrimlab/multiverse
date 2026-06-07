@@ -492,7 +492,9 @@ def _build_real_mlflow_target():
     with the same auth flow.
     """
     try:
-        import mlflow  # type: ignore
+        from multiverse.mlflow_sdk import import_mlflow
+
+        mlflow = import_mlflow()
     except Exception as exc:
         logger.warning("mlflow SDK unavailable; skipping sync. (%s)", exc)
         return None

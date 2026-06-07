@@ -25,13 +25,13 @@ container "exits".
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
+from ..contract import job_spec_payload, write_job_spec
 from ..artifact import (ArtifactManifest, BootContext, ImageIdentity,
                         ModelOutputContract, ProducedAt, ProducedBy,
                         ValidationLevel, compute_logical_run_id,
@@ -329,7 +329,7 @@ class MvdDockerExecutor:
 
         The handler is attached to a dedicated, non-propagating logger keyed
         on the attempt id so concurrent runs never bleed into each other's
-        files. The level honours ``$MVEXP_LOG_LEVEL``.
+        files. The level honours ``$MULTIVERSE_LOG_LEVEL``.
         """
         level = resolve_log_level()
         handler = logging.FileHandler(
@@ -450,24 +450,17 @@ class MvdDockerExecutor:
         )
 
     def _write_job_spec(self, spec: "_ExecutorJobSpec", workspace: Path) -> None:
-        payload = {
-            "model_name": spec.model_slug,
-            "model_version": spec.model_version,
-            "dataset_slug": spec.dataset_slug,
-            "batch_key": spec.batch_key,
-            "cell_type_key": spec.cell_type_key,
-            "dataset_path_in_container": "/input/data.h5mu",
-            "hyperparameters": {spec.model_slug: dict(spec.params)},
-            "seed": spec.seed,
-        }
-        # Per-run preprocessing overrides (issue #22); absent block ⇒ the
-        # container falls back to its built-in defaults.
-        if spec.preprocessing:
-            payload["preprocessing"] = dict(spec.preprocessing)
-        (workspace / "job_spec.json").write_text(
-            json.dumps(payload, sort_keys=True, indent=2),
-            encoding="utf-8",
+        payload = job_spec_payload(
+            model_name=spec.model_slug,
+            model_version=spec.model_version,
+            dataset_slug=spec.dataset_slug,
+            hyperparameters={spec.model_slug: dict(spec.params)},
+            seed=spec.seed,
+            batch_key=spec.batch_key,
+            cell_type_key=spec.cell_type_key,
+            preprocessing=dict(spec.preprocessing) if spec.preprocessing else None,
         )
+        write_job_spec(workspace / "job_spec.json", payload)
 
     def _compose_manifest(
         self,
@@ -671,9 +664,9 @@ class _ExecutorJobSpec:
         }
         # Forward the host log level so the worker SDK (run.log) matches the
         # orchestrator's verbosity without a separate knob.
-        host_level = os.environ.get("MVEXP_LOG_LEVEL")
+        host_level = os.environ.get("MULTIVERSE_LOG_LEVEL")
         if host_level:
-            base["MVEXP_LOG_LEVEL"] = str(host_level)
+            base["MULTIVERSE_LOG_LEVEL"] = str(host_level)
         base.update(self.env_extra)
         return base
 

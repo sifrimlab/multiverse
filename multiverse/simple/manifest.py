@@ -54,10 +54,10 @@ class SimpleJob:
     contract_version: str
     dataset_slug: str
     dataset_path: Path
-    batch_key: Optional[str] = None
-    cell_type_key: Optional[str] = None
     dataset_n_obs: int
     dataset_n_vars: Optional[int]
+    batch_key: Optional[str] = None
+    cell_type_key: Optional[str] = None
     dataset_fingerprint_extra: Dict[str, Any] = field(default_factory=dict)
     image_digest: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)

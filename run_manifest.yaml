@@ -1,6 +1,6 @@
 globals:
-  experiment_name: benchmark_run
-  random_seed: 42
+  experiment_name: benchmark_run1234
+  random_seed: 44
   run_user_params: true
   run_gridsearch: false
 jobs:
@@ -14,16 +14,6 @@ jobs:
     umap_random_state: 42
     umap_color_type: cell_type
     random_state: 42
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: pbmc10k
-  model_name: MOFA
-  model_params:
-    device: cuda:0
-    n_iterations: 10
-    n_factors: 20
-    umap_random_state: 42
-    umap_color_type: cell_type
   mem_limit: 16g
   gpu: true
 - dataset_slug: pbmc10k
@@ -44,16 +34,6 @@ jobs:
     umap_random_state: 42
     umap_color_type: cell_type
     random_state: 42
-  mem_limit: 16g
-  gpu: true
-- dataset_slug: teaseq
-  model_name: MOFA
-  model_params:
-    device: cuda:0
-    n_iterations: 10
-    n_factors: 2
-    umap_random_state: 42
-    umap_color_type: cell_type
   mem_limit: 16g
   gpu: true
 - dataset_slug: teaseq

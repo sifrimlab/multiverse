@@ -100,13 +100,18 @@ class _PeekResult:
 
 
 def _import_h5py():
-    """Lazy import so control-plane commands don't require ML deps."""
+    """Import h5py for dataset content validation during run planning.
+
+    h5py is a core dependency, so this normally succeeds; the guard only trips on
+    a broken/partial install, in which case we surface a clear reinstall hint.
+    """
     try:
         import h5py  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "h5py is required for dataset content validation during run planning. "
-            "Install with the ml-legacy dependency group."
+            "h5py is required for dataset content validation during run planning "
+            "but could not be imported. It is a core dependency — reinstall "
+            "multiverse (e.g. pip install -e .) to repair the environment."
         ) from exc
     return h5py
 
@@ -1684,7 +1689,7 @@ def main():
 
     migrate_ar_parser = subparsers.add_parser(
         "migrate-asset-registry",
-        help="Copy datasets/models from legacy mvexp_state.db → asset_registry.db",
+        help="Copy datasets/models from legacy multiverse_state.db → asset_registry.db",
     )
     migrate_ar_parser.add_argument(
         "--dry-run",
@@ -1694,7 +1699,7 @@ def main():
     migrate_ar_parser.add_argument(
         "--state-root",
         default=None,
-        help="Override state root (default: MVEXP_STATE_DIR or package default)",
+        help="Override state root (default: MULTIVERSE_STATE_DIR or package default)",
     )
 
     model_reg_parser = subparsers.add_parser(

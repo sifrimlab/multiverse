@@ -12,7 +12,6 @@ import h5py
 import mudata as md
 import numpy as np
 import pandas as pd
-import scanpy as sc
 
 from .logging import get_logger, setup_logging
 
@@ -127,22 +126,7 @@ def anndata_concatenate(
     cell_type_key: str = "cell_type",
     batch_key: str = "batch",
 ) -> ad.AnnData:
-    """Fuse modalities and concatenate along the variable axis.
-
-    Common for models that require a single AnnData input. Assumes aligned
-    cells and consistent ``cell_type_key`` / ``batch_key`` across modalities.
-
-    Args:
-        mdata: MuData source (mutually exclusive with ``adata_list``).
-        adata_list: Pre-built modality AnnData objects.
-        selected_modalities: Modalities to include when building from ``mdata``.
-        obs: Shared observation metadata when not taken from ``mdata.obs``.
-        cell_type_key: Column in ``.obs`` for cell-type labels.
-        batch_key: Column in ``.obs`` for batch labels.
-
-    Returns:
-        AnnData with modalities concatenated on variables; labels copied to ``.obs``.
-    """
+    """Fuse modalities and concatenate along the variable axis."""
     if adata_list is not None and mdata is not None:
         raise ValueError("Provide either adata_list or mdata, not both.")
     if adata_list is None and mdata is None:
@@ -178,19 +162,7 @@ def anndata_concatenate(
 
 
 def load_config(config_path: Union[str, dict] = "./config.json"):
-    """Load the configuration from a JSON file or return an in-memory dict unchanged.
-
-    Args:
-        config_path: Path to the JSON configuration file, or a configuration dict.
-
-    Returns:
-        dict: Dictionary of hyperparameters and settings.
-
-    Raises:
-        FileNotFoundError: If the configuration file is not found at the specified path.
-        json.JSONDecodeError: If the configuration file contains invalid JSON.
-        Exception: For any other unexpected errors during file loading.
-    """
+    """Load the configuration from a JSON file or return an in-memory dict unchanged."""
     if isinstance(config_path, dict):
         return config_path
 
@@ -214,19 +186,8 @@ def load_config(config_path: Union[str, dict] = "./config.json"):
 
 
 def resolve_preprocess_params(job_spec, modalities, defaults):
-    """Resolve effective preprocessing parameters for a run (issue #22).
-
-    ``defaults`` are the model's built-in preprocessing parameters (the values
-    previously hard-coded in each ``run.py``); they remain authoritative so an
-    absent ``preprocessing`` block reproduces the legacy behaviour exactly.
-    Any non-null key in ``job_spec["preprocessing"]`` (the per-run override
-    resolved from the run manifest / GUI) takes precedence.
-
-    ``scale`` accepts either a per-modality mapping or a single bool applied to
-    every modality, in both ``defaults`` and the override.
-    """
+    """Resolve effective preprocessing parameters for a run (issue #22)."""
     resolved = dict(defaults or {})
-    # Normalise a bool ``scale`` default into a per-modality mapping.
     if "scale" in resolved and not isinstance(resolved["scale"], dict):
         resolved["scale"] = {mod: bool(resolved["scale"]) for mod in modalities}
 
@@ -247,13 +208,7 @@ def resolve_preprocess_params(job_spec, modalities, defaults):
 
 
 def resolve_labels_key_params(job_spec, defaults=None):
-    """Resolve effective label key parameters for a run.
-
-    ``defaults`` provides model-specific fallbacks for ``cell_type_key`` and
-    ``batch_key``; built-in defaults (``"cell_type"`` / ``"batch"``) are used
-    when a key is absent or ``None`` in both ``defaults`` and ``job_spec``.
-    Any non-null value in ``job_spec`` takes precedence over ``defaults``.
-    """
+    """Resolve effective label key parameters for a run."""
     resolved = {"cell_type_key": "cell_type", "batch_key": "batch"}
     for key, val in (defaults or {}).items():
         if val is not None:
@@ -271,24 +226,9 @@ def preprocess_mudata(
     cell_type_key="cell_type",
     batch_key="batch",
 ):
-    """Preprocess MuData while keeping all modalities cell-aligned.
+    """Preprocess MuData while keeping all modalities cell-aligned."""
+    import scanpy as sc  # type: ignore[import-untyped]
 
-    Pipeline: per-modality gene filter; intersect cells with counts in every
-    modality; optional RNA normalize/log1p; HVG subset; per-modality scaling;
-    sync ``cell_type`` and ``batch`` into ``mdata.obs``.
-
-    Known limitation: log normalization is applied only to the ``rna``
-    modality; per-modality preprocessing overrides are not yet supported.
-
-    Args:
-        mdata: Input MuData (modified in place).
-        preprocess_params: Resolved dict from :func:`resolve_preprocess_params`.
-        cell_type_key: Observation column for cell types.
-        batch_key: Observation column for batch.
-
-    Returns:
-        The same ``mdata`` object after preprocessing.
-    """
     modalities = list(mdata.mod.keys())
 
     for modality in modalities:
@@ -343,7 +283,6 @@ def preprocess_mudata(
                     f"Warning: Modality '{modality}' has only {adata.n_vars} features, which is less than or equal to n_top_genes={n_top_genes}. Skipping HVG selection for this modality."
                 )
 
-            # seurat flavor requires log-normalized RNA; ADT/protein use seurat_v3.
             hvg_flavor = (
                 "seurat"
                 if (

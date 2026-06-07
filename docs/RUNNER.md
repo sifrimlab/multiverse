@@ -142,11 +142,11 @@ uv run multiverse rebuild-index \
 | `embeddings.h5` | Required latent matrix at HDF5 dataset `latent`. |
 | `metrics.json` | Optional model diagnostics and metric summaries. |
 | `umap.png` | Optional visualization. |
-| `run.log` | Model SDK log written inside the container by `mvr_worker`. |
+| `run.log` | Model SDK log written inside the container by `multiverse.worker`. |
 | `container.log` | Host-captured container stdout/stderr; present even when the container crashed before writing `run.log`. |
 | `orchestrator.log` | Host-side per-run log: admission, launch, exit classification, promotion outcome, and failure reason. |
 
-Logs for a run that fails before promotion remain in its workspace at `<state-root>/store/workspaces/<attempt-id>/`. Set `MVEXP_LOG_LEVEL=DEBUG` to raise verbosity across the host logs and the in-container `run.log`.
+Logs for a run that fails before promotion remain in its workspace at `<state-root>/store/workspaces/<attempt-id>/`. Set `MULTIVERSE_LOG_LEVEL=DEBUG` to raise verbosity across the host logs and the in-container `run.log`.
 
 The full I/O contract is documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
 
@@ -257,7 +257,7 @@ The output file is named `<slug>-<version>.sif` and placed in `<output-dir>` (de
 
 ## Asset Registry Migration
 
-If you are upgrading from a prior version that stored dataset and model records in the combined `mvexp_state.db`, run the one-time migration:
+If you are upgrading from a prior version that stored dataset and model records in the combined `multiverse_state.db`, run the one-time migration:
 
 ```bash
 uv run multiverse migrate-asset-registry
@@ -265,7 +265,7 @@ uv run multiverse migrate-asset-registry
 uv run multiverse migrate-asset-registry --dry-run
 ```
 
-This copies dataset and model rows from `mvexp_state.db` into the new dedicated `asset_registry.db`. The migration refuses to run twice (idempotent guard). After migration, `mvexp_state.db` continues to hold run/index state; `asset_registry.db` holds the dataset and model catalog.
+This copies dataset and model rows from `multiverse_state.db` into the new dedicated `asset_registry.db`. The migration refuses to run twice (idempotent guard). After migration, `multiverse_state.db` continues to hold run/index state; `asset_registry.db` holds the dataset and model catalog.
 
 ## Maintenance Command Reference
 
@@ -285,7 +285,7 @@ multiverse doctor --repair-health-probes          # sweep expired entries from h
 
 ### `multiverse rebuild-index`
 
-Reconstructs `mvexp_state.db` from the append-only journal and artifact store.
+Reconstructs `multiverse_state.db` from the append-only journal and artifact store.
 
 ```bash
 multiverse rebuild-index --state-root <path> --store-root <path>

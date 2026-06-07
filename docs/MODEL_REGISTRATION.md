@@ -4,13 +4,13 @@ This reference describes the registration step that makes a containerized model 
 
 ## What Registration Does
 
-Registration writes a row into the `models` table of `mvexp_state.db` based on a manifest under `store/models/<slug>/model.yaml`. The row records the model's display name, version, contract version, required omics, runtime image, and the path to a JSON schema describing its hyperparameters. The Configure tab in the GUI uses this row to compute the compatibility matrix and to render typed parameter controls.
+Registration writes a row into the `models` table of `multiverse_state.db` based on a manifest under `store/models/<slug>/model.yaml`. The row records the model's display name, version, contract version, required omics, runtime image, and the path to a JSON schema describing its hyperparameters. The Configure tab in the GUI uses this row to compute the compatibility matrix and to render typed parameter controls.
 
 ```mermaid
 flowchart LR
     A[model.yaml] --> B[multiverse register-model]
     C[hyperparameters schema] --> B
-    B --> D[models table in mvexp_state.db]
+    B --> D[models table in multiverse_state.db]
     D --> E[Configure compatibility matrix]
     D --> F[Parameter form rendering]
     D --> G[Runner image selection]
@@ -190,7 +190,7 @@ make build-<slug>      # e.g. make build-pca
 make build-all         # build every built-in image plus the evaluation image
 ```
 
-Built images follow the micromamba pattern documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md). The `mvr-worker` SDK is copied from `sdk/mvr-worker/` into every image at build time, so any change to the SDK requires rebuilding the model images.
+Built images follow the micromamba pattern documented in [Model Container Contract](MODEL_CONTAINER_CONTRACT.md). The `multiverse[worker]` SDK is installed from the repository-root build context into every image at build time, so any change to the SDK requires rebuilding the model images.
 
 ### SIF files (Apptainer / Singularity)
 

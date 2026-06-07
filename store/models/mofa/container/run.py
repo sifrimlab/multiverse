@@ -6,7 +6,7 @@ from typing import Union
 import anndata as ad
 import muon as mu
 import numpy as np
-from mvr_worker import (OUTPUT_DIR, ModelFactory, build_model_config,
+from multiverse.worker import (OUTPUT_DIR, ModelFactory, build_model_config,
                         get_logger, load_input_mudata, load_job_spec,
                         preprocess_mudata, resolve_labels_key_params,
                         resolve_preprocess_params, setup_container_logging)

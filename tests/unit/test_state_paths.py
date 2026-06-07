@@ -22,14 +22,14 @@ def no_repo_config(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_mvexp_state_dir_wins(tmp_path):
-    env = {"MVEXP_STATE_DIR": str(tmp_path / "explicit"), "HOME": str(tmp_path)}
+def test_multiverse_state_dir_wins(tmp_path):
+    env = {"MULTIVERSE_STATE_DIR": str(tmp_path / "explicit"), "HOME": str(tmp_path)}
     assert state_paths.resolve_state_root(env) == (tmp_path / "explicit").resolve()
 
 
 def test_config_file_state_root_used_when_no_env(tmp_path, monkeypatch):
     cfg_root = tmp_path / "cfg"
-    cfg_dir = cfg_root / "mvexp"
+    cfg_dir = cfg_root / "multiverse"
     cfg_dir.mkdir(parents=True)
     cfg_dir.joinpath("multiverse.config.yaml").write_text(
         f"state_root: {tmp_path / 'from-config'}\n", encoding="utf-8"
@@ -40,12 +40,12 @@ def test_config_file_state_root_used_when_no_env(tmp_path, monkeypatch):
 
 def test_xdg_state_home_used_when_no_env_no_config(tmp_path, no_repo_config):
     env = {"XDG_STATE_HOME": str(tmp_path / "xdg"), "HOME": str(tmp_path)}
-    assert state_paths.resolve_state_root(env) == (tmp_path / "xdg" / "mvexp").resolve()
+    assert state_paths.resolve_state_root(env) == (tmp_path / "xdg" / "multiverse").resolve()
 
 
 def test_home_default(tmp_path, no_repo_config):
     env = {"HOME": str(tmp_path)}
-    assert state_paths.resolve_state_root(env) == (tmp_path / ".mvexp").resolve()
+    assert state_paths.resolve_state_root(env) == (tmp_path / ".multiverse").resolve()
 
 
 def test_resolve_state_root_returns_absolute(tmp_path):
@@ -59,7 +59,7 @@ def test_resolve_state_root_returns_absolute(tmp_path):
 
 
 def test_user_id_override():
-    env = {"MVEXP_USER_ID": "tenant-7"}
+    env = {"MULTIVERSE_USER_ID": "tenant-7"}
     assert state_paths.resolve_user_id(env) == "tenant-7"
 
 
@@ -94,10 +94,10 @@ def test_home_is_not_inside_package_dir(tmp_path):
 
 
 def test_state_paths_derived(tmp_path):
-    env = {"MVEXP_STATE_DIR": str(tmp_path), "HOME": str(tmp_path)}
+    env = {"MULTIVERSE_STATE_DIR": str(tmp_path), "HOME": str(tmp_path)}
     paths = state_paths.resolve_paths(env)
     assert paths.state_root == tmp_path.resolve()
-    assert paths.db_path == tmp_path.resolve() / "mvexp_state.db"
+    assert paths.db_path == tmp_path.resolve() / "multiverse_state.db"
     assert paths.store_root == tmp_path.resolve() / "store"
     assert paths.artifacts_dir == tmp_path.resolve() / "store" / "artifacts"
     assert paths.workspaces_dir == tmp_path.resolve() / "store" / "workspaces"
@@ -111,7 +111,7 @@ def test_state_paths_derived(tmp_path):
 
 def test_legacy_db_refusal_skipped_when_db_name_monkeypatched(monkeypatch, tmp_path):
     """The check must NOT fire when a caller (test or user with
-    MVEXP_STATE_DIR) has explicitly set DB_NAME away from the default."""
+    MULTIVERSE_STATE_DIR) has explicitly set DB_NAME away from the default."""
     from multiverse import registry_db
 
     monkeypatch.setattr(registry_db, "DB_NAME", str(tmp_path / "state.db"))
@@ -122,26 +122,26 @@ def test_legacy_db_refusal_skipped_when_db_name_monkeypatched(monkeypatch, tmp_p
 def test_legacy_db_refusal_fires_when_default_and_legacy_exists(
     monkeypatch, tmp_path, no_repo_config
 ):
-    """Simulate the upgrade scenario: resolver default is $HOME/.mvexp,
+    """Simulate the upgrade scenario: resolver default is $HOME/.multiverse,
     a legacy DB exists at the repo root."""
     from multiverse import registry_db
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.delenv("MVEXP_STATE_DIR", raising=False)
+    monkeypatch.delenv("MULTIVERSE_STATE_DIR", raising=False)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    monkeypatch.delenv("MVEXP_ALLOW_LEGACY_DB", raising=False)
+    monkeypatch.delenv("MULTIVERSE_ALLOW_LEGACY_DB", raising=False)
 
     # Plant a fake legacy DB and point the search at it.
     legacy_dir = tmp_path / "fake-package"
     legacy_dir.mkdir()
-    fake_legacy = legacy_dir / "mvexp_state.db"
+    fake_legacy = legacy_dir / "multiverse_state.db"
     fake_legacy.write_bytes(b"")
     monkeypatch.setattr(registry_db, "_find_legacy_db", lambda: fake_legacy)
     # DB_NAME equals the new resolver default (the trigger condition).
-    expected_default = str(fake_home / ".mvexp" / "mvexp_state.db")
+    expected_default = str(fake_home / ".multiverse" / "multiverse_state.db")
     monkeypatch.setattr(registry_db, "DB_NAME", expected_default)
 
     with pytest.raises(registry_db.LegacyStateDirError) as excinfo:
@@ -157,17 +157,17 @@ def test_legacy_db_refusal_bypassed_by_env(monkeypatch, tmp_path):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
     monkeypatch.setenv("HOME", str(fake_home))
-    monkeypatch.setenv("MVEXP_ALLOW_LEGACY_DB", "1")
+    monkeypatch.setenv("MULTIVERSE_ALLOW_LEGACY_DB", "1")
 
     legacy_dir = tmp_path / "fake-package"
     legacy_dir.mkdir()
-    fake_legacy = legacy_dir / "mvexp_state.db"
+    fake_legacy = legacy_dir / "multiverse_state.db"
     fake_legacy.write_bytes(b"")
     monkeypatch.setattr(registry_db, "_find_legacy_db", lambda: fake_legacy)
     monkeypatch.setattr(
         registry_db,
         "DB_NAME",
-        str(fake_home / ".mvexp" / "mvexp_state.db"),
+        str(fake_home / ".multiverse" / "multiverse_state.db"),
     )
 
     # Must not raise.

@@ -9,7 +9,7 @@ import scipy.sparse as sp
 import torch
 from cobolt.model import Cobolt
 from cobolt.utils import MultiomicDataset, SingleData
-from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
+from multiverse.worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
                         build_model_config, get_device, get_logger,
                         load_input_mudata, load_job_spec, preprocess_mudata,
                         replay_history, resolve_labels_key_params,

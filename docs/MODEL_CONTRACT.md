@@ -2,7 +2,7 @@
 
 The authoritative runtime contract is [Model Container Contract](MODEL_CONTAINER_CONTRACT.md).
 
-Use this page as the short conceptual summary: a model in mvexp is acceptable when it can read the standard input, honor the standard job specification, and write the standard outputs without knowing anything about the user's filesystem.
+Use this page as the short conceptual summary: a model in multiverse is acceptable when it can read the standard input, honor the standard job specification, and write the standard outputs without knowing anything about the user's filesystem.
 
 ```mermaid
 flowchart LR
@@ -14,7 +14,7 @@ flowchart LR
 
 ## Zero-Path Promise
 
-Researchers should never have to rewrite a model command because one dataset lives in a different directory from another. mvexp handles the path mapping; the model uses `/input/data.h5mu` and `/output/`.
+Researchers should never have to rewrite a model command because one dataset lives in a different directory from another. multiverse handles the path mapping; the model uses `/input/data.h5mu` and `/output/`.
 
 ## Minimum Hello World Model
 

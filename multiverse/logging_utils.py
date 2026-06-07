@@ -1,19 +1,19 @@
-"""Orchestrator logging setup and ``MVEXP_LOG_LEVEL`` resolution."""
+"""Orchestrator logging setup and ``MULTIVERSE_LOG_LEVEL`` resolution."""
 
 import logging
 import os
 
-LOG_LEVEL_ENV = "MVEXP_LOG_LEVEL"
+LOG_LEVEL_ENV = "MULTIVERSE_LOG_LEVEL"
 """Environment variable that overrides the default log level everywhere.
 
 Accepts either a level name (``DEBUG``, ``INFO``, ``WARNING``, ...) or a
 numeric level. Honoured by :func:`setup_logging`, the per-run orchestrator
-log, and forwarded into model containers so ``mvr_worker`` matches the host.
+log, and forwarded into model containers so ``multiverse.worker`` matches the host.
 """
 
 
 def resolve_log_level(default: int = logging.INFO) -> int:
-    """Resolve the effective log level from ``$MVEXP_LOG_LEVEL``.
+    """Resolve the effective log level from ``$MULTIVERSE_LOG_LEVEL``.
 
     Falls back to ``default`` when the variable is unset or unparseable, so
     a typo never silences logging entirely.
@@ -35,7 +35,7 @@ def setup_logging(log_dir: str, log_level=None):
         log_dir (str): The directory where the log file will be saved.
         log_level (int | None): The logging level to set (e.g., logging.INFO,
             logging.DEBUG). When ``None`` (the default) the level is resolved
-            from ``$MVEXP_LOG_LEVEL``, defaulting to ``logging.INFO``.
+            from ``$MULTIVERSE_LOG_LEVEL``, defaulting to ``logging.INFO``.
     """
     if log_level is None:
         log_level = resolve_log_level()

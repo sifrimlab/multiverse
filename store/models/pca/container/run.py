@@ -6,7 +6,7 @@ from typing import Union
 import anndata as ad
 import numpy as np
 import scanpy as sc
-from mvr_worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
+from multiverse.worker import (OUTPUT_DIR, ModelFactory, anndata_concatenate,
                         build_model_config, get_logger, load_input_mudata,
                         load_job_spec, preprocess_mudata,
                         resolve_labels_key_params, resolve_preprocess_params,

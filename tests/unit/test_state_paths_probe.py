@@ -36,7 +36,7 @@ def test_probe_fails_when_state_root_inside_package_dir(monkeypatch):
 
 
 def test_probe_fails_when_legacy_db_would_be_orphaned(tmp_path, monkeypatch):
-    legacy = tmp_path / "old-install" / "mvexp_state.db"
+    legacy = tmp_path / "old-install" / "multiverse_state.db"
     legacy.parent.mkdir(parents=True)
     legacy.write_bytes(b"")
     from multiverse.doctor import state_paths_probe as probe_module
@@ -54,7 +54,7 @@ def test_probe_passes_when_legacy_db_matches_chosen_state_root(tmp_path, monkeyp
     a deliberate keep-using-the-old-place choice, not an orphan."""
     legacy_parent = tmp_path / "old"
     legacy_parent.mkdir()
-    legacy = legacy_parent / "mvexp_state.db"
+    legacy = legacy_parent / "multiverse_state.db"
     legacy.write_bytes(b"")
     from multiverse.doctor import state_paths_probe as probe_module
 

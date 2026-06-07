@@ -44,7 +44,7 @@ class KernelConfig:
     current single-user product boundary (STRATEGY M1); reserved so that
     multi-user-future does not require retrofitting tenancy into journal
     records, broker keys, and projection plugin paths. Override via
-    ``$MVEXP_USER_ID`` or pass explicitly."""
+    ``$MULTIVERSE_USER_ID`` or pass explicitly."""
 
 
 class Kernel:  # implements KernelAPI

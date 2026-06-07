@@ -48,4 +48,4 @@ This guide explains how to contribute to Multiverse. Contributions should preser
 
 ## How to Cite Contributions
 
-If your contribution adds a scientific method, cite the original method and document how mvexp calls it. If you publish results generated with a development version, cite the commit hash and archive the run artifacts.
+If your contribution adds a scientific method, cite the original method and document how multiverse calls it. If you publish results generated with a development version, cite the commit hash and archive the run artifacts.

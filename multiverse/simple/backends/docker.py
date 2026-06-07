@@ -21,7 +21,6 @@ stays clean (R1 grep gate in ``test_client_cutover.py``).
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,12 +29,15 @@ from typing import Any, Dict, Optional
 import docker
 
 from ...artifact import ImageIdentity
+from ...contract import (
+    CONTAINER_INPUT_DATA_PATH,
+    CONTAINER_OUTPUT_DIR,
+    JOB_SPEC_FILENAME,
+    job_spec_payload,
+    write_job_spec,
+)
 from ..manifest import SimpleJob
 from .base import ExecutionResult
-
-CONTAINER_INPUT_DATA_PATH = "/input/data.h5mu"
-CONTAINER_OUTPUT_DIR = "/output"
-JOB_SPEC_FILENAME = "job_spec.json"
 
 
 import subprocess
@@ -242,25 +244,18 @@ class DockerBackend:
         seed: Optional[int],
     ) -> None:
         """Write the model-contract job spec into the workspace so the
-        container's ``mvr-worker`` SDK can read it."""
-        spec: Dict[str, Any] = {
-            "model_name": job.model_slug,
-            "model_version": job.model_version,
-            "batch_key": job.batch_key,
-            "cell_type_key": job.cell_type_key,
-            "dataset_slug": job.dataset_slug,
-            "dataset_path_in_container": CONTAINER_INPUT_DATA_PATH,
-            "hyperparameters": {job.model_slug: dict(job.params)},
-            "seed": seed,
-        }
-        # Per-run preprocessing overrides (issue #22); absent ⇒ container
-        # defaults apply.
-        if job.preprocessing:
-            spec["preprocessing"] = dict(job.preprocessing)
-        (workspace_dir / JOB_SPEC_FILENAME).write_text(
-            json.dumps(spec, sort_keys=True, indent=2),
-            encoding="utf-8",
+        container's ``multiverse.worker`` SDK can read it."""
+        payload = job_spec_payload(
+            model_name=job.model_slug,
+            model_version=job.model_version,
+            dataset_slug=job.dataset_slug,
+            hyperparameters={job.model_slug: dict(job.params)},
+            seed=seed,
+            batch_key=job.batch_key,
+            cell_type_key=job.cell_type_key,
+            preprocessing=dict(job.preprocessing) if job.preprocessing else None,
         )
+        write_job_spec(workspace_dir / JOB_SPEC_FILENAME, payload)
 
     def _environment_for(self, seed: Optional[int]) -> Dict[str, str]:
         env: Dict[str, str] = {

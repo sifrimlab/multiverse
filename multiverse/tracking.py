@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 import math
 import os
 from pathlib import Path
@@ -219,7 +218,9 @@ def _resolve_mlflow_settings(
 ) -> Tuple[Optional[Any], str, Dict[str, Any]]:
     """Return (mlflow module, experiment_name, run_settings) or (None, "", {}) on failure."""
     try:
-        mlflow = importlib.import_module("mlflow")
+        from multiverse.mlflow_sdk import import_mlflow
+
+        mlflow = import_mlflow()
     except Exception as exc:
         logger.warning(f"MLflow unavailable; skipping tracking. ({exc})")
         return None, "", {}

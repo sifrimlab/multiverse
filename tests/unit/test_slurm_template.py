@@ -84,6 +84,30 @@ def test_apptainer_command_binds_dataset_ro_and_workspace_rw() -> None:
     assert "python -m model.run" in script
 
 
+def test_tmpdir_mode_stages_job_spec_into_scratch_output_before_exec() -> None:
+    script = render_sbatch_script(_spec(use_tmpdir=True))
+    lines = script.splitlines()
+
+    # The orchestrator wrote job_spec.json into the workspace; tmpdir mode
+    # must copy it into the scratch /output before launch so the container
+    # still sees /output/job_spec.json.
+    stage_line = "cp /work/abc/job_spec.json \"$SLURM_TMPDIR/output/job_spec.json\""
+    assert stage_line in lines
+
+    # And it must happen before the apptainer exec call.
+    stage_idx = lines.index(stage_line)
+    exec_idx = next(i for i, ln in enumerate(lines) if ln.startswith("apptainer exec"))
+    assert stage_idx < exec_idx
+
+    # tmpdir mode binds scratch output, not the workspace, to /output.
+    assert '--bind "$SLURM_TMPDIR/output":/output:rw' in script
+
+
+def test_non_tmpdir_mode_does_not_stage_job_spec() -> None:
+    script = render_sbatch_script(_spec(use_tmpdir=False))
+    assert "$SLURM_TMPDIR/output/job_spec.json" not in script
+
+
 def test_paths_with_spaces_are_quoted() -> None:
     script = render_sbatch_script(
         _spec(

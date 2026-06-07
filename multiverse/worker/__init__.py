@@ -1,7 +1,9 @@
 """Worker SDK for model containers (I/O, preprocessing, metrics, device).
 
 Containers import this package instead of the orchestrator. Environment
-variables ``MVR_*`` locate inputs and outputs; see :mod:`mvr_worker.io`.
+variables ``MVR_*`` locate inputs and outputs; see :mod:`multiverse.worker.io`.
+
+Install with: ``pip install multiverse[worker]``
 """
 
 from .base import ModelFactory
@@ -9,8 +11,8 @@ from .device import get_device, resolve_device
 from .epoch_logger import (
     EpochLogger,
     replay_history,
-    scvi_history_to_dict,
     sanitize_nan_inf,
+    scvi_history_to_dict,
     series_to_float_list,
 )
 from .io import (
@@ -19,6 +21,7 @@ from .io import (
     OUTPUT_DIR,
     anndata_concatenate,
     build_model_config,
+    load_config,
     load_input_mudata,
     load_job_spec,
     preprocess_mudata,
@@ -27,7 +30,6 @@ from .io import (
     save_embeddings,
     save_umap,
     setup_container_logging,
-    load_config,
 )
 from .logging import get_logger, setup_logging
 
@@ -36,24 +38,24 @@ __all__ = [
     "JOB_SPEC_PATH",
     "OUTPUT_DIR",
     "EpochLogger",
+    "ModelFactory",
     "anndata_concatenate",
-    "replay_history",
     "build_model_config",
+    "get_device",
     "get_logger",
+    "load_config",
     "load_input_mudata",
-    "preprocess_mudata",
     "load_job_spec",
+    "preprocess_mudata",
+    "replay_history",
+    "resolve_device",
     "resolve_labels_key_params",
     "resolve_preprocess_params",
-    "resolve_device",
+    "sanitize_nan_inf",
     "save_embeddings",
     "save_umap",
+    "scvi_history_to_dict",
+    "series_to_float_list",
     "setup_container_logging",
     "setup_logging",
-    "ModelFactory",
-    "get_device",
-    "scvi_history_to_dict",
-    "sanitize_nan_inf",
-    "load_config",
-    "series_to_float_list",
 ]

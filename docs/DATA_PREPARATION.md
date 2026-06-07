@@ -1,12 +1,12 @@
 # Data Preparation
 
-This how-to explains how to prepare biological data for mvexp from the perspective of a Scanpy, Seurat, or MuData user.
+This how-to explains how to prepare biological data for multiverse from the perspective of a Scanpy, Seurat, or MuData user.
 
-The short version: mvexp expects a well-formed `AnnData` or `MuData` file, plus explicit metadata keys that say which column represents batch and which column represents biological labels.
+The short version: multiverse expects a well-formed `AnnData` or `MuData` file, plus explicit metadata keys that say which column represents batch and which column represents biological labels.
 
-## Data State: What mvexp Assumes
+## Data State: What multiverse Assumes
 
-mvexp does not perform scientific preprocessing decisions for you. It preserves and records the choices you make before registration.
+multiverse does not perform scientific preprocessing decisions for you. It preserves and records the choices you make before registration.
 
 | Requirement | Practical guidance |
 |---|---|
@@ -19,7 +19,7 @@ mvexp does not perform scientific preprocessing decisions for you. It preserves 
 
 ## Raw Counts, Normalized Data, and HVGs
 
-Different models make different assumptions. mvexp records what you run, but it does not convert one scientific data state into another without your knowledge.
+Different models make different assumptions. multiverse records what you run, but it does not convert one scientific data state into another without your knowledge.
 
 Recommended practice:
 
@@ -45,7 +45,7 @@ Use stable labels:
 - Good `cell_type` values: `CD4 T`, `B cell`, `monocyte`, `NK`.
 - Avoid mixed types, empty strings, and columns with many accidental spellings.
 
-If `cell_type` is missing, mvexp can still run models, but supervised bio-conservation metrics are skipped. If `batch` is missing or has only one value, batch-correction metrics are skipped.
+If `cell_type` is missing, multiverse can still run models, but supervised bio-conservation metrics are skipped. If `batch` is missing or has only one value, batch-correction metrics are skipped.
 
 ## Prepare RNA AnnData
 
@@ -217,7 +217,7 @@ with open(dataset_dir / "dataset.yaml", "w") as f:
 
 Sequential GUI workflow:
 
-1. Start mvexp and open `http://localhost:28501`.
+1. Start multiverse and open `http://localhost:28501`.
 2. Open the **Registry** tab.
 3. Expand **Register New Dataset**.
 4. If you already wrote `dataset.yaml`, keep **Build manifest from fields** off and enter the manifest path.
@@ -245,9 +245,9 @@ with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
 
 mdata = md.read_h5mu("store/datasets/pbmc_multiome/data/processed.h5mu")
 adata = mdata["rna"].copy()
-adata.obsm["X_mvexp_multivi"] = latent
+adata.obsm["X_multiverse_multivi"] = latent
 
-sc.pp.neighbors(adata, use_rep="X_mvexp_multivi")
+sc.pp.neighbors(adata, use_rep="X_multiverse_multivi")
 sc.tl.umap(adata)
 sc.pl.umap(adata, color=["batch", "cell_type"])
 ```
@@ -280,7 +280,7 @@ In the Methods section, report:
 Recommended wording:
 
 ```text
-All integration benchmarks were executed with mvexp. The benchmark plan, including
+All integration benchmarks were executed with multiverse. The benchmark plan, including
 dataset identifiers, model selections, hyperparameters, random seed, and requested
 metrics, is provided as `run_manifest.yaml` in the Supplementary Material. Per-run
 runtime instructions and provenance files are provided with the corresponding model

@@ -150,7 +150,7 @@ def _build_shell_image(client, tmp_path: Path, *, base_image: str, command: str)
 # Cache the OOM image under a fixed tag so repeated test runs do not
 # rebuild it. The image is invalidated automatically if its Dockerfile
 # changes, because we tag it with a content-derived suffix.
-_OOM_FIXTURE_TAG_BASE = "mvexp-oom-fixture"
+_OOM_FIXTURE_TAG_BASE = "multiverse-oom-fixture"
 
 
 # Candidate bases for the OOM fixture, in preference order.
@@ -238,7 +238,7 @@ def _ensure_oom_fixture_image(client) -> str:
     except Exception:
         pass
 
-    with tempfile.TemporaryDirectory(prefix="mvexp-oom-fixture-") as workdir:
+    with tempfile.TemporaryDirectory(prefix="multiverse-oom-fixture-") as workdir:
         context = Path(workdir)
         (context / "Dockerfile").write_text(dockerfile, encoding="utf-8")
         # Shell out to ``docker build`` rather than ``client.images.build``:

@@ -83,10 +83,14 @@ Losses and ELBO values are model-specific training diagnostics. They can help co
 | ARI or NMI is missing | No valid `cell_type_key` was registered. | Add or correct the label column and re-register. |
 | Batch-correction metrics are missing | No valid multi-value `batch_key` was registered. | Confirm batch metadata contains at least two groups. |
 | Training loss improves but biology worsens | Model-specific loss is not a biological conservation score. | Compare loss with bio-conservation and batch-correction metrics. |
+| A member shows `obs_mismatch` instead of metrics | The saved latent embedding has a different number of rows than the dataset's observations. | Re-check the model container's output; the embedding must have one row per cell. |
+| A member shows `evaluation_failed` | scIB raised or returned unusable output for that member only. | Open the member's `evaluations/<member_id>.json` `error` field; other members in the cohort are unaffected. |
+
+Per-member evaluation outcomes (status, reason, metrics, and structured errors) are written to `evaluations/<member_id>.json` and aggregated into `evaluation_report.json` under the launch directory. See [Benchmarking → Reference: Evaluation Outputs](../BENCHMARKING.md#reference-evaluation-outputs).
 
 ## How to Cite Metric Results
 
-When reporting metrics, cite mvexp and the underlying metric or model method where appropriate. Archive `run_manifest.yaml`, `metrics.json`, and provenance files so readers can connect each reported value to its run recipe.
+When reporting metrics, cite multiverse and the underlying metric or model method where appropriate. Archive `run_manifest.yaml`, `metrics.json`, and provenance files so readers can connect each reported value to its run recipe.
 
 ## Interpretation Notes
 

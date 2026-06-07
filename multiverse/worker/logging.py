@@ -3,7 +3,7 @@
 import logging
 import os
 
-LOG_LEVEL_ENV = "MVEXP_LOG_LEVEL"
+LOG_LEVEL_ENV = "MULTIVERSE_LOG_LEVEL"
 """Set by the orchestrator (and forwardable by hand) to control verbosity.
 
 Kept in sync with ``multiverse.logging_utils.LOG_LEVEL_ENV`` but duplicated
@@ -12,7 +12,7 @@ here so the worker SDK stays dependency-free of the orchestrator package.
 
 
 def resolve_log_level(default: int = logging.INFO) -> int:
-    """Map ``MVEXP_LOG_LEVEL`` to a numeric logging level.
+    """Map ``MULTIVERSE_LOG_LEVEL`` to a numeric logging level.
 
     Accepts a level name (e.g. ``DEBUG``) or an integer string; returns
     ``default`` when the variable is unset.

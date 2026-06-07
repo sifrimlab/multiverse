@@ -2,7 +2,7 @@
 
 Usage
 -----
-    # Default: 100 datasets x 50 models x 1000 runs into ./mvexp_state.db
+    # Default: 100 datasets x 50 models x 1000 runs into ./multiverse_state.db
     python -m tests.fixtures.synthetic_registry
 
     # Custom counts and target path
@@ -170,7 +170,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--datasets", type=int, default=100)
     p.add_argument("--models", type=int, default=50)
     p.add_argument("--runs", type=int, default=1000)
-    p.add_argument("--db", type=Path, default=Path("mvexp_state.db"))
+    p.add_argument("--db", type=Path, default=Path("multiverse_state.db"))
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 

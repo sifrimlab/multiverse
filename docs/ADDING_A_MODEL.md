@@ -44,7 +44,7 @@ Minimal schema:
 | `version` | Yes | Model package version. |
 | `contract_version` | Yes | Runtime contract version. |
 | `supported_omics` | Yes | Modalities required by the model. Use `["any"]` for a modality-agnostic model compatible with every dataset (do not mix `any` with concrete modalities). |
-| `runtime.image` | Yes | Image used by mvexp execution. |
+| `runtime.image` | Yes | Image used by multiverse execution. |
 | `hyperparameters_schema` | Recommended | JSON schema for GUI parameter controls. |
 | `build.context` | Optional | Build context for maintainers. |
 | `build.dockerfile` | Optional | Dockerfile path for maintainers. |
@@ -57,7 +57,7 @@ version: 1.0.0
 contract_version: 1.0.0
 supported_omics: ["rna"]
 runtime:
-  image: mvexp-hello-model:1.0.0
+  image: multiverse-hello-model:1.0.0
 hyperparameters_schema: store/models/hello_model/hyperparameters.schema.json
 build:
   context: ../../..
@@ -66,12 +66,12 @@ build:
 
 ## Live Per-Epoch Metrics (Optional but Recommended)
 
-If your model trains iteratively, stream per-epoch metrics so they appear live in MLflow and survive crashes via a local `metrics.jsonl` sidecar. Use the thin helper `EpochLogger` exported from the `mvr_worker` SDK — every model container already installs it. It logs to MLflow when `MLFLOW_TRACKING_URI` is set in the container environment (the runner propagates this automatically) and otherwise silently writes JSONL only.
+If your model trains iteratively, stream per-epoch metrics so they appear live in MLflow and survive crashes via a local `metrics.jsonl` sidecar. Use the thin helper `EpochLogger` exported from the `multiverse.worker` SDK — every model container already installs it. It logs to MLflow when `MLFLOW_TRACKING_URI` is set in the container environment (the runner propagates this automatically) and otherwise silently writes JSONL only.
 
 Manual loop (PyTorch-style):
 
 ```python
-from mvr_worker import EpochLogger
+from multiverse.worker import EpochLogger
 
 with EpochLogger(
     jsonl_path="/output/metrics.jsonl",

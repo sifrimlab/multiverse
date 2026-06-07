@@ -50,6 +50,168 @@ def _store_for_output(
     return StoreLayout(root=state_root / "store", **kwargs).ensure()
 
 
+def _build_docker_kernel(
+    *, state_root: Path, artifact_root: Path | None, accept_degraded: bool
+) -> "Kernel":
+    """Assemble a Docker-backed kernel (journal, store, engine, executor).
+
+    Single source of the Docker executor wiring: both the batch driver
+    (:func:`_drive_jobs`) and the per-trial sweep runner
+    (:func:`_execute_single_attempt`) build their kernel here so the
+    host→container handoff cannot drift between the two paths.
+    """
+    boot = BootContext.new(mvd_version="0.1.0-mvd")
+    config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
+    layout = JournalLayout.at(state_root / "journal").ensure()
+    journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
+    store = _store_for_output(state_root=state_root, artifact_root=artifact_root)
+
+    # Lazy-import the real Docker engine adapter only when we actually
+    # need it. ``mvd_entrypoint`` itself stays import-clean.
+    engine = _build_engine()
+    supervisor = DockerSupervisor(
+        engine=engine,
+        journal=journal,
+        mvd_version="0.1.0-mvd",
+    )
+    broker = ResourceBroker(observer=_observer(), journal=journal)
+    executor = MvdDockerExecutor(
+        journal=journal,
+        boot=boot,
+        store=store,
+        supervisor=supervisor,
+        broker=broker,
+        state_root=state_root,
+        accept_degraded=config.accept_degraded,
+        user_id=config.user_id,
+    )
+    return Kernel(
+        config,
+        executor=executor,
+        journal=journal,
+        boot=boot,
+        broker=broker,
+    )
+
+
+def _build_slurm_kernel(
+    *, state_root: Path, artifact_root: Path | None, accept_degraded: bool
+) -> "Kernel":
+    """Assemble a Slurm-backed kernel — the Slurm counterpart of
+    :func:`_build_docker_kernel`, sharing the same journal/store layout."""
+    from ..mvd import Kernel as _Kernel
+    from ..mvd import KernelConfig as _KernelConfig
+    from ..mvd.slurm_executor import MvdSlurmExecutor
+    from ..slurm.engine import RealSlurmEngine
+
+    boot = BootContext.new(mvd_version="0.1.0-mvd")
+    config = _KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
+    layout = JournalLayout.at(state_root / "journal").ensure()
+    journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
+    store = _store_for_output(state_root=state_root, artifact_root=artifact_root)
+
+    engine = RealSlurmEngine()
+    broker = ResourceBroker(observer=_observer(), journal=journal)
+    executor = MvdSlurmExecutor(
+        journal=journal,
+        boot=boot,
+        store=store,
+        engine=engine,
+        broker=broker,
+        state_root=state_root,
+        accept_degraded=accept_degraded,
+        user_id=config.user_id,
+    )
+    return _Kernel(
+        config,
+        executor=executor,
+        journal=journal,
+        boot=boot,
+        broker=broker,
+    )
+
+
+async def _execute_single_attempt(
+    *,
+    job: Dict[str, Any],
+    state_root: Path,
+    artifact_root: Path | None,
+    manifest_hash: str,
+    seed: int | None,
+    backend: str,
+    accept_degraded: bool,
+) -> Dict[str, Any]:
+    """Submit one job through a freshly-built kernel and return its snapshot.
+
+    The kernel is built, driven to a terminal state for this single attempt,
+    and shut down (releasing the journal writer lock) before returning. This is
+    the unit an Optuna trial evaluates: one hyperparameter vector → one
+    container run → one ``metrics.json``.
+    """
+    if backend == "slurm":
+        kernel = _build_slurm_kernel(
+            state_root=state_root,
+            artifact_root=artifact_root,
+            accept_degraded=accept_degraded,
+        )
+        options = _options_for_slurm_job(job, manifest_hash=manifest_hash, seed=seed)
+    else:
+        kernel = _build_docker_kernel(
+            state_root=state_root,
+            artifact_root=artifact_root,
+            accept_degraded=accept_degraded,
+        )
+        options = _options_for_job(job, manifest_hash=manifest_hash, seed=seed)
+
+    try:
+        attempt = await kernel.submit_run(manifest_path="", options=options)
+        task = kernel._execution_tasks.get(attempt)  # type: ignore[attr-defined]
+        if task is not None:
+            try:
+                await task
+            except Exception as exc:  # pragma: no cover - executor surfaces in snap
+                print(
+                    f"[!!] sweep trial attempt {attempt}: executor raised {exc}",
+                    file=sys.stderr,
+                )
+        snap = await kernel.query_run(physical_attempt_id=attempt)
+        _project_snapshot_to_index(state_root, snap)
+        return snap
+    finally:
+        await kernel.shutdown()
+
+
+def run_trial_attempt(
+    *,
+    job: Dict[str, Any],
+    state_root: "str | Path",
+    artifact_root: "str | Path | None" = None,
+    manifest_hash: str = "",
+    seed: int | None = None,
+    backend: str = "docker",
+    accept_degraded: bool = False,
+) -> Dict[str, Any]:
+    """Run a single sweep-trial attempt to completion and return its snapshot.
+
+    Synchronous bridge for the Optuna objective in
+    :mod:`multiverse.runner.tuner`: Optuna calls the objective sequentially, and
+    each call drives exactly one attempt here. The returned snapshot carries
+    ``primary_state``, ``failure_reason`` and (on success) ``artifact_dir`` —
+    from which the objective reads ``metrics.json``.
+    """
+    return asyncio.run(
+        _execute_single_attempt(
+            job=job,
+            state_root=Path(state_root),
+            artifact_root=Path(artifact_root) if artifact_root is not None else None,
+            manifest_hash=manifest_hash,
+            seed=seed,
+            backend=backend,
+            accept_degraded=accept_degraded,
+        )
+    )
+
+
 def run_via_mvd(args: argparse.Namespace) -> int:
     """Drive the CLI's planned jobs through the mvd kernel.
 
@@ -144,16 +306,86 @@ def run_via_mvd(args: argparse.Namespace) -> int:
     # Default: locally-built Docker images are the normal case for researchers.
     # --strict opts into publication mode (requires a registry digest).
     accept_degraded = not getattr(args, "strict", False)
-    return asyncio.run(
-        _drive_jobs(
+
+    # Sweep jobs are owned by the Optuna controller (multiverse.runner.tuner),
+    # which submits one trial at a time through the kernel. Everything else is
+    # driven as a normal batch of single runs.
+    run_jobs = [j for j in pending_jobs if j.get("mode") != "sweep"]
+    sweep_jobs = [
+        j
+        for j in pending_jobs
+        if j.get("mode") == "sweep" and not j.get("_skipped")
+    ]
+
+    exit_code = 0
+    if run_jobs:
+        exit_code = asyncio.run(
+            _drive_jobs(
+                state_root=state_root,
+                artifact_root=artifact_root,
+                pending_jobs=run_jobs,
+                manifest_text=manifest_text,
+                seed=seed,
+                accept_degraded=accept_degraded,
+            )
+        )
+    if sweep_jobs:
+        rc = _drive_sweeps(
+            sweep_jobs,
             state_root=state_root,
             artifact_root=artifact_root,
-            pending_jobs=pending_jobs,
             manifest_text=manifest_text,
             seed=seed,
+            backend="docker",
             accept_degraded=accept_degraded,
         )
-    )
+        exit_code = exit_code or rc
+    return exit_code
+
+
+def _drive_sweeps(
+    sweep_jobs: List[Dict[str, Any]],
+    *,
+    state_root: Path,
+    artifact_root: Path | None,
+    manifest_text: str,
+    seed: int | None,
+    backend: str,
+    accept_degraded: bool,
+) -> int:
+    """Run each sweep job's Optuna study; return 0 iff all studies completed.
+
+    Each study is a sequential controller: ``tuner.run_sweep`` drives trials,
+    and every trial submits one attempt through the kernel via
+    :func:`run_trial_attempt`. The tuning layer is imported lazily so the mvd
+    entrypoint keeps Optuna out of its import graph (ADR-0001 §8).
+    """
+    from ..artifact import compute_manifest_hash
+    from .tuner import run_sweep
+
+    manifest_hash = compute_manifest_hash(manifest_text or "")
+    n_fail = 0
+    for job in sweep_jobs:
+        name = _job_name(job)
+        try:
+            result = run_sweep(
+                job,
+                state_root=state_root,
+                artifact_root=artifact_root,
+                manifest_hash=manifest_hash,
+                seed=seed,
+                backend=backend,
+                accept_degraded=accept_degraded,
+            )
+            print(
+                f"[ok] sweep {name}: best={result['best_value']} "
+                f"params={result['best_params']} "
+                f"({result['trials']} trials)"
+            )
+        except Exception as exc:
+            n_fail += 1
+            print(f"[!!] sweep {name} failed: {exc}", file=sys.stderr)
+    return 0 if n_fail == 0 else 1
 
 
 async def _drive_jobs(
@@ -165,37 +397,10 @@ async def _drive_jobs(
     artifact_root: Path | None = None,
     accept_degraded: bool = False,
 ) -> int:
-    boot = BootContext.new(mvd_version="0.1.0-mvd")
-    config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
-    layout = JournalLayout.at(state_root / "journal").ensure()
-    journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
-    store = _store_for_output(state_root=state_root, artifact_root=artifact_root)
-
-    # Lazy-import the real Docker engine adapter only when we actually
-    # need it. ``mvd_entrypoint`` itself stays import-clean.
-    engine = _build_engine()
-    supervisor = DockerSupervisor(
-        engine=engine,
-        journal=journal,
-        mvd_version="0.1.0-mvd",
-    )
-    broker = ResourceBroker(observer=_observer(), journal=journal)
-    executor = MvdDockerExecutor(
-        journal=journal,
-        boot=boot,
-        store=store,
-        supervisor=supervisor,
-        broker=broker,
+    kernel = _build_docker_kernel(
         state_root=state_root,
-        accept_degraded=config.accept_degraded,
-        user_id=config.user_id,
-    )
-    kernel = Kernel(
-        config,
-        executor=executor,
-        journal=journal,
-        boot=boot,
-        broker=broker,
+        artifact_root=artifact_root,
+        accept_degraded=accept_degraded,
     )
 
     manifest_hash = compute_manifest_hash(manifest_text or "")
@@ -313,16 +518,38 @@ def run_via_slurm(args: argparse.Namespace) -> int:
         return 0
 
     accept_degraded = getattr(args, "accept_degraded", False)
-    return asyncio.run(
-        _drive_jobs_slurm(
+
+    run_jobs = [j for j in pending_jobs if j.get("mode") != "sweep"]
+    sweep_jobs = [
+        j
+        for j in pending_jobs
+        if j.get("mode") == "sweep" and not j.get("_skipped")
+    ]
+
+    exit_code = 0
+    if run_jobs:
+        exit_code = asyncio.run(
+            _drive_jobs_slurm(
+                state_root=state_root,
+                artifact_root=artifact_root,
+                pending_jobs=run_jobs,
+                manifest_text=manifest_text,
+                seed=seed,
+                accept_degraded=accept_degraded,
+            )
+        )
+    if sweep_jobs:
+        rc = _drive_sweeps(
+            sweep_jobs,
             state_root=state_root,
             artifact_root=artifact_root,
-            pending_jobs=pending_jobs,
             manifest_text=manifest_text,
             seed=seed,
+            backend="slurm",
             accept_degraded=accept_degraded,
         )
-    )
+        exit_code = exit_code or rc
+    return exit_code
 
 
 async def _drive_jobs_slurm(
@@ -334,37 +561,10 @@ async def _drive_jobs_slurm(
     artifact_root: Path | None = None,
     accept_degraded: bool = False,
 ) -> int:
-    from ..artifact import BootContext, compute_manifest_hash
-    from ..broker import HostMetrics, InMemoryHostObserver, ResourceBroker
-    from ..journal import JournalLayout, JournalWriter
-    from ..mvd import Kernel, KernelConfig, PrimaryState
-    from ..mvd.slurm_executor import MvdSlurmExecutor
-    from ..slurm.engine import RealSlurmEngine
-
-    boot = BootContext.new(mvd_version="0.1.0-mvd")
-    config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
-    layout = JournalLayout.at(state_root / "journal").ensure()
-    journal = JournalWriter(layout, boot_id=boot.boot_id, user_id=config.user_id)
-    store = _store_for_output(state_root=state_root, artifact_root=artifact_root)
-
-    engine = RealSlurmEngine()
-    broker = ResourceBroker(observer=_observer(), journal=journal)
-    executor = MvdSlurmExecutor(
-        journal=journal,
-        boot=boot,
-        store=store,
-        engine=engine,
-        broker=broker,
+    kernel = _build_slurm_kernel(
         state_root=state_root,
+        artifact_root=artifact_root,
         accept_degraded=accept_degraded,
-        user_id=config.user_id,
-    )
-    kernel = Kernel(
-        config,
-        executor=executor,
-        journal=journal,
-        boot=boot,
-        broker=broker,
     )
 
     manifest_hash = compute_manifest_hash(manifest_text or "")
@@ -563,6 +763,7 @@ def _options_for_slurm_job(
         ),
         batch_key=str(job.get("batch_key") or None),
         cell_type_key=str(job.get("cell_type_key") or None),
+        container_env_extra=job.get("container_env_extra"),
         seed=seed,
         partition=slurm_cfg.get("partition"),
         account=slurm_cfg.get("account"),
@@ -624,6 +825,7 @@ def _options_for_job(
         mem_limit=job.get("mem_limit"),
         gpu_requested=bool(job.get("gpu", False)),
         preprocessing=job.get("preprocessing"),
+        container_env_extra=job.get("container_env_extra"),
         seed=seed,
     ) | {"manifest_hash": manifest_hash}
 

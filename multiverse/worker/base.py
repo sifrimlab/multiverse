@@ -5,9 +5,7 @@ import os
 from typing import Any, Dict, Union
 
 import h5py
-import matplotlib.pyplot as plt
 import numpy as np
-import scanpy as sc
 
 from .epoch_logger import sanitize_nan_inf
 from .io import load_config
@@ -42,18 +40,6 @@ class ModelFactory:
         cell_type_key: str = "cell_type",
         batch_key: str = "batch",
     ):
-        """Initializes the ModelFactory base class.
-
-        Args:
-            dataset (Union[ad.AnnData, md.MuData]): The dataset object.
-            dataset_name (str): Name of the dataset.
-            model_name (str): Name of the model. Defaults to "".
-            config_path (Union[str, dict]): Path to the configuration file or the configuration dictionary.
-                Defaults to "./config.json".
-            is_gridsearch (bool): Flag indicating if this is a grid search run. Defaults to False.
-            cell_type_key (str): Key in .obs for cell type annotations. Defaults to "cell_type".
-            batch_key (str): Key in .obs for batch annotations. Defaults to "batch".
-        """
         if isinstance(config_path, dict):
             self.config_dict = config_path
         else:
@@ -87,30 +73,18 @@ class ModelFactory:
             model_specific_params = self.model_params.get(self.model_name)
             self.umap_color_type = model_specific_params.get("umap_color_type")
 
-        if self.model_name in self.model_params:
-            model_specific_params = self.model_params.get(self.model_name)
-            self.umap_color_type = model_specific_params.get("umap_color_type")
-
     def train(self):
         """Abstract method for training the model. Subclasses must implement this."""
         logger.info("Training the model.")
 
     def save_latent(self):
-        """Saves the calculated latent representation of the data to an HDF5 file.
-
-        The latent representation is expected to be stored in `self.dataset.obsm`
-        under the key `self.latent_key`.
-
-        Raises:
-            ValueError: If `latent_filepath` is not set.
-            IOError: If there is an issue writing the HDF5 file.
-        """
+        """Saves the calculated latent representation of the data to an HDF5 file."""
         if self.latent_filepath is None:
             raise ValueError("latent_filepath is not set. Cannot save latent data.")
 
         latent = self.dataset.obsm[self.latent_key]
         if not isinstance(latent, np.ndarray):
-            latent = latent.to_numpy()  # handle sparse or dataframe
+            latent = latent.to_numpy()
 
         tmp_filepath = f"{self.latent_filepath}.tmp"
         try:
@@ -120,7 +94,6 @@ class ModelFactory:
             with h5py.File(tmp_filepath, "w") as f:
                 f.create_dataset("latent", data=latent)
 
-            # Atomic rename
             os.rename(tmp_filepath, self.latent_filepath)
             logger.info(f"Latent embedding saved to {self.latent_filepath}")
         except IOError as e:
@@ -135,20 +108,22 @@ class ModelFactory:
             raise
 
     def umap(self):
-        """Generates a UMAP visualization using the model's latent embeddings.
-
-        The resulting plot is saved to `self.umap_filename`.
-
-        Raises:
-            ValueError: If `umap_filename` is not set.
-            Exception: If an error occurs during UMAP generation or plotting.
-        """
+        """Generates a UMAP visualization using the model's latent embeddings."""
         if self.umap_filename is None:
             raise ValueError("umap_filename is not set. Cannot save UMAP plot.")
 
         logger.info(
             f"Generating UMAP with {self.model_name} embeddings for all modalities"
         )
+        # scanpy/matplotlib are heavy and only needed for plotting, so they are
+        # imported here rather than at module load — keeps `import
+        # multiverse.worker` usable with just the minimal [worker] extra.
+        import matplotlib  # type: ignore[import-untyped]
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt  # type: ignore[import-untyped]
+        import scanpy as sc  # type: ignore[import-untyped]
+
         try:
             sc.pp.neighbors(
                 self.dataset,
@@ -185,11 +160,7 @@ class ModelFactory:
         metrics: Dict[str, Any],
         history: Dict[str, Any] | None = None,
     ) -> None:
-        """Persist final scalars and optional per-epoch history to metrics.json.
-
-        Writes both the nested model path and the flat container contract path
-        at ``<output_dir>/metrics.json`` so the orchestrator and MLflow can find them.
-        """
+        """Persist final scalars and optional per-epoch history to metrics.json."""
         payload: Dict[str, Any] = dict(metrics)
         if history:
             import math

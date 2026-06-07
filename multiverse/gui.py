@@ -1632,13 +1632,13 @@ def _write_launch_cohort(
         return launch_id
     except Exception as exc:
         import logging as _logging
-        mvexp = output_path / ".mvexp"
+        cohort_dir = output_path / ".multiverse"
         _logging.getLogger(__name__).warning(
             "cohort write failed: output_path=%s manifest=%s backend=%s seed=%s error=%s",
             output_path, manifest_file, backend, seed, exc,
         )
         st.warning(
-            f"Could not persist launch cohort to `{mvexp}`: {exc}. "
+            f"Could not persist launch cohort to `{cohort_dir}`: {exc}. "
             "The run will continue but the Evaluate section will not show this launch."
         )
         return ""
@@ -2076,43 +2076,118 @@ def _render_evaluate_section() -> None:
         import pandas as pd  # already used elsewhere in gui.py
         st.dataframe(pd.DataFrame(view["table_rows"]), width="stretch", hide_index=True)
 
+    force_build = st.checkbox(
+        "Force rebuild evaluation image",
+        key="eval_force_build",
+        help="Rebuild the multiverse-evaluate Docker image before running, even "
+        "if it already exists. Leave unchecked to build only when missing.",
+    )
+    force_reeval = st.checkbox(
+        "Re-evaluate completed members",
+        key="eval_force_reeval",
+        help="Re-score members already recorded as 'done' instead of skipping "
+        "them. Evaluation is idempotent by default.",
+    )
+
     if st.button(view["button_label"], disabled=not view["button_enabled"], type="primary"):
         from multiverse.evaluation.cohort import cohort_path as _cohort_path
+        from multiverse.evaluation.docker_runner import (EvaluationError,
+                                                         build_image_argv,
+                                                         docker_available,
+                                                         image_present,
+                                                         prepare_evaluation)
+
         cpath = _cohort_path(output_path, cohort["launch_id"])
-        cmd = ["mvr-evaluate", "--config_path", str(cpath)]
-        ok = _stream_subprocess(cmd, "Running evaluation...")
-        if ok:
-            st.session_state["eval_done_for_launch"] = cohort["launch_id"]
+        build_argv = None
+        proceed = True
+        try:
+            plan = prepare_evaluation(
+                cpath,
+                force=force_reeval,
+                mvd_snapshots=snapshots_by_id,
+                completed_runs=completed_runs,
+            )
+            if not docker_available():
+                raise EvaluationError(
+                    "Docker is not available; start the Docker daemon."
+                )
+            if force_build or not image_present(plan.image):
+                # Raises EvaluationError if the Dockerfile is missing.
+                build_argv = build_image_argv(plan.image)
+        except EvaluationError as exc:
+            st.error(f"Cannot start evaluation: {exc}")
+            proceed = False
+
+        if proceed and build_argv is not None:
+            built = _stream_subprocess(
+                build_argv, f"Building {plan.image}..."
+            )
+            if not built:
+                st.error("Evaluation image build failed; see the logs above.")
+                proceed = False
+
+        if proceed:
+            ok = _stream_subprocess(
+                plan.argv, f"Running evaluation in {plan.image}..."
+            )
+            if ok:
+                st.session_state["eval_done_for_launch"] = cohort["launch_id"]
 
     if st.session_state.get("eval_done_for_launch") == cohort.get("launch_id"):
+        import logging as _logging
+
         import pandas as pd
-        eval_base = (
-            output_path
-            / "evaluation"
-            / cohort["launch_id"]
+
+        from multiverse.evaluation.cohort import launch_dir as _launch_dir
+        from multiverse.evaluation.result import (build_evaluation_report,
+                                                   load_member_results,
+                                                   report_to_table_rows,
+                                                   write_evaluation_report)
+
+        # Rebuild the authoritative launch-level report on the host: the full
+        # cohort, the freshly-resolved (live) readiness, and the per-member
+        # result files the container wrote. The container's own report only
+        # covers the members it received; this one covers every member.
+        member_results = load_member_results(output_path, cohort["launch_id"])
+        report = build_evaluation_report(
+            cohort=cohort,
+            members_with_status=members_with_status,
+            member_results=member_results,
         )
-        dataset_names = sorted(
-            {m["dataset_slug"] for m in cohort.get("members", []) if "dataset_slug" in m}
+        try:
+            write_evaluation_report(
+                output_dir=output_path, launch_id=cohort["launch_id"], report=report
+            )
+        except Exception as exc:  # noqa: BLE001
+            _logging.getLogger(__name__).warning(
+                "could not write evaluation report: %s", exc
+            )
+
+        st.markdown("**Evaluation results**")
+        st.caption(
+            f"{report['status_counts'].get('done', 0)}/{report['total']} evaluated"
         )
-        for dataset_name in dataset_names:
-            metrics_path = eval_base / f"dataset_{dataset_name}" / "evaluation_metrics.json"
-            if not metrics_path.exists():
-                continue
-            try:
-                with open(metrics_path, encoding="utf-8") as fh:
-                    raw = json.load(fh)
-                df = pd.DataFrame(raw)
-                def _fmt(v):
-                    n = pd.to_numeric(v, errors="coerce")
-                    return f"{n:.4g}" if pd.notna(n) else str(v) if v is not None else ""
-                df = df.apply(lambda col: col.map(_fmt))
-                st.markdown(f"**{dataset_name}**")
-                st.dataframe(df, width="stretch")
-                img_path = metrics_path.parent / "scib_results.svg"
-                if img_path.exists():
-                    st.image(str(img_path))
-            except Exception as exc:
-                st.warning(f"Could not load metrics for {dataset_name}: {exc}")
+
+        # Launch-level comparison table: one row per member, scIB metrics
+        # expanded into columns, plus status/reason and artifact dir for
+        # drill-down to the existing artifact detail view.
+        rows = report_to_table_rows(report)
+        if rows:
+            df = pd.DataFrame(rows)
+
+            def _fmt(v):
+                n = pd.to_numeric(v, errors="coerce")
+                return f"{n:.4g}" if pd.notna(n) else ("" if v is None else str(v))
+
+            df = df.apply(lambda col: col.map(_fmt))
+            st.dataframe(df, width="stretch", hide_index=True)
+
+        # scIB plots written by the container under the launch dir.
+        plots_dir = _launch_dir(output_path, cohort["launch_id"]) / "plots"
+        if plots_dir.is_dir():
+            for svg in sorted(plots_dir.glob("dataset_*/scib_results.svg")):
+                st.markdown(f"**{svg.parent.name.replace('dataset_', '')}**")
+                st.image(str(svg))
 
 
 def _render_execute_tab() -> None:

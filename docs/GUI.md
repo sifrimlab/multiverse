@@ -28,6 +28,9 @@ The Run tab uses the in-process mvd controller. It does not spawn `multiverse.ru
 - **Cancel Run** calls the kernel cancellation verb; it does not kill a local process handle.
 - The status table renders kernel states such as `RUNNING`, `PROMOTING`, `ARTIFACT_SUCCESS`, `FAILED`, and `CANCELLED`.
 - The event panel shows state transitions observed from kernel queries. Container logs remain artifact files after the run produces or preserves a workspace.
+- **Evaluate Experiment** resolves the latest launch cohort, filters members to readiness `ready`, builds or reuses the `multiverse-evaluate` Docker image, and runs evaluation in that container. The GUI remains a thin host process and does not import muon, scanpy, or scib-metrics.
+
+Evaluation writes launch-scoped artifacts under `<output-dir>/.multiverse/launches/<launch_id>/`: `eval_config.json`, one `evaluations/<member_id>.json` file per evaluated member, `evaluation_report.json`, and scIB plots under `plots/dataset_<dataset_slug>/`. The GUI rebuilds the report from the full cohort plus live readiness so not-ready members appear in the same comparison table as evaluated members.
 
 ## Results
 
@@ -44,6 +47,8 @@ MLflow and Optuna are comparison/projection surfaces. They are not the source of
 | Dataset missing from Configure | Registry cache stale. | Open Registry and refresh. |
 | Launch fails before container start | Manifest references stale rows or Docker is unavailable. | Regenerate the manifest or run `multiverse doctor`. |
 | Run is `FAILED` | Container exit, validation refusal, or Docker error. | Inspect the event panel, `failure_reason`, and preserved logs. |
+| Evaluation button is disabled | No cohort member has readiness `ready`. | Wait for `ARTIFACT_SUCCESS`, inspect readiness reasons, or fix missing artifacts/datasets. |
+| Evaluation row is `evaluation_failed` | Dataset preprocessing or scIB failed for that member. | Open `.multiverse/launches/<launch_id>/evaluations/<member_id>.json` for the structured reason. |
 | MLflow panel is empty | Projection service is offline. | Start services or sync later; artifact bundles remain authoritative. |
 | SQLite listing looks stale | Index drift. | Run `multiverse rebuild-index`. |
 

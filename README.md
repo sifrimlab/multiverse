@@ -1,14 +1,14 @@
-# mvexp
+# multiverse
 
 **Reproducible benchmarking for multimodal single-cell integration, without making bioinformaticians become infrastructure engineers.**
 
-mvexp is an MLOps platform for academic biological integration studies. You bring the scientific objects you already use in notebooks: `AnnData`, `MuData`, batch annotations, cell-type labels, and model questions. mvexp handles the repetitive infrastructure around registration, model execution, parameter tracking, artifacts, Optuna sweeps, and MLflow comparison.
+multiverse is an MLOps platform for academic biological integration studies. You bring the scientific objects you already use in notebooks: `AnnData`, `MuData`, batch annotations, cell-type labels, and model questions. multiverse handles the repetitive infrastructure around registration, model execution, parameter tracking, artifacts, Optuna sweeps, and MLflow comparison.
 
 The goal is simple: make it easier to run a defensible benchmark and easier to explain exactly what you did in a paper.
 
 ## Who This Is For
 
-mvexp is designed for researchers who are comfortable with Scanpy, Seurat, MuData, and Jupyter, but do not want every benchmark to become a Docker and orchestration project.
+multiverse is designed for researchers who are comfortable with Scanpy, Seurat, MuData, and Jupyter, but do not want every benchmark to become a Docker and orchestration project.
 
 You should be able to answer scientific questions such as:
 
@@ -17,9 +17,9 @@ You should be able to answer scientific questions such as:
 - Are conclusions stable across random seeds and hyperparameters?
 - Can I attach enough provenance for a reviewer to reproduce my benchmark?
 
-## What mvexp Handles for You
+## What multiverse Handles for You
 
-| You focus on | mvexp handles |
+| You focus on | multiverse handles |
 |---|---|
 | Biological question and dataset curation | Dataset registration and compatibility checks |
 | Batch and cell-type metadata | Metric eligibility and clear warnings |
@@ -53,6 +53,7 @@ Set up the platform from a source checkout:
 make bootstrap      # install dev deps, initialize the registry, register built-in models
 make services-up    # optional: MLflow on :25000 and Optuna Dashboard on :28080
 make setup          # optional: install GUI and ML model wrapper extras
+make build-evaluate # optional: prebuild the evaluation image used by Evaluate
 make gui            # launch Streamlit on :28501
 ```
 
@@ -84,15 +85,16 @@ In the GUI:
 5. Open **Job Builder** and select compatible dataset x model pairs.
 6. Open **Parameters** and set model hyperparameters.
 7. Open **Run** and click **Launch Run**.
-8. Open **Results** to inspect completed runs and artifact paths.
+8. In **Run**, use **Evaluate Experiment** after jobs reach `ARTIFACT_SUCCESS`.
+9. Open **Results** to inspect completed runs and artifact paths.
 
 For a full guided tutorial, see [Getting Started](docs/GETTING_STARTED.md).
 
 ## The Jupyter Bridge
 
-Most users should keep doing their exploratory work in notebooks. mvexp is meant to sit between notebook curation and notebook interpretation.
+Most users should keep doing their exploratory work in notebooks. multiverse is meant to sit between notebook curation and notebook interpretation.
 
-### Save a MuData Object for mvexp
+### Save a MuData Object for multiverse
 
 ```python
 from pathlib import Path
@@ -162,9 +164,9 @@ with h5py.File(artifact_dir / "embeddings.h5", "r") as f:
 
 mdata = md.read_h5mu("store/datasets/pbmc_rna_atac/data/processed.h5mu")
 adata = mdata["rna"].copy()
-adata.obsm["X_mvexp_pca"] = latent
+adata.obsm["X_multiverse_pca"] = latent
 
-sc.pp.neighbors(adata, use_rep="X_mvexp_pca")
+sc.pp.neighbors(adata, use_rep="X_multiverse_pca")
 sc.tl.umap(adata)
 sc.pl.umap(adata, color=["batch", "cell_type"])
 ```
@@ -173,7 +175,7 @@ See [Data Preparation](docs/DATA_PREPARATION.md) for more detailed examples for 
 
 ## Data State: Biological Assumptions
 
-mvexp does not decide what counts as appropriate biological preprocessing for your study. It makes your choices explicit and reproducible.
+multiverse does not decide what counts as appropriate biological preprocessing for your study. It makes your choices explicit and reproducible.
 
 Recommended expectations:
 
@@ -195,6 +197,9 @@ Every run is designed to leave a Methods trail:
 - `job_spec.json` records the exact runtime instructions passed to each model container.
 - `metrics.json` records model-level metrics and histories when available.
 - `embeddings.h5` records the latent representation used for downstream evaluation.
+- `.multiverse/launches/<launch_id>/cohort.json` records the full launch cohort and readiness inputs.
+- `.multiverse/launches/<launch_id>/evaluations/<member_id>.json` records one structured evaluation outcome per cohort member.
+- `.multiverse/launches/<launch_id>/evaluation_report.json` records the launch-level comparison table derived from per-member results.
 - logs and provenance artifacts document what ran and where outputs were written.
 
 For a paper, include `run_manifest.yaml` and `provenance.json` when it is present in the run directory as Supplementary Material. Together with the archived input data, these files are the reproducibility contract for the benchmark: they record what was run, with which parameters, seed, metrics, and artifacts. In your Methods section, describe the dataset state, metadata keys, selected models, random seed, and metric families.
@@ -206,7 +211,7 @@ The docs follow Diátaxis:
 | Type | Document | Purpose |
 |---|---|---|
 | Tutorial | [Getting Started](docs/GETTING_STARTED.md) | First complete run from notebook object to results. |
-| How-To | [Data Preparation](docs/DATA_PREPARATION.md) | Practical recipes for making data acceptable to mvexp. |
+| How-To | [Data Preparation](docs/DATA_PREPARATION.md) | Practical recipes for making data acceptable to multiverse. |
 | How-To | [Runner & Orchestration](docs/RUNNER.md) | Docker and Slurm execution paths, `--accept-degraded`, asset registry migration. |
 | Reference | [Models Glossary](docs/reference/MODELS_GLOSSARY.md) | Built-in model assumptions and hyperparameters. |
 | Reference | [Evaluation Metrics](docs/reference/EVALUATION_METRICS.md) | Bio-conservation and batch-correction metric definitions. |
@@ -219,14 +224,14 @@ The docs follow Diátaxis:
 - **CITE-seq RNA+ADT Protein Integration**: prepare RNA and antibody-derived tags for TotalVI, evaluate protein-aware latent structure, and bring embeddings back into Scanpy.
 - **Cross-Donor Batch Correction in an Atlas Subset**: register donor metadata as the batch key, compare models by bio-conservation and batch-correction metrics, and produce a reproducible Methods bundle.
 
-## How to Cite mvexp
+## How to Cite multiverse
 
-Until a formal paper or DOI is available, cite the repository or archived release used for the benchmark. Include the mvexp version or commit hash, `run_manifest.yaml`, and run provenance artifacts with Supplementary Material.
+Until a formal paper or DOI is available, cite the repository or archived release used for the benchmark. Include the multiverse version or commit hash, `run_manifest.yaml`, and run provenance artifacts with Supplementary Material.
 
 Suggested wording:
 
 ```text
-Integration benchmarks were executed with mvexp (version/commit: <commit>). The full
+Integration benchmarks were executed with multiverse (version/commit: <commit>). The full
 benchmark recipe, including datasets, models, hyperparameters, random seed, and requested
 metrics, is provided as Supplementary File X (`run_manifest.yaml`). Per-run provenance and
 model artifacts are archived with the analysis.

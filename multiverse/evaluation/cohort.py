@@ -2,7 +2,7 @@
 
 On-disk layout under the selected output directory::
 
-    <output-dir>/.mvexp/
+    <output-dir>/.multiverse/
       latest_launch.json
       launches/
         <launch_id>/
@@ -36,13 +36,13 @@ LATEST_LAUNCH_SCHEMA_VERSION = 1
 # ---------------------------------------------------------------------------
 
 
-def mvexp_root(output_dir: Path) -> Path:
-    """Return the .mvexp directory under output_dir (not created)."""
-    return Path(output_dir) / ".mvexp"
+def multiverse_root(output_dir: Path) -> Path:
+    """Return the .multiverse directory under output_dir (not created)."""
+    return Path(output_dir) / ".multiverse"
 
 
 def launches_dir(output_dir: Path) -> Path:
-    return mvexp_root(output_dir) / "launches"
+    return multiverse_root(output_dir) / "launches"
 
 
 def launch_dir(output_dir: Path, launch_id: str) -> Path:
@@ -58,7 +58,7 @@ def manifest_copy_path(output_dir: Path, launch_id: str) -> Path:
 
 
 def latest_launch_path(output_dir: Path) -> Path:
-    return mvexp_root(output_dir) / "latest_launch.json"
+    return multiverse_root(output_dir) / "latest_launch.json"
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ def write_cohort(
     cohort: Dict[str, Any],
     manifest_text: Optional[str] = None,
 ) -> Path:
-    """Write cohort.json (and optionally manifest.yaml) under .mvexp/launches/<launch_id>/."""
+    """Write cohort.json (and optionally manifest.yaml) under .multiverse/launches/<launch_id>/."""
     cpath = cohort_path(output_dir, launch_id)
     _atomic_write_json(cpath, cohort)
     if manifest_text is not None:
@@ -333,7 +333,7 @@ def write_latest_launch(
     launch_id: str,
     created_at: str,
 ) -> None:
-    """Write .mvexp/latest_launch.json pointing to the new launch."""
+    """Write .multiverse/latest_launch.json pointing to the new launch."""
     ldir = str(launch_dir(output_dir, launch_id))
     data: Dict[str, Any] = {
         "schema_version": LATEST_LAUNCH_SCHEMA_VERSION,
@@ -722,6 +722,26 @@ def readiness_summary(members_with_status: List[Dict[str, Any]]) -> Dict[str, An
         "can_evaluate": ready > 0,
         "counts": counts,
     }
+
+
+def filter_cohort_for_evaluation(
+    cohort: Dict[str, Any],
+    members_with_status: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Return a copy of ``cohort`` containing only the ready members.
+
+    Uses the *resolved* member dicts from :func:`resolve_cohort_readiness` (not
+    the raw cohort members) so that ``artifact_dir`` values back-filled during
+    readiness resolution are carried into the config the evaluation container
+    consumes. The container would otherwise fail on skipped or still-running
+    members that have no embeddings to read.
+    """
+    ready = [
+        m for m in members_with_status if m.get("readiness_status") == STATUS_READY
+    ]
+    filtered = dict(cohort)
+    filtered["members"] = ready
+    return filtered
 
 
 # ---------------------------------------------------------------------------

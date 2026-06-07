@@ -25,7 +25,7 @@ from .health_probes import (CleanupResult, LeakInventoryResult, ProbeOutcome,
 def probe_state_root(state_root: Path, *, explicit: bool = False) -> ProbeReport:
     """Verify the configured state root is outside the package directory
     and (when ``state_root`` was *not* explicitly chosen) that no legacy
-    ``mvexp_state.db`` is being orphaned.
+    ``multiverse_state.db`` is being orphaned.
 
     Pass ``explicit=True`` when the caller picked ``state_root`` via CLI
     flag or environment variable — they have expressed intent and we do
@@ -47,9 +47,9 @@ def probe_state_root(state_root: Path, *, explicit: bool = False) -> ProbeReport
             outcome = ProbeOutcome.FAIL
             detail_lines.append(
                 f"state_root {str(resolved)!r} is inside the package directory "
-                f"({str(PACKAGE_DIR)!r}). Set MVEXP_STATE_DIR or "
+                f"({str(PACKAGE_DIR)!r}). Set MULTIVERSE_STATE_DIR or "
                 f"state_root: in the config file to a user-writable path "
-                f"(e.g. $HOME/.mvexp)."
+                f"(e.g. $HOME/.multiverse)."
             )
         else:
             detail_lines.append(f"state_root={str(resolved)!r}")
@@ -59,12 +59,12 @@ def probe_state_root(state_root: Path, *, explicit: bool = False) -> ProbeReport
         if legacy is not None:
             legacy_str = str(legacy)
             resolved_legacy = legacy.resolve()
-            if resolved is None or resolved_legacy != resolved / "mvexp_state.db":
+            if resolved is None or resolved_legacy != resolved / "multiverse_state.db":
                 outcome = ProbeOutcome.FAIL
                 detail_lines.append(
                     f"legacy database found at {legacy_str!r} (would be orphaned). "
-                    "Run `mvexp migrate-state-dir` to relocate, or set "
-                    f"MVEXP_STATE_DIR to {str(legacy.parent)!r} to keep using the legacy path."
+                    "Run `multiverse migrate-state-dir` to relocate, or set "
+                    f"MULTIVERSE_STATE_DIR to {str(legacy.parent)!r} to keep using the legacy path."
                 )
 
     detail_lines.append(f"package_dir={str(PACKAGE_DIR)!r}")

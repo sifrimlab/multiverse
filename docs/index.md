@@ -1,8 +1,8 @@
-# mvexp
+# multiverse
 
 **Reproducible benchmarking for multimodal single-cell integration.**
 
-mvexp is an MLOps platform for academic single-cell integration studies. It sits between two notebook sessions — the one in which you curate a dataset and the one in which you interpret the resulting embeddings — and replaces the brittle hand-rolled scripts in between with a registry, a containerized runner, and a Streamlit interface. The goal is to make a defensible benchmark easier to run, and the resulting Methods section easier to write.
+multiverse is an MLOps platform for academic single-cell integration studies. It sits between two notebook sessions — the one in which you curate a dataset and the one in which you interpret the resulting embeddings — and replaces the brittle hand-rolled scripts in between with a registry, a containerized runner, and a Streamlit interface. The goal is to make a defensible benchmark easier to run, and the resulting Methods section easier to write.
 
 ## Two Audiences, One Platform
 
@@ -20,7 +20,7 @@ You will be running, deploying, or extending the platform. You may have no biolo
 
 Start at [Architecture](ARCHITECTURE.md) for the system map, then read [Runner & Orchestration](RUNNER.md) for the execution model and [Model Container Contract](MODEL_CONTAINER_CONTRACT.md) for the I/O boundary. [Adding a Model](ADDING_A_MODEL.md) and the [Developer Guide](DEVELOPER_GUIDE.md) cover extension work.
 
-## What mvexp Does
+## What multiverse Does
 
 | Researcher concern | Platform responsibility |
 |---|---|

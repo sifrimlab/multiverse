@@ -6,7 +6,7 @@ as-is by model containers and external user code.
 
 Minimal usage:
 
-    from mvr_worker import EpochLogger
+    from multiverse.worker import EpochLogger
 
     with EpochLogger(jsonl_path="/output/metrics.jsonl", run_name="cobolt") as ep:
         for epoch in range(num_epochs):
@@ -73,7 +73,9 @@ class EpochLogger:
         if not uri:
             return
         try:
-            import mlflow  # type: ignore
+            from multiverse.mlflow_sdk import import_mlflow
+
+            mlflow = import_mlflow()
         except Exception as exc:
             logger.debug("mlflow import failed; JSONL-only logging. (%s)", exc)
             return
@@ -193,7 +195,7 @@ def replay_history(
 
 
 def sanitize_nan_inf(obj: Any) -> Any:
-    """Recursively replace NaN and +/-Inf float values with None, and convert non-serializable numeric types to Python natives."""
+    """Recursively replace NaN and +/-Inf float values with None."""
     if isinstance(obj, float):
         return obj if math.isfinite(obj) else None
     try:

@@ -12,8 +12,6 @@ a missing driver.
 
 from __future__ import annotations
 
-import torch
-
 from .logging import get_logger
 
 logger = get_logger(__name__)
@@ -49,6 +47,12 @@ def get_device(device_str: str):
     Returns:
         torch.device: The corresponding torch device object.
     """
+    try:
+        import torch
+    except ImportError:
+        logger.warning("torch not importable; returning cpu placeholder.")
+        return "cpu"
+
     if device_str != "cpu":
         if torch.cuda.is_available():
             logger.info(f"GPU available. Using device: {device_str}")
