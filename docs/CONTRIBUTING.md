@@ -31,20 +31,10 @@ This guide explains how to contribute to Multiverse. Contributions should preser
 
 ## How-To: Add a Metric or Report Field
 
-1. Define whether it is bio-conservation, batch-correction, or model-specific.
-2. Document required metadata keys.
-3. Ensure missing metadata leads to a clear warning, not a silent failure.
-4. Surface it in Results or MLflow where appropriate.
-5. Update [Evaluation Metrics](reference/EVALUATION_METRICS.md).
-
-## Common Errors
-
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| Docs and GUI disagree | UI changed without doc update. | Update the relevant tutorial/how-to in the same PR. |
-| New model is hard to configure | Schema fields are missing or unclear. | Add defaults, enums, minimums, and descriptions. |
-| Researcher must use Docker manually | Workflow leaked implementation detail. | Route the task through GUI or maintainer-only docs. |
-| Report metric is not interpretable | Metric lacks biological explanation. | Add definition, assumptions, and caveats. |
+1. Document required metadata keys.
+2. Ensure missing metadata leads to a clear warning, not a silent failure.
+3. Surface it in Results or MLflow where appropriate.
+4. Update [Evaluation Metrics](reference/EVALUATION_METRICS.md).
 
 ## How to Cite Contributions
 

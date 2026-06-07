@@ -1,34 +1,31 @@
 # Data Preparation
 
-This how-to explains how to prepare biological data for multiverse from the perspective of a Scanpy, Seurat, or MuData user.
+This how-to explains how to prepare biological data for multiverse.
 
-The short version: multiverse expects a well-formed `AnnData` or `MuData` file, plus explicit metadata keys that say which column represents batch and which column represents biological labels.
+Multiverse expects a well-formed `MuData` file, plus explicit metadata keys that say which column represents batch and which column represents biological labels.
 
 ## Data State: What multiverse Assumes
 
-multiverse does not perform scientific preprocessing decisions for you. It preserves and records the choices you make before registration.
+Multiverse does not perform scientific preprocessing decisions for you. It preserves and records the choices you make before registration.
 
 | Requirement | Practical guidance |
 |---|---|
 | Cells are observations | Cell barcodes should be in `.obs_names`. |
-| Features are variables | Genes, peaks, or proteins should be in `.var_names`. |
+| Features are variables | Genes, peaks, proteins, etc. should be in `.var_names`. |
 | Modalities are explicit | Use `MuData` modalities such as `rna`, `atac`, and `adt` for multimodal studies. |
-| `batch` metadata is present | Use a string or categorical `.obs` column for donor, chemistry, lane, site, or another nuisance source. |
-| `cell_type` metadata is present when available | Use a string or categorical `.obs` column for biological labels used by ARI, NMI, silhouette, and related metrics. |
-| Preprocessing is intentional | Store the matrix state expected by the selected models and document normalization, filtering, HVG selection, and feature construction. |
+| `batch_key` metadata is present | Use a string or categorical `.obs` column for donor, chemistry, lane, site, or another nuisance source. If not available, we will assign the same default value for all samples.|
+| `cell_type_key` metadata is present when available | Use a string or categorical `.obs` column. |
+| Preprocessing | Store the matrix state as raw counts, perform the processing expected by the selected models in the implementation through the GUI/manifest file, and document normalization, filtering, and HVG selection. |
 
 ## Raw Counts, Normalized Data, and HVGs
 
-Different models make different assumptions. multiverse records what you run, but it does not convert one scientific data state into another without your knowledge.
+Different models make different assumptions. Multiverse records what you run, but it does not convert one scientific data state into another without your knowledge.
 
 Recommended practice:
 
 - Keep raw counts in a layer or adjacent file when possible.
 - For PCA baselines, normalized and log-transformed matrices with HVG selection are often appropriate.
 - For probabilistic count models, preserve count-like input unless the model documentation says otherwise.
-- For ATAC, document whether the matrix is binary accessibility, counts, TF-IDF transformed, or peak-selected.
-- For ADT, document whether values are raw counts, denoised counts, CLR-normalized values, or another representation.
-- If you run the same benchmark on multiple data states, register them as separate dataset slugs so the comparison remains explicit.
 
 ## Metadata Columns
 
@@ -45,7 +42,7 @@ Use stable labels:
 - Good `cell_type` values: `CD4 T`, `B cell`, `monocyte`, `NK`.
 - Avoid mixed types, empty strings, and columns with many accidental spellings.
 
-If `cell_type` is missing, multiverse can still run models, but supervised bio-conservation metrics are skipped. If `batch` is missing or has only one value, batch-correction metrics are skipped.
+If `cell_type` or `batch` is missing, Multiverse can still run models, but the evaluation metrics pipeline cannot run without having both available. To circumvent this limitation in the scib-metrics source code, we assign random labels for the samples for each of the missing keys (for now). **Therefore, in case a label is misisng, the results shown for that missing label might be misleading.**
 
 ## Prepare RNA AnnData
 
@@ -92,126 +89,6 @@ with open(dataset_dir / "dataset.yaml", "w") as f:
     yaml.safe_dump(manifest, f, sort_keys=False)
 ```
 
-Register it:
-
-1. Open the **Registry** tab.
-2. Expand **Register New Dataset**.
-3. Enter `store/datasets/pbmc_rna/dataset.yaml` in **Path to dataset.yaml**.
-4. Click **Register Dataset**.
-5. Click **Refresh Registry**.
-
-## Prepare RNA+ATAC MuData
-
-```python
-from pathlib import Path
-
-import mudata as md
-
-# adata_rna and adata_atac should already be filtered and aligned.
-shared_cells = adata_rna.obs_names.intersection(adata_atac.obs_names)
-adata_rna = adata_rna[shared_cells].copy()
-adata_atac = adata_atac[shared_cells].copy()
-
-# MultiVI-style workflows need feature type annotations after concatenation.
-adata_rna.var["feature_types"] = "Gene Expression"
-adata_atac.var["feature_types"] = "Peaks"
-
-mdata = md.MuData({
-    "rna": adata_rna,
-    "atac": adata_atac,
-})
-
-mdata.obs["batch"] = adata_rna.obs["donor_id"].astype(str)
-mdata.obs["cell_type"] = adata_rna.obs["cell_type"].astype(str)
-
-dataset_dir = Path("store/datasets/pbmc_multiome")
-data_dir = dataset_dir / "data"
-data_dir.mkdir(parents=True, exist_ok=True)
-
-mdata.write_h5mu(data_dir / "processed.h5mu")
-```
-
-Manifest:
-
-```python
-import yaml
-
-manifest = {
-    "name": "PBMC Multiome RNA+ATAC",
-    "omics": ["rna", "atac"],
-    "raw_files": {
-        "rna": "data/processed.h5mu",
-        "atac": "data/processed.h5mu",
-    },
-    "metadata_keys": {
-        "batch": "batch",
-        "cell_type": "cell_type",
-    },
-}
-
-with open(dataset_dir / "dataset.yaml", "w") as f:
-    yaml.safe_dump(manifest, f, sort_keys=False)
-```
-
-## Prepare RNA+ADT Data
-
-For TotalVI-style studies, RNA and protein measurements should be aligned by cell. If you keep protein expression in an AnnData `.obsm`, use the convention expected by the model wrapper.
-
-```python
-from pathlib import Path
-
-import mudata as md
-import pandas as pd
-
-# adata_rna contains gene expression.
-# adata_adt contains antibody-derived tag counts or the representation chosen for the study.
-
-shared_cells = adata_rna.obs_names.intersection(adata_adt.obs_names)
-adata_rna = adata_rna[shared_cells].copy()
-adata_adt = adata_adt[shared_cells].copy()
-
-adata_rna.obsm["protein_expression"] = pd.DataFrame(
-    adata_adt.X.toarray() if hasattr(adata_adt.X, "toarray") else adata_adt.X,
-    index=adata_adt.obs_names,
-    columns=adata_adt.var_names,
-)
-
-mdata = md.MuData({
-    "rna": adata_rna,
-    "adt": adata_adt,
-})
-
-mdata.obs["batch"] = adata_rna.obs["donor_id"].astype(str)
-mdata.obs["cell_type"] = adata_rna.obs["cell_type"].astype(str)
-
-dataset_dir = Path("store/datasets/citeseq_rna_adt")
-data_dir = dataset_dir / "data"
-data_dir.mkdir(parents=True, exist_ok=True)
-
-mdata.write_h5mu(data_dir / "processed.h5mu")
-```
-
-Manifest:
-
-```python
-import yaml
-
-manifest = {
-    "name": "CITE-seq RNA+ADT",
-    "omics": ["rna", "adt"],
-    "raw_files": {
-        "rna": "data/processed.h5mu",
-        "adt": "data/processed.h5mu",
-    },
-    "metadata_keys": {
-        "batch": "batch",
-        "cell_type": "cell_type",
-    },
-}
-
-with open(dataset_dir / "dataset.yaml", "w") as f:
-    yaml.safe_dump(manifest, f, sort_keys=False)
-```
 
 ## Register Through the GUI
 
@@ -286,18 +163,3 @@ metrics, is provided as `run_manifest.yaml` in the Supplementary Material. Per-r
 runtime instructions and provenance files are provided with the corresponding model
 artifacts.
 ```
-
-## Common Errors
-
-| Symptom | Likely cause | What to do |
-|---|---|---|
-| Registration fails with missing file | Manifest path points to a file that does not exist. | Check paths relative to `store/datasets/<slug>/`. |
-| Batch metrics are skipped | `batch` column is missing or has one unique value. | Inspect `adata.obs["batch"].value_counts()` in Jupyter. |
-| Label metrics are skipped | `cell_type` column is missing or misspelled. | Confirm exact `.obs` column names. |
-| Returned embedding cannot be plotted | Cell order or object choice does not match the run. | Read the same prepared object used for registration. |
-
-## Cookbook Outline
-
-- **RNA+ATAC Integration for Multiome PBMCs**: prepare paired modalities, register batch and cell-type metadata, compare RNA+ATAC-capable models, and visualize returned embeddings in Scanpy.
-- **RNA+ADT CITE-seq Integration**: prepare protein expression alongside RNA, run TotalVI, and compare whether protein-aware latent spaces improve biological label structure.
-- **Donor-Aware Atlas Integration**: use donor or site as `batch`, run multiple models across an atlas subset, and report both bio-conservation and batch-correction metrics for publication.

@@ -14,8 +14,6 @@ Registration tells multiverse:
 - which `.obs` column is the batch key;
 - which `.obs` column is the cell-type key.
 
-Registration does not change your biology. It creates a reproducible dataset record for benchmarking.
-
 [IMAGE: Registry Tab Ingestion Wizard]
 
 ## Tutorial: Register a Dataset Visually

@@ -1,6 +1,6 @@
 # Streamlit GUI
 
-The Streamlit app at `multiverse/gui.py` is the primary researcher interface. It exposes registration, benchmark planning, mvd-backed execution, results browsing, and analysis dashboards.
+The Streamlit app at `multiverse/gui.py` is the primary researcher interface. It exposes registration, benchmark planning, execution, results browsing, and analysis dashboards.
 
 ## Layout
 
