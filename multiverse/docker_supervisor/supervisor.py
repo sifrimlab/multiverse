@@ -29,6 +29,14 @@ from .leases import ContainerLease, LeaseLedger
 
 @dataclass
 class LaunchResult:
+    """Outcome of a single container launch.
+
+    Attributes:
+        container_id: Engine-assigned id of the started container.
+        labels: Run-identity labels stamped on the container.
+        lease: The lease opened in the ledger for this container.
+    """
+
     container_id: str
     labels: MultiverseLabels
     lease: ContainerLease
@@ -36,6 +44,16 @@ class LaunchResult:
 
 @dataclass
 class ReconcileEntry:
+    """Per-attempt result of cross-referencing journal intent against the engine.
+
+    Attributes:
+        physical_attempt_id: The attempt this entry describes.
+        container_id: Engine id of the container, from the lease or engine.
+        state: Coarse state observed for the container.
+        exit_code: Process exit code when the container has exited.
+        oom_killed: Whether the engine reports the container was OOM-killed.
+    """
+
     physical_attempt_id: str
     container_id: str
     state: ContainerState
@@ -52,6 +70,17 @@ class ReconcileEntry:
 
 @dataclass
 class ReconcileReport:
+    """Structured description of a reconcile pass for the kernel to act on.
+
+    ``reconcile`` never mutates run state itself; the kernel reads this
+    report and records the resulting ``STATE_TRANSITION`` journal records.
+
+    Attributes:
+        entries: One :class:`ReconcileEntry` per expected lease.
+        unowned_containers: Containers labelled ``multiverse.*`` with no
+            matching journalled lease; surfaced to ``doctor``.
+    """
+
     entries: List[ReconcileEntry] = field(default_factory=list)
     unowned_containers: List[ContainerInfo] = field(default_factory=list)
     """Containers labelled ``multiverse.*`` but not matching any lease we
@@ -100,6 +129,31 @@ class DockerSupervisor:
         entrypoint: Optional[str] = None,
         gpu_requested: bool = False,
     ) -> LaunchResult:
+        """Journal launch intent, start the container, and open its lease.
+
+        The journal record is committed *before* the engine launch so a crash
+        mid-flight leaves a replayable intent: the next reconcile either
+        adopts a container found at this attempt's label or transitions the
+        run to FAILED.
+
+        Args:
+            physical_attempt_id: Id of this execution; the ``run_id`` label.
+            logical_run_id: Logical run grouping this attempt's retries/resumes.
+            manifest_hash: Hash of the run manifest pinning the inputs.
+            workspace: In-flight workspace directory for the run.
+            owner_token: Token proving this boot owns the workspace.
+            image: Image reference to run.
+            command: Command vector, or ``None`` for the image default.
+            env: Environment variables for the container.
+            volumes: Host->container mount mapping.
+            mem_limit: Memory cap in Docker syntax, if any.
+            name: Explicit container name, if any.
+            entrypoint: Entrypoint override, if any.
+            gpu_requested: Whether the run requested a GPU.
+
+        Returns:
+            The launch result carrying the container id, labels, and lease.
+        """
         labels = multiverse_labels(
             run_id=physical_attempt_id,
             logical_run_id=logical_run_id,
@@ -157,6 +211,7 @@ class DockerSupervisor:
     # ------------------------------------------------------------------
 
     def renew(self, physical_attempt_id: str) -> None:
+        """Refresh the lease for an attempt on a supervisor tick."""
         self.ledger.renew(physical_attempt_id)
 
     # ------------------------------------------------------------------

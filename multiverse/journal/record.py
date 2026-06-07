@@ -72,6 +72,7 @@ class JournalRecord:
     # ---- serialization ----
 
     def to_dict(self) -> Dict[str, Any]:
+        """Return the record as a JSON-ready dict, omitting unset optionals."""
         out: Dict[str, Any] = {
             "seq": int(self.seq),
             "kind": self.kind.value,
@@ -111,6 +112,17 @@ class JournalRecord:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "JournalRecord":
+        """Decode a record from a parsed ND-JSON object.
+
+        Args:
+            data: One decoded journal line as a mapping.
+
+        Returns:
+            The reconstructed ``JournalRecord``.
+
+        Raises:
+            ValueError: If a required field is missing or malformed.
+        """
         try:
             return cls(
                 seq=int(data["seq"]),

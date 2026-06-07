@@ -1,18 +1,19 @@
-"""Ownership tokens.
+"""Ownership tokens for the promotion saga (STRATEGY S3 / R5).
 
-Every artifact directory created by the promotion saga carries a single
-``.mvd_owner`` file. The file contains:
+Every staging directory and artifact bundle directory created by the promotion
+saga carries a single ``.mvd_owner`` file. The file contains:
 
     owner_token: <stable uuid>
     physical_attempt_id: <attempt that created the directory>
-    boot_id: <daemon boot that wrote the token>
+    boot_id: <mvd kernel boot that wrote the token>
     created_wall_iso: <timestamp>
     purpose: <e.g. "promotion-prepare", "quarantine">
 
-The token is the answer to "is this dir mine to mutate?" — per R5 the kernel
-never deletes anything without an owner-token match, and per S3 step 1 the
-token is written *before* any rename so a crash mid-saga leaves a directory
-the saga can recognise as its own on replay.
+The owner token answers "is this staging directory mine to continue?" after a
+crash. Per R5 the mvd kernel never mutates or quarantines a directory without
+an owner-token match. Per S3 step 1 the token is written *before* any rename,
+so a crash mid-saga leaves a staging directory the saga can recognise as its
+own on replay.
 """
 
 from __future__ import annotations
@@ -31,6 +32,17 @@ OWNER_TOKEN_FILENAME = ".mvd_owner"
 
 @dataclass(frozen=True)
 class OwnerTokenFile:
+    """Parsed contents of a ``.mvd_owner`` token file.
+
+    Attributes:
+        owner_token: Stable UUID identifying the owner of the directory.
+        physical_attempt_id: Attempt that created the directory.
+        mvd_boot_id: mvd kernel boot that wrote the token.
+        created_wall_iso: Wall-clock timestamp the token was written.
+        purpose: What the directory is for (e.g. ``"promotion-prepare"``,
+            ``"quarantine"``).
+    """
+
     owner_token: str
     physical_attempt_id: str
     mvd_boot_id: str
@@ -38,6 +50,7 @@ class OwnerTokenFile:
     purpose: str
 
     def to_bytes(self) -> bytes:
+        """Serialise the token to canonical (sorted-key) JSON bytes."""
         return json.dumps(
             {
                 "owner_token": self.owner_token,
@@ -52,6 +65,14 @@ class OwnerTokenFile:
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> "OwnerTokenFile":
+        """Parse token bytes back into an ``OwnerTokenFile``.
+
+        Args:
+            raw: UTF-8 JSON bytes as produced by ``to_bytes``.
+
+        Returns:
+            The reconstructed token.
+        """
         data = json.loads(raw.decode("utf-8"))
         return cls(
             owner_token=str(data["owner_token"]),
@@ -77,8 +98,20 @@ def write_owner_token(
 ) -> OwnerTokenFile:
     """Atomically write the ``.mvd_owner`` file inside ``directory``.
 
-    The directory itself is created if needed. The token file is the first
-    artefact written into a newly-prepared artifact directory.
+    The directory itself is created if needed. The token is written *before*
+    any rename (S3 step 1), so a crash mid-saga leaves a directory the saga
+    can recognise as its own on replay; it answers "is this staging dir mine
+    to continue?".
+
+    Args:
+        directory: Target directory; created with parents if absent.
+        owner_token: Stable UUID owner identity to record.
+        physical_attempt_id: Attempt writing the token.
+        mvd_boot_id: mvd kernel boot id writing the token.
+        purpose: Why the directory exists (default ``"promotion-prepare"``).
+
+    Returns:
+        The ``OwnerTokenFile`` that was written.
     """
     directory.mkdir(parents=True, exist_ok=True)
     payload = OwnerTokenFile(
@@ -93,7 +126,18 @@ def write_owner_token(
 
 
 def read_owner_token(directory: Path) -> Optional[OwnerTokenFile]:
-    """Read the token file, or ``None`` if absent. Corruption raises."""
+    """Read the ``.mvd_owner`` token from ``directory``.
+
+    Args:
+        directory: Directory expected to hold a token file.
+
+    Returns:
+        The parsed token, or ``None`` if no token file is present.
+
+    Raises:
+        Exception: Propagated from JSON parsing if the token file exists but
+            is corrupt — a corrupt token is never silently treated as absent.
+    """
     path = directory / OWNER_TOKEN_FILENAME
     if not path.is_file():
         return None

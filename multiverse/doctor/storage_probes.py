@@ -27,6 +27,12 @@ from ..artifact.checksums import atomic_write_bytes
 
 
 class StorageLevel(str, Enum):
+    """Severity of a storage capability finding, ascending.
+
+    ``supported`` < ``degraded`` < ``dangerous`` < ``blocked``; the report's
+    worst level decides whether the kernel may start.
+    """
+
     SUPPORTED = "supported"
     DEGRADED = "degraded"
     DANGEROUS = "dangerous"
@@ -58,11 +64,20 @@ class CloudSyncMarkerError(RuntimeError):
 
 @dataclass
 class StorageProbeResult:
+    """Outcome of a single storage probe.
+
+    Attributes:
+        name: Probe identifier (e.g. ``atomic_rename``).
+        level: Severity of the finding.
+        detail: Human-readable explanation or measured value.
+    """
+
     name: str
     level: StorageLevel
     detail: Optional[str] = None
 
     def to_dict(self) -> Dict[str, str]:
+        """Render as a JSON-serialisable row for the storage report."""
         out = {"name": self.name, "level": self.level.value}
         if self.detail is not None:
             out["detail"] = self.detail
@@ -71,14 +86,23 @@ class StorageProbeResult:
 
 @dataclass
 class StorageReport:
+    """Collected results of the storage probe matrix for one root.
+
+    Attributes:
+        root: The store root the probes were run against.
+        results: One :class:`StorageProbeResult` per probe, in run order.
+    """
+
     root: Path
     results: List[StorageProbeResult] = field(default_factory=list)
 
     def by_name(self) -> Dict[str, StorageProbeResult]:
+        """Index results by probe name."""
         return {r.name: r for r in self.results}
 
     @property
     def worst_level(self) -> StorageLevel:
+        """The highest-severity level across all results."""
         order = [SUPPORTED, DEGRADED, DANGEROUS, BLOCKED]
         seen = SUPPORTED
         for r in self.results:
@@ -88,9 +112,20 @@ class StorageReport:
 
     @property
     def degraded_capabilities(self) -> List[str]:
+        """Names of capabilities that probed as ``degraded``."""
         return [r.name for r in self.results if r.level is DEGRADED]
 
     def can_start(self, *, accept_degraded: bool = False) -> bool:
+        """Decide whether the kernel may start given this report.
+
+        Args:
+            accept_degraded: Mirrors the ``--accept-degraded`` flag; when
+                True a ``dangerous`` worst-level is tolerated.
+
+        Returns:
+            False if any capability is ``blocked`` (or ``dangerous``
+            without ``accept_degraded``); True otherwise.
+        """
         worst = self.worst_level
         if worst is BLOCKED:
             return False
@@ -106,19 +141,31 @@ class StorageReport:
 
 @dataclass
 class StorageProbe:
+    """Interface for a named storage probe (subclasses implement ``run``)."""
+
     name: str
 
     def run(self, root: Path) -> StorageProbeResult:  # pragma: no cover — interface
+        """Probe ``root`` and return a result; subclasses must override."""
         raise NotImplementedError
 
 
 def _probe_dir(root: Path) -> Path:
+    """Return (creating if needed) the ``_probe/`` scratch dir under ``root``.
+
+    Probes write only here, never into the artifact/workspace/journal trees.
+    """
     p = root / _PROBE_SUBDIR
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def probe_write_then_read(root: Path) -> StorageProbeResult:
+    """Write a payload, read it back, and confirm it round-trips.
+
+    A readback mismatch or an OSError is ``BLOCKED`` — the store cannot
+    durably hold bytes, so the kernel must not start.
+    """
     try:
         probe_dir = _probe_dir(root)
         probe = probe_dir / "rw"

@@ -19,11 +19,28 @@ from ..mvd.api import KERNEL_VERBS
 
 
 class ApiError(Exception):
-    """Raised on a non-OK server response."""
+    """Raised on a non-OK server response.
+
+    Carries the structured error block from the wire so callers can branch
+    on ``code`` rather than parse the human-readable message.
+
+    Attributes:
+        code: Stable machine-readable error code (e.g. ``UNKNOWN_VERB``,
+            ``NOT_FOUND``, ``DISCONNECTED``).
+        message: Human-readable explanation.
+        details: Optional structured context for the error.
+    """
 
     def __init__(
         self, code: str, message: str, details: Optional[Dict[str, Any]] = None
     ) -> None:
+        """Build an error from a wire error block.
+
+        Args:
+            code: Machine-readable error code.
+            message: Human-readable explanation.
+            details: Optional structured context; stored as ``{}`` if omitted.
+        """
         super().__init__(f"[{code}] {message}")
         self.code = code
         self.message = message
@@ -32,11 +49,24 @@ class ApiError(Exception):
 
 @dataclass
 class RpcRequest:
+    """One client-to-kernel call on the wire.
+
+    Attributes:
+        verb: One of the seven kernel verbs to invoke.
+        kwargs: Keyword arguments forwarded to the kernel method.
+        id: Client-supplied correlation id echoed back on the response.
+    """
+
     verb: str
     kwargs: Dict[str, Any] = field(default_factory=dict)
     id: str = ""
 
     def to_json(self) -> str:
+        """Serialize to canonical single-line JSON.
+
+        Keys are sorted and separators tightened so the encoding is
+        deterministic (one object per line, no embedded newlines).
+        """
         return json.dumps(
             {"verb": self.verb, "kwargs": self.kwargs, "id": self.id},
             sort_keys=True,
@@ -47,6 +77,21 @@ class RpcRequest:
 
 @dataclass
 class RpcResponse:
+    """One kernel-to-client reply on the wire.
+
+    Exactly one of ``result``/``error`` is meaningful: ``error`` is set on
+    failure, otherwise ``result`` carries the verb's return value. The
+    stream flags drive the streaming protocol for ``stream_events``.
+
+    Attributes:
+        id: Correlation id matching the originating request.
+        result: Verb return value on success.
+        error: Structured error block (``code``/``message``/``details``)
+            on failure; mutually exclusive with a meaningful ``result``.
+        stream: True for each intermediate streamed event.
+        stream_end: True on the final, value-less frame that closes a stream.
+    """
+
     id: str
     result: Any = None
     error: Optional[Dict[str, Any]] = None
@@ -54,6 +99,11 @@ class RpcResponse:
     stream_end: bool = False
 
     def to_json(self) -> str:
+        """Serialize to canonical single-line JSON.
+
+        Emits ``error`` when present, otherwise ``result``; the ``stream``
+        and ``stream_end`` flags are only included when true.
+        """
         payload: Dict[str, Any] = {"id": self.id}
         if self.error is not None:
             payload["error"] = self.error
@@ -69,10 +119,30 @@ class RpcResponse:
 
 
 def encode_request(req: RpcRequest) -> bytes:
+    """Encode a request as a newline-terminated UTF-8 frame for the socket.
+
+    Args:
+        req: The request to serialize.
+
+    Returns:
+        The wire bytes, including the trailing ``\\n`` delimiter.
+    """
     return (req.to_json() + "\n").encode("utf-8")
 
 
 def decode_request(line: bytes) -> RpcRequest:
+    """Parse one wire frame into a validated request.
+
+    Args:
+        line: A single JSON frame read from the socket (newline optional).
+
+    Returns:
+        The decoded request with defaults filled in for missing fields.
+
+    Raises:
+        ApiError: With code ``UNKNOWN_VERB`` if the verb is not one of the
+            seven kernel verbs — rejected before any dispatch occurs.
+    """
     data = json.loads(line)
     verb = str(data.get("verb", ""))
     if verb not in KERNEL_VERBS:
@@ -89,10 +159,26 @@ def decode_request(line: bytes) -> RpcRequest:
 
 
 def encode_response(resp: RpcResponse) -> bytes:
+    """Encode a response as a newline-terminated UTF-8 frame for the socket.
+
+    Args:
+        resp: The response to serialize.
+
+    Returns:
+        The wire bytes, including the trailing ``\\n`` delimiter.
+    """
     return (resp.to_json() + "\n").encode("utf-8")
 
 
 def decode_response(line: bytes) -> RpcResponse:
+    """Parse one wire frame into a response.
+
+    Args:
+        line: A single JSON frame read from the socket.
+
+    Returns:
+        The decoded response with stream flags coerced to bools.
+    """
     data = json.loads(line)
     return RpcResponse(
         id=str(data.get("id", "")),

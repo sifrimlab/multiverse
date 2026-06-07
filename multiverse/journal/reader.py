@@ -48,6 +48,24 @@ class JournalReader:
     # ---- public API --------------------------------------------------
 
     def replay(self, *, from_seq: int = 0) -> ReplayResult:
+        """Eagerly walk all segments into an in-memory ``ReplayResult``.
+
+        Forward-only and deterministic. A truncated tail in the active segment
+        is treated as not-yet-acked and stops the scan without raising; a
+        backwards seq across committed records is genuine corruption.
+
+        Args:
+            from_seq: Skip records below this seq (e.g. resume past a
+                checkpoint the index already absorbed).
+
+        Returns:
+            The replayed records, the highest seq seen, and the path of any
+            truncated tail segment.
+
+        Raises:
+            JournalReplayError: If the seq counter goes backwards across
+                committed records, indicating an incoherent stream.
+        """
         result = ReplayResult()
         last_seq = -1
         truncated_at: Optional[Path] = None
@@ -109,6 +127,7 @@ class JournalReader:
 
 
 def _ordered_segments(layout: JournalLayout) -> Iterable[Path]:
+    """Yield rotated segments in seq-base order, then the active segment."""
     rotated = sorted(layout.rotated_dir.glob("*.log"), key=lambda p: p.name)
     yield from rotated
     if layout.current_segment.exists():
@@ -137,6 +156,7 @@ def _iter_lines(segment: Path) -> Iterable[tuple[bytes, bool]]:
 
 
 def _decode(raw: bytes, segment: Path) -> JournalRecord:
+    """Parse one ND-JSON line into a record, or raise ``JournalCorruptError``."""
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError as exc:

@@ -35,6 +35,7 @@ def _default_state_root() -> Path:
 
 
 def _default_store_root() -> Path:
+    """Default store root: ``store/`` under the resolved state root."""
     return _default_state_root() / "store"
 
 
@@ -44,6 +45,20 @@ def _default_store_root() -> Path:
 
 
 def doctor_main(argv: Optional[List[str]] = None) -> int:
+    """Run read-only diagnostics across state paths, engines, and storage.
+
+    Probes the state-root resolution, container engines, artifact store,
+    workspace health, reservation ledger, and projection consistency, then
+    prints a human or JSON report. ``--repair-health-probes`` additionally
+    sweeps expired hidden health-probe namespaces.
+
+    Args:
+        argv: CLI arguments (defaults to ``sys.argv`` via argparse).
+
+    Returns:
+        Process exit code: 2 if any section is BLOCKED, 1 if any is a
+        WARNING, 0 when everything is OK.
+    """
     parser = argparse.ArgumentParser(prog="multiverse doctor")
     parser.add_argument(
         "--root",
@@ -206,6 +221,11 @@ def doctor_main(argv: Optional[List[str]] = None) -> int:
 
 
 def _storage_status(report: StorageReport) -> SectionStatus:
+    """Map a storage report's worst level onto a doctor section status.
+
+    BLOCKED stays BLOCKED; DEGRADED/DANGEROUS soften to WARNING; everything
+    else is OK.
+    """
     from .doctor import StorageLevel
     from .doctor.report import SectionStatus
 
@@ -218,6 +238,7 @@ def _storage_status(report: StorageReport) -> SectionStatus:
 
 
 def _print_human_doctor(report, sweep_report) -> None:
+    """Print the doctor report as a human-readable section listing."""
     print(f"=== multiverse doctor ({report.overall_status.value}) ===")
     for section in report.sections:
         print(f"-- {section.name}: {section.status.value} --")
@@ -233,6 +254,20 @@ def _print_human_doctor(report, sweep_report) -> None:
 
 
 def rebuild_index_main(argv: Optional[List[str]] = None) -> int:
+    """Rebuild the SQLite run index from the journal plus artifact bundles.
+
+    The index is a rebuildable projection (STRATEGY M5), so this command can
+    safely truncate and replay. ``--verify`` switches to a read-only drift
+    check that writes nothing, letting operators decide before rebuilding.
+
+    Args:
+        argv: CLI arguments (defaults to ``sys.argv`` via argparse).
+
+    Returns:
+        Process exit code. Under ``--verify``: 0 if the projection is in
+        sync with the journal, 1 otherwise. Otherwise 0 on a completed
+        rebuild.
+    """
     parser = argparse.ArgumentParser(prog="multiverse rebuild-index")
     parser.add_argument(
         "--state-root",
@@ -302,6 +337,19 @@ def rebuild_index_main(argv: Optional[List[str]] = None) -> int:
 
 
 def gc_main(argv: Optional[List[str]] = None) -> int:
+    """Garbage-collect failed/cancelled workspaces and quarantine entries.
+
+    Defaults to a dry-run that reports what would be deleted; ``--apply``
+    performs deletion behind the Tier-2 gates (retention thresholds, an
+    EXPORTED marker unless ``--no-export-required``, and a refusal to touch
+    promoted artifacts unless ``--apply-to-promoted``).
+
+    Args:
+        argv: CLI arguments (defaults to ``sys.argv`` via argparse).
+
+    Returns:
+        Process exit code: 2 if ``--apply`` and ``--dry-run`` conflict, else 0.
+    """
     parser = argparse.ArgumentParser(prog="multiverse gc")
     parser.add_argument(
         "--store-root",
@@ -391,6 +439,19 @@ def gc_main(argv: Optional[List[str]] = None) -> int:
 
 
 def mlflow_sync_main(argv: Optional[List[str]] = None) -> int:
+    """Push an artifact bundle's manifest into MLflow.
+
+    MLflow is a projection, not the source of run truth, so an outage is
+    reported rather than fatal: a target-construction failure exits 2, and a
+    non-SYNCED outcome exits 1, but neither crashes the process.
+
+    Args:
+        argv: CLI arguments (defaults to ``sys.argv`` via argparse).
+
+    Returns:
+        Process exit code: 0 when synced, 1 on a non-synced outcome, 2 if
+        the MLflow target could not be constructed.
+    """
     parser = argparse.ArgumentParser(prog="multiverse mlflow-sync")
     parser.add_argument(
         "--bundle",
@@ -512,10 +573,22 @@ def evaluate_main(argv: Optional[List[str]] = None) -> int:
 
 
 def _build_mlflow_target(tracking_uri: Optional[str]):
-    """Lazy-construct a real MLflow target. Tests substitute via
-    ``--bundle`` against an unreachable URI to exercise the failure
-    path; the function itself raises ImportError if MLflow is absent so
-    the caller can surface a clean error."""
+    """Lazily construct a real MLflow target adapter.
+
+    Tests exercise the failure path by pointing ``--bundle`` at an
+    unreachable URI; the adapter itself is a thin wrapper over the ``mlflow``
+    SDK's run/param/metric/artifact logging calls.
+
+    Args:
+        tracking_uri: Explicit tracking URI; falls back to
+            ``MLFLOW_TRACKING_URI`` then :func:`default_mlflow_tracking_uri`.
+
+    Returns:
+        An MLflow target adapter implementing the projection target protocol.
+
+    Raises:
+        RuntimeError: If the ``mlflow`` package is not installed.
+    """
     import os
 
     try:
@@ -919,7 +992,22 @@ def _resolve_def_file(def_file_ref: str, manifest_path: Path):
 
 
 def build_sif_main(argv=None):
-    """multiverse build-sif — build an Apptainer SIF from a model's Dockerfile or Singularity.def."""
+    """Build an Apptainer SIF from a model's Dockerfile or Singularity.def.
+
+    Resolves the build method from the model manifest (docker-daemon when a
+    Dockerfile/runtime image is set, else def-file), streams the
+    ``apptainer build`` output, then records the resulting ``sif_path`` in
+    the asset registry — registering the model from its manifest first if it
+    is not yet present, so the path lands on a real row.
+
+    Args:
+        argv: CLI arguments (defaults to ``sys.argv`` via argparse).
+
+    Returns:
+        Process exit code: 0 on a successful build that recorded the SIF
+        path, the apptainer exit code on a build failure, or 1 on a
+        preflight/registration failure.
+    """
     import argparse
     import shutil
     import subprocess
@@ -964,7 +1052,6 @@ def build_sif_main(argv=None):
 
     state_root = args.state_root or resolve_state_root()
 
-    # Resolve manifest path
     if args.manifest:
         manifest_path = args.manifest
     else:
@@ -984,7 +1071,6 @@ def build_sif_main(argv=None):
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / sif_filename
 
-    # Determine method
     method = args.method
     if method is None:
         if manifest.build and manifest.build.dockerfile:
@@ -1038,7 +1124,6 @@ def build_sif_main(argv=None):
             )
             return 1
         image_ref = manifest.runtime.image
-        # Check Docker image exists locally
         check = subprocess.run(
             ["docker", "image", "inspect", image_ref],
             capture_output=True,
@@ -1177,7 +1262,18 @@ def _runner_cli_main(cmd: str, argv: List[str]) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Top-level entry point for the canonical ``multiverse`` command."""
+    """Top-level entry point for the canonical ``multiverse`` command.
+
+    Dispatches the first argument to a first-class command handler or, for
+    legacy runner/registration verbs, delegates to the runner CLI.
+
+    Args:
+        argv: Argument vector (defaults to ``sys.argv[1:]``).
+
+    Returns:
+        The handler's exit code; 2 for an unknown command or bare ``--help``
+        with no other args, 0 for ``--help`` given as the sole argument.
+    """
     argv = list(argv if argv is not None else sys.argv[1:])
     if not argv or argv[0] in {"-h", "--help"}:
         _print_usage()
@@ -1194,6 +1290,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 def _print_usage() -> None:
+    """Print the top-level ``multiverse`` command listing to stderr."""
     print(
         "usage: multiverse <command> [options]\n"
         "\n"

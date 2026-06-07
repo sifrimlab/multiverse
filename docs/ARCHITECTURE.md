@@ -124,4 +124,3 @@ The two executors have different defaults for image identity:
 
 - **Docker executor** — `accept_degraded=True` by default. Locally-built images (`make build-pca`) are the normal development workflow; no OCI digest is expected. Pass `--strict` to opt into publication mode, which requires a registry digest.
 - **Slurm executor** — `accept_degraded=False` by default. HPC runs should have a verified OCI source digest; a SIF of unknown provenance is genuinely degraded. Pass `--accept-degraded` if you need to run an unverified SIF.
-

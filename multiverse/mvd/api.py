@@ -35,21 +35,43 @@ class KernelAPI(Protocol):
         manifest_path: str,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Validate the manifest, write ``JOB_INTENT`` to the journal,
-        return the new ``physical_attempt_id``.
+        """Validate the manifest and enqueue a new run for execution.
 
-        Idempotency: a client-supplied ``options['idempotency_key']`` is
-        accepted; submitting the same key returns the same id.
+        Writes ``JOB_INTENT`` to the journal before scheduling, so a crash
+        can replay the intent idempotently. A client-supplied
+        ``options['idempotency_key']`` is honoured: submitting the same key
+        again returns the same id rather than starting a second attempt.
+
+        Args:
+            manifest_path: Path to the run manifest to validate and execute.
+            options: Executor-specific job options; may carry
+                ``idempotency_key`` to dedupe resubmissions.
+
+        Returns:
+            The ``physical_attempt_id`` of the new (or deduped) attempt.
         """
         ...
 
     async def cancel_run(self, *, physical_attempt_id: str) -> None:
-        """Append ``CANCEL_REQUESTED`` to the journal. Returns immediately;
-        the kernel drives the saga in the background."""
+        """Request cancellation of a run.
+
+        Appends ``CANCEL_REQUESTED`` to the journal and returns immediately;
+        the kernel drives the cancellation saga in the background.
+
+        Args:
+            physical_attempt_id: The attempt to cancel.
+        """
         ...
 
     async def query_run(self, *, physical_attempt_id: str) -> Dict[str, Any]:
-        """Read-only state snapshot."""
+        """Return a read-only state snapshot for one attempt.
+
+        Args:
+            physical_attempt_id: The attempt to inspect.
+
+        Returns:
+            The run record's serialized snapshot.
+        """
         ...
 
     async def list_runs(
@@ -58,7 +80,15 @@ class KernelAPI(Protocol):
         state: Optional[str] = None,
         logical_run_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Read-only summary list."""
+        """Return a read-only summary list of runs.
+
+        Args:
+            state: Optional primary-state name to filter by.
+            logical_run_id: Optional logical run to group attempts under.
+
+        Returns:
+            One serialized summary per matching run.
+        """
         ...
 
     def stream_events(
@@ -66,14 +96,27 @@ class KernelAPI(Protocol):
         *,
         physical_attempt_id: str,
     ) -> AsyncIterator[KernelEvent]:
-        """Server-sent state transitions and log tail (Milestone 9 fills
-        the log-tail half). Returns an async iterator; the caller drives
-        it with ``async for``."""
+        """Subscribe to server-sent state transitions and log tail.
+
+        Milestone 9 (GUI cutover) fills the log-tail half; today this carries
+        state transitions only.
+
+        Args:
+            physical_attempt_id: The attempt to subscribe to.
+
+        Returns:
+            An async iterator the caller drives with ``async for``.
+        """
         ...
 
     async def health(self) -> Dict[str, Any]:
-        """Kernel self-check — no external probes (those live in
-        ``multiverse doctor``)."""
+        """Run a kernel self-check.
+
+        Performs no external probes — those live in ``multiverse doctor``.
+
+        Returns:
+            A snapshot of kernel liveness and counters.
+        """
         ...
 
     async def report_projection_status(
@@ -84,6 +127,15 @@ class KernelAPI(Protocol):
         status: str,
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Projection plugin reports its sync status. The kernel validates
-        the plugin and status name and updates the side table."""
+        """Record a projection plugin's sync status for one attempt.
+
+        The kernel validates the plugin and status name, then updates the
+        projection side table. Projections are never the source of run truth.
+
+        Args:
+            plugin: Projection plugin name (e.g. ``"mlflow"``, ``"optuna"``).
+            physical_attempt_id: The attempt whose projection status changed.
+            status: One of the plugin's allowed status names.
+            details: Optional free-form details about the sync.
+        """
         ...

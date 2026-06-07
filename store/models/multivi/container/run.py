@@ -1,4 +1,11 @@
-"""MultiVI container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+"""MultiVI model container entrypoint.
+
+Implements the model container contract: reads the read-only input MuData at
+``/input/data.h5mu`` and the job spec at ``/output/job_spec.json``, trains
+MultiVI, and writes its latent embedding and metrics under ``/output/`` (the
+only writable tree). Host paths never appear inside this module — all I/O goes
+through ``multiverse.worker`` helpers bound to the contract paths.
+"""
 
 import json
 import os
@@ -49,6 +56,8 @@ class MultiVIModel(ModelFactory):
             config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
+            cell_type_key (str): Key in .obs for cell type annotations. Defaults to "cell_type".
+            batch_key (str): Key in .obs for batch annotations. Defaults to "batch".
 
         Raises:
             ValueError: If 'multivi' configuration is missing or 'feature_types' are not defined.

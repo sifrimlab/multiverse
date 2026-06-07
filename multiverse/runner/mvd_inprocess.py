@@ -13,7 +13,7 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from ..artifact import BootContext, compute_manifest_hash
 from ..broker import ResourceBroker
@@ -38,7 +38,16 @@ TERMINAL_STATES = {
 
 @dataclass(frozen=True)
 class SubmittedRun:
-    """Summary returned to the GUI after submitting one manifest job."""
+    """Summary returned to the GUI after submitting one manifest job.
+
+    Attributes:
+        attempt_id: The physical attempt id of this single execution.
+        job_name: Human-readable label for the submitted job.
+        dataset: Dataset name/slug the job runs against.
+        model: Model name/slug being executed.
+        logical_run_id: Logical run that groups retries/resumes of this attempt;
+            empty string when the plan did not assign one.
+    """
 
     attempt_id: str
     job_name: str
@@ -47,6 +56,7 @@ class SubmittedRun:
     logical_run_id: str = ""
 
     def to_dict(self) -> Dict[str, str]:
+        """Return the submission summary as a plain string-keyed dict for the GUI."""
         return {
             "attempt_id": self.attempt_id,
             "job_name": self.job_name,
@@ -60,6 +70,18 @@ class InProcessMvdController:
     """Thread-safe synchronous facade around one in-process kernel."""
 
     def __init__(self, *, state_root: Path, artifact_root: Path | None = None) -> None:
+        """Start the background loop and initialize the in-process kernel.
+
+        Args:
+            state_root: Root of the mvd state tree (journal, index, store) this
+                controller owns.
+            artifact_root: Override directory for promoted artifact bundles, or
+                ``None`` to use the store default.
+
+        Raises:
+            RuntimeError: If the background event loop fails to start within the
+                startup timeout.
+        """
         self.state_root = state_root.expanduser().resolve()
         self.artifact_root = (
             artifact_root.expanduser().resolve() if artifact_root is not None else None
@@ -76,6 +98,11 @@ class InProcessMvdController:
         self._mlflow_sync_in_flight: Set[str] = set()
         self._mlflow_sync_done: Set[str] = set()
         self._mlflow_lock = threading.Lock()
+        # Live registry of sweep trial attempts + count of in-flight studies,
+        # populated by the background sweep driver and read by the GUI monitor.
+        self._sweep_lock = threading.Lock()
+        self._sweep_submissions: List[Dict[str, Any]] = []
+        self._active_sweeps = 0
         self._thread = threading.Thread(
             target=self._thread_main,
             name=f"mvd-gui-{self.state_root.name}",
@@ -95,15 +122,196 @@ class InProcessMvdController:
         manifest_text: str,
         seed: Optional[int],
     ) -> List[SubmittedRun]:
-        """Submit pending jobs from a manifest; may start MLflow sync in background."""
-        return self._call(
-            self._submit_manifest(
-                manifest_path=manifest_path,
-                pending_jobs=pending_jobs,
-                manifest_text=manifest_text,
-                seed=seed,
+        """Submit pending jobs from a manifest; may start MLflow sync in background.
+
+        Plain run jobs are submitted to the kernel and monitored live. Jobs with
+        ``mode == "sweep"`` are handed to a background Optuna driver thread (one
+        thread runs all studies sequentially) so the caller is never blocked for
+        the duration of a study. Each trial is submitted through this
+        controller's own kernel and registered into a live registry as it
+        starts, so the GUI monitor can poll trial attempts as they appear (see
+        :meth:`sweep_submissions` / :meth:`has_active_sweeps`).
+
+        The returned list is in the same order as the runnable (non-skipped)
+        jobs in ``pending_jobs`` so callers that zip it against the plan (e.g.
+        the GUI cohort writer) stay aligned. Sweep jobs come back as
+        placeholders with an empty ``attempt_id`` (their trials stream in via
+        the registry); run jobs carry their real attempt id.
+        """
+        runnable = [j for j in pending_jobs if not j.get("_skipped")]
+        sweep_jobs = [j for j in runnable if j.get("mode") == "sweep"]
+        run_jobs = [j for j in runnable if j.get("mode") != "sweep"]
+
+        # A new launch supersedes any prior sweep registry (the launch button is
+        # disabled while a run is in flight, so no study is active here).
+        with self._sweep_lock:
+            self._sweep_submissions = []
+
+        run_subs = (
+            self._call(
+                self._submit_manifest(
+                    manifest_path=manifest_path,
+                    pending_jobs=run_jobs,
+                    manifest_text=manifest_text,
+                    seed=seed,
+                )
             )
+            if run_jobs
+            else []
         )
+        if sweep_jobs:
+            self._start_sweeps(sweep_jobs, manifest_text=manifest_text, seed=seed)
+
+        run_iter = iter(run_subs)
+        ordered: List[SubmittedRun] = []
+        for job in runnable:
+            if job.get("mode") == "sweep":
+                ordered.append(
+                    SubmittedRun(
+                        attempt_id="",  # filled in live as trials start
+                        job_name=_job_name(job),
+                        dataset=str(
+                            job.get("dataset_name") or job.get("dataset_slug") or "?"
+                        ),
+                        model=str(
+                            job.get("model_slug") or job.get("model_name") or "?"
+                        ),
+                        logical_run_id=str(job.get("_logical_run_id") or ""),
+                    )
+                )
+            else:
+                ordered.append(next(run_iter))
+        return ordered
+
+    def sweep_submissions(self) -> List[Dict[str, Any]]:
+        """Snapshot of trial attempts registered by in-flight/finished sweeps.
+
+        Thread-safe; the GUI merges these into the monitor's submission list on
+        each refresh so sweep trials appear and tick like plain run jobs.
+        """
+        with self._sweep_lock:
+            return [dict(entry) for entry in self._sweep_submissions]
+
+    def has_active_sweeps(self) -> bool:
+        """True while any background sweep study is still running.
+
+        The GUI gates run finalization on this so a sweep isn't declared done in
+        the gap between one trial finishing and the next being submitted.
+        """
+        with self._sweep_lock:
+            return self._active_sweeps > 0
+
+    def _start_sweeps(
+        self,
+        sweep_jobs: List[Dict[str, Any]],
+        *,
+        manifest_text: str,
+        seed: Optional[int],
+    ) -> None:
+        """Launch one daemon thread that drives all sweep studies sequentially."""
+        manifest_hash = compute_manifest_hash(manifest_text or "")
+        with self._sweep_lock:
+            self._active_sweeps += len(sweep_jobs)
+        thread = threading.Thread(
+            target=self._run_sweeps_blocking,
+            args=(list(sweep_jobs), manifest_hash, seed),
+            name=f"mvd-sweeps-{self.state_root.name}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _run_sweeps_blocking(
+        self,
+        sweep_jobs: List[Dict[str, Any]],
+        manifest_hash: str,
+        seed: Optional[int],
+    ) -> None:
+        """Background driver: run each sweep's Optuna study to completion.
+
+        Runs off the GUI thread and off the controller's event-loop thread, so
+        ``run_sweep`` can drive ``study.optimize`` (each trial blocks on the
+        loop via :meth:`_call`) without freezing Streamlit or nesting loops.
+        """
+        from .tuner import run_sweep
+
+        for job in sweep_jobs:
+            name = _job_name(job)
+            try:
+                runner = self._make_sweep_trial_runner(
+                    sweep_job=job, manifest_hash=manifest_hash, seed=seed
+                )
+                result = run_sweep(
+                    job,
+                    state_root=self.state_root,
+                    artifact_root=self.artifact_root,
+                    manifest_hash=manifest_hash,
+                    seed=seed,
+                    backend="docker",
+                    accept_degraded=True,
+                    run_trial=runner,
+                )
+                logger.info(
+                    "sweep %s complete: best=%s params=%s (%s trials)",
+                    name,
+                    result.get("best_value"),
+                    result.get("best_params"),
+                    result.get("trials"),
+                )
+            except Exception as exc:
+                logger.error("sweep %s failed: %s", name, exc)
+            finally:
+                with self._sweep_lock:
+                    self._active_sweeps -= 1
+
+    def _make_sweep_trial_runner(
+        self, *, sweep_job: Dict[str, Any], manifest_hash: str, seed: Optional[int]
+    ):
+        """Build a trial runner that submits each trial to this controller's kernel.
+
+        Unlike :func:`tuner._default_trial_runner` (which spins up its own
+        per-trial kernel), this routes every trial through the controller's one
+        long-lived kernel, so there is a single journal writer and the trial
+        runs land in the same index the GUI is already polling. Each trial's
+        attempt id is registered (under ``_sweep_lock``) the moment it is
+        submitted, so the monitor shows it while it runs.
+        """
+        from .tuner import build_trial_job
+
+        base_name = _job_name(sweep_job)
+        dataset = str(
+            sweep_job.get("dataset_name") or sweep_job.get("dataset_slug") or "?"
+        )
+        model = str(sweep_job.get("model_slug") or sweep_job.get("model_name") or "?")
+        logical = str(sweep_job.get("_logical_run_id") or "")
+
+        def _run(base_job: Dict[str, Any], sampled: Dict[str, Any], trial_number: int):
+            study_name = (base_job.get("_exec") or {}).get("study_name")
+            trial_job = build_trial_job(
+                base_job, sampled, trial_number, study_name=study_name
+            )
+
+            def _register(attempt_id: str) -> None:
+                with self._sweep_lock:
+                    self._sweep_submissions.append(
+                        {
+                            "attempt_id": attempt_id,
+                            "job_name": f"{base_name} · trial {trial_number}",
+                            "dataset": dataset,
+                            "model": model,
+                            "logical_run_id": logical,
+                        }
+                    )
+
+            return self._call(
+                self._run_one_attempt(
+                    trial_job,
+                    manifest_hash=manifest_hash,
+                    seed=seed,
+                    on_submit=_register,
+                )
+            )
+
+        return _run
 
     def query_many(self, attempt_ids: Iterable[str]) -> List[Dict[str, Any]]:
         """Blocking query of multiple runs on the background event loop."""
@@ -133,6 +341,7 @@ class InProcessMvdController:
                 self._loop.call_soon_threadsafe(self._loop.stop)
 
     def _thread_main(self) -> None:
+        """Background-thread entrypoint: own a dedicated asyncio loop for life."""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
@@ -141,12 +350,14 @@ class InProcessMvdController:
         loop.close()
 
     def _call(self, coro):
+        """Run a coroutine on the background loop and block for its result."""
         if self._loop is None:
             raise RuntimeError("mvd controller loop is not running")
         fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
         return fut.result()
 
     async def _init_kernel(self) -> None:
+        """Wire the Docker kernel once and replay journal state into the index."""
         if self._kernel is not None:
             return
         boot = BootContext.new(mvd_version="0.1.0-mvd")
@@ -192,6 +403,24 @@ class InProcessMvdController:
         manifest_text: str,
         seed: Optional[int],
     ) -> List[SubmittedRun]:
+        """Submit each runnable job to the kernel, wiring MLflow parent runs.
+
+        For every non-skipped job this resolves the experiment name and tracking
+        URI, optionally opens an MLflow parent run, and injects the MLflow env
+        (with a Docker-reachable tracking URI) into the container so the
+        in-container EpochLogger attaches to that parent run. Submitted attempts
+        are projected into the run index before returning.
+
+        Args:
+            manifest_path: Path recorded with each attempt as its manifest source.
+            pending_jobs: Planned jobs; entries marked ``_skipped`` are passed over.
+            manifest_text: Raw manifest YAML used for the manifest hash and to
+                extract ``globals.experiment_name``.
+            seed: Effective execution seed, or ``None`` for the executor default.
+
+        Returns:
+            One :class:`SubmittedRun` per submitted attempt, in submission order.
+        """
         kernel = self._require_kernel()
         manifest_hash = compute_manifest_hash(manifest_text or "")
         experiment_name = _experiment_name_from_manifest(manifest_text)
@@ -248,7 +477,50 @@ class InProcessMvdController:
             )
         return submitted
 
+    async def _run_one_attempt(
+        self,
+        job: Dict[str, Any],
+        *,
+        manifest_hash: str,
+        seed: Optional[int],
+        on_submit: "Optional[Callable[[str], None]]" = None,
+    ) -> Dict[str, Any]:
+        """Submit one job, await it to a terminal state, and return its snapshot.
+
+        Runs on the controller's background loop. The sweep trial runner awaits
+        this once per Optuna trial (via :meth:`_call`) and reads
+        ``primary_state`` / ``artifact_dir`` from the returned snapshot. Mirrors
+        the CLI's per-job drive loop (await the kernel-owned execution task, then
+        query and project the result) but for a single attempt.
+
+        ``on_submit`` is invoked with the new attempt id right after submission
+        (before the run is awaited), letting the sweep driver register the trial
+        for live monitoring while it is still running.
+        """
+        kernel = self._require_kernel()
+        options = _options_for_job(job, manifest_hash=manifest_hash, seed=seed)
+        attempt_id = await kernel.submit_run(
+            manifest_path=str(job.get("manifest_path") or ""),
+            options=options,
+        )
+        if on_submit is not None:
+            try:
+                on_submit(attempt_id)
+            except Exception:
+                pass  # registration is best-effort; never block the trial
+        task = kernel._execution_tasks.get(attempt_id)  # type: ignore[attr-defined]
+        if task is not None:
+            try:
+                await task
+            except Exception as exc:
+                logger.error("sweep trial attempt %s raised: %s", attempt_id, exc)
+        snap = await kernel.query_run(physical_attempt_id=attempt_id)
+        self._project_snapshots([snap])
+        snap.setdefault("physical_attempt_id", attempt_id)
+        return snap
+
     async def _query_many(self, attempt_ids: List[str]) -> List[Dict[str, Any]]:
+        """Query each attempt's snapshot and project the results into the index."""
         kernel = self._require_kernel()
         out: List[Dict[str, Any]] = []
         for attempt_id in attempt_ids:
@@ -257,11 +529,13 @@ class InProcessMvdController:
         return out
 
     async def _list_runs(self, *, state: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List kernel run snapshots and project them into the index."""
         snapshots = await self._require_kernel().list_runs(state=state)
         self._project_snapshots(snapshots)
         return snapshots
 
     async def _cancel_many(self, attempt_ids: List[str]) -> None:
+        """Request cancellation for each attempt and project the new snapshots."""
         kernel = self._require_kernel()
         projected: List[Dict[str, Any]] = []
         for attempt_id in attempt_ids:
@@ -270,6 +544,7 @@ class InProcessMvdController:
         self._project_snapshots(projected)
 
     def _project_snapshots(self, snapshots: Iterable[Dict[str, Any]]) -> None:
+        """Upsert snapshots into the run index and trigger any MLflow syncs."""
         snapshots = list(snapshots)
         if not snapshots:
             return
@@ -291,9 +566,13 @@ class InProcessMvdController:
         self._maybe_schedule_mlflow_syncs(snapshots)
 
     def _maybe_schedule_mlflow_syncs(self, snapshots: Iterable[Dict[str, Any]]) -> None:
-        """Kick off MLflow sync for each newly-successful run with a
-        pending tracking projection. Idempotent: each attempt_id is synced
-        at most once per controller lifetime."""
+        """Kick off MLflow sync for newly-successful runs with pending tracking.
+
+        Idempotent: each ``attempt_id`` is synced at most once per controller
+        lifetime, guarded by the in-flight/done sets under ``_mlflow_lock``. Only
+        ``ARTIFACT_SUCCESS`` runs whose ``mlflow`` projection is
+        ``TRACKING_PENDING`` and that have a promoted bundle dir are scheduled.
+        """
         loop = getattr(self, "_loop", None)
         if loop is None:
             return
@@ -370,6 +649,7 @@ class InProcessMvdController:
                 self._mlflow_sync_done.add(attempt_id)
 
     def _require_kernel(self) -> Kernel:
+        """Return the initialized kernel or raise if startup has not completed."""
         if self._kernel is None:
             raise RuntimeError("mvd kernel has not been initialised")
         return self._kernel
@@ -634,6 +914,20 @@ _CONTROLLERS_LOCK = threading.Lock()
 def get_controller(
     *, state_root: Path, artifact_root: Path | None = None
 ) -> InProcessMvdController:
+    """Return a process-wide controller for ``(state_root, artifact_root)``.
+
+    Controllers are cached and shared so the GUI reuses one kernel (and its
+    background loop) across Streamlit reruns instead of spawning a new one each
+    time. The first call for a key constructs the controller under a lock.
+
+    Args:
+        state_root: Root of the mvd state tree the controller should own.
+        artifact_root: Override directory for promoted artifact bundles, or
+            ``None`` for the store default.
+
+    Returns:
+        The shared :class:`InProcessMvdController` for the resolved key.
+    """
     root = state_root.expanduser().resolve()
     artifacts = (
         artifact_root.expanduser().resolve() if artifact_root is not None else None

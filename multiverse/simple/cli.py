@@ -27,6 +27,14 @@ from .runner import JobStatus, SimpleModeResult, SimpleModeRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Construct the ``multiverse run --simple`` argument parser.
+
+    Returns:
+        Parser exposing the simple-mode flags (manifest path, ``--out``,
+        ``--strict``, ``--validators``, ``--no-image-pull``, ``--seed``,
+        ``--json``). Importing this module never touches Docker, so the
+        parser can be built for ``--help`` on a Docker-less machine.
+    """
     parser = argparse.ArgumentParser(
         prog="multiverse run --simple",
         description="Run multiverse jobs against the artifact contract without "
@@ -93,6 +101,15 @@ def _build_backend(no_image_pull: bool):
 
 
 def _emit_summary(result: SimpleModeResult, args: argparse.Namespace) -> None:
+    """Print the per-job run summary; optionally a JSON report on stdout.
+
+    The human-readable summary always goes to stderr so that ``--json``
+    stdout stays a clean machine-readable document for piping.
+
+    Args:
+        result: Aggregate outcome of the runner invocation.
+        args: Parsed CLI namespace; only ``args.json`` is consulted.
+    """
     n_success = sum(1 for o in result.outcomes if o.succeeded)
     n_failed = len(result.outcomes) - n_success
     print(
@@ -137,6 +154,19 @@ def _emit_summary(result: SimpleModeResult, args: argparse.Namespace) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """Entry point for ``multiverse run --simple``.
+
+    Parses arguments, loads the manifest, builds the Docker backend, and
+    runs every job through ``SimpleModeRunner``. ``--strict`` pins the
+    validation level to strict regardless of ``--validators``.
+
+    Args:
+        argv: Argument vector to parse; defaults to ``sys.argv[1:]``.
+
+    Returns:
+        Process exit code: ``0`` if every job reached ``ARTIFACT_SUCCESS``,
+        ``1`` if any job failed, ``2`` on a manifest parse error.
+    """
     parser = build_parser()
     args = parser.parse_args(argv)
 

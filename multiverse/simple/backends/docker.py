@@ -44,6 +44,15 @@ import subprocess
 
 
 def gpu_available():
+    """Return whether an NVIDIA GPU is usable on this host.
+
+    Probes ``nvidia-smi``; any failure (binary absent, no device, driver
+    error) is treated as "no GPU". Used only as a guard so a GPU-requesting
+    job does not ask Docker for a device that is not present.
+
+    Returns:
+        ``True`` if ``nvidia-smi`` exits cleanly, ``False`` otherwise.
+    """
     try:
         subprocess.run(
             ["nvidia-smi"],
@@ -90,6 +99,28 @@ class DockerBackend:
         workspace_dir: Path,
         seed: Optional[int],
     ) -> ExecutionResult:
+        """Run one job inside a Docker container under the model contract.
+
+        Writes the job spec into the workspace, resolves the image identity
+        (R10), mounts the dataset read-only at ``/input/data.h5mu`` and the
+        workspace read-write at ``/output``, then runs the container to
+        completion. The container is always removed in a ``finally`` so a
+        failed run leaves no dangling container.
+
+        Args:
+            job: The job to run.
+            workspace_dir: Host workspace bound at ``/output``; created if
+                absent and where the model writes its artifacts.
+            seed: Optional seed forwarded via ``MVR_SEED`` and the job spec.
+
+        Returns:
+            Execution result carrying the resolved image identity and the
+            captured container log path.
+
+        Raises:
+            DockerBackendError: On daemon unreachable, image pull failure, or
+                a non-zero container exit.
+        """
         workspace_dir.mkdir(parents=True, exist_ok=True)
         self._write_job_spec(job, workspace_dir, seed=seed)
 
@@ -167,6 +198,11 @@ class DockerBackend:
     # ------------------------------------------------------------------
 
     def _client(self):
+        """Return the cached Docker client, opening it on first use.
+
+        Construction stays daemon-free; the client is created and pinged
+        here so ``--help`` and dry-run paths work without a daemon.
+        """
         if self.client is not None:
             return self.client
         try:

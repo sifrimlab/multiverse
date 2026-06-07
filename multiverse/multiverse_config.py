@@ -34,6 +34,7 @@ def _default_user_config_path() -> Path:
 
 
 def _legacy_config_path() -> Path:
+    """Pre-M1 config location next to the package directory (read-only)."""
     return _REPO_ROOT_GUESS / CONFIG_FILENAME
 
 
@@ -47,6 +48,7 @@ def _resolve_config_path_for_read() -> Optional[Path]:
 
 
 def _default_docker_data_root() -> str:
+    """Default Docker data root: a ``.docker-data`` dir under the state root."""
     return str(resolve_state_root() / ".docker-data")
 
 
@@ -57,7 +59,16 @@ DEFAULT_DOCKER_DATA_ROOT = _default_docker_data_root()
 
 
 def get_config() -> dict:
-    """Return the current config, falling back to defaults if absent."""
+    """Return the current config, falling back to defaults if absent.
+
+    Reads the first config file found by the resolver (per-user locations,
+    then the legacy package-dir file read-only). A missing file or read
+    error yields a minimal config carrying only ``docker_data_root``, which
+    is also always backfilled when absent from an existing file.
+
+    Returns:
+        Parsed config mapping with ``docker_data_root`` guaranteed present.
+    """
     path = _resolve_config_path_for_read()
     if path is None:
         return {"docker_data_root": _default_docker_data_root()}

@@ -34,6 +34,16 @@ class SlurmEngineError(RuntimeError):
 
 @dataclass(frozen=True)
 class SlurmSubmission:
+    """Record of a successful ``sbatch`` submission.
+
+    Attributes:
+        job_id: Scheduler-assigned Slurm job id used for subsequent
+            ``query``/``cancel`` calls.
+        script_path: Path to the rendered sbatch script persisted next to
+            the workspace; kept for forensics and recorded in the
+            artifact bundle's lineage block.
+    """
+
     job_id: str
     script_path: Path
 
@@ -44,18 +54,55 @@ class SlurmEngine(Protocol):
 
     name: str
 
-    def submit(self, spec: SlurmJobSpec, *, script_dir: Path) -> SlurmSubmission: ...
+    def submit(self, spec: SlurmJobSpec, *, script_dir: Path) -> SlurmSubmission:
+        """Render and dispatch one job as a single ``sbatch``.
 
-    def query(self, job_id: str) -> SlurmJobInfo: ...
+        Args:
+            spec: Config-driven description of the job (image SIF, binds,
+                resource directives) the executor wants to run.
+            script_dir: Directory the rendered sbatch script is written
+                into before submission.
 
-    def cancel(self, job_id: str) -> None: ...
+        Returns:
+            The submission record carrying the scheduler job id and the
+            path of the persisted script.
+        """
+        ...
+
+    def query(self, job_id: str) -> SlurmJobInfo:
+        """Report the current lifecycle observation for ``job_id``.
+
+        Args:
+            job_id: Scheduler-assigned id returned by ``submit``.
+
+        Returns:
+            One observation of the job's state, exit code, and reason.
+        """
+        ...
+
+    def cancel(self, job_id: str) -> None:
+        """Request cancellation of ``job_id`` (best effort).
+
+        Args:
+            job_id: Scheduler-assigned id of the job to cancel.
+        """
+        ...
 
     def sif_digest_for_submission(self, spec: SlurmJobSpec) -> Optional[str]:
         """Return the sha256 digest of the SIF at ``spec.image_sif``, or
         ``None`` if the engine cannot or does not compute a digest.
 
         The digest is ``sha256:<hex>``. Engines that implement this hook
-        enable the M2 dual-digest invariant for Slurm manifests.
+        supply the SIF half of the dual-digest pair (OCI registry digest
+        + executed SIF sha256) recorded in the Slurm manifest, tying the
+        result to both the registry provenance and the executed binary.
+
+        Args:
+            spec: The job spec whose ``image_sif`` is to be hashed.
+
+        Returns:
+            The SIF digest as ``sha256:<hex>``, or ``None`` when the
+            engine cannot or does not compute one.
         """
         ...
 
@@ -90,6 +137,20 @@ class RealSlurmEngine:
     )
 
     def submit(self, spec: SlurmJobSpec, *, script_dir: Path) -> SlurmSubmission:
+        """Render the sbatch script, persist it, and submit via ``sbatch``.
+
+        Args:
+            spec: Job description rendered into the sbatch script.
+            script_dir: Directory the script is written into; created if
+                absent. The script is kept for forensics.
+
+        Returns:
+            Submission record with the parsed scheduler job id.
+
+        Raises:
+            SlurmEngineError: If ``sbatch`` is missing, times out, exits
+                nonzero, or emits output whose job id cannot be parsed.
+        """
         self._require_binary(self.sbatch_bin)
         script_dir = Path(script_dir)
         script_dir.mkdir(parents=True, exist_ok=True)
@@ -117,6 +178,19 @@ class RealSlurmEngine:
         return SlurmSubmission(job_id=job_id, script_path=script_path)
 
     def query(self, job_id: str) -> SlurmJobInfo:
+        """Re-derive the job's state from ``sacct`` (no local cache).
+
+        Args:
+            job_id: Scheduler job id to look up in the accounting db.
+
+        Returns:
+            The parsed observation; ``PENDING`` when the job is too new
+            to appear in the accounting database yet.
+
+        Raises:
+            SlurmEngineError: If ``sacct`` is missing, times out, or exits
+                nonzero.
+        """
         self._require_binary(self.sacct_bin)
         try:
             result = subprocess.run(
@@ -144,6 +218,18 @@ class RealSlurmEngine:
         return _parse_sacct_output(job_id, result.stdout)
 
     def cancel(self, job_id: str) -> None:
+        """Cancel ``job_id`` via ``scancel`` (best effort, errors swallowed).
+
+        A nonzero ``scancel`` exit is tolerated: the job may already be
+        terminal, and the executor reconciles the real state on the next
+        ``query``.
+
+        Args:
+            job_id: Scheduler job id to cancel.
+
+        Raises:
+            SlurmEngineError: If ``scancel`` is not on PATH.
+        """
         self._require_binary(self.scancel_bin)
         try:
             subprocess.run(
@@ -159,9 +245,19 @@ class RealSlurmEngine:
             ) from exc
 
     def sif_digest_for_submission(self, spec: SlurmJobSpec) -> Optional[str]:
-        """Return the sha256 digest of ``spec.image_sif``, cached by
-        (path, mtime_ns, size) so repeated submits of the same SIF
-        avoid rehashing."""
+        """Return the sha256 digest of ``spec.image_sif`` (SIF half of the
+        dual-digest pair), or ``None`` if the SIF is not a regular file.
+
+        The result is cached by ``(resolved_path, mtime_ns, size)`` so
+        repeated submits of an unchanged SIF on the shared filesystem
+        avoid rehashing a large image.
+
+        Args:
+            spec: Job spec whose ``image_sif`` is hashed.
+
+        Returns:
+            ``sha256:<hex>`` for the SIF, or ``None`` when it is absent.
+        """
         sif = Path(spec.image_sif)
         if not sif.is_file():
             return None
@@ -174,6 +270,7 @@ class RealSlurmEngine:
     # ---- internals ---------------------------------------------------
 
     def _require_binary(self, name: str) -> None:
+        """Raise if ``name`` is not resolvable on PATH."""
         if shutil.which(name) is None:
             raise SlurmEngineError(f"{name!r} not on PATH")
 

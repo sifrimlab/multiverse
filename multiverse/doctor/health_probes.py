@@ -34,18 +34,25 @@ HEALTH_PROBE_NAMESPACES = {
 
 
 class ProbeOutcome(str, Enum):
+    """Did the probe itself succeed? ``SKIPPED`` means the service was not
+    configured, not that the probe failed."""
+
     PASS = "pass"
     FAIL = "fail"
     SKIPPED = "skipped"
 
 
 class CleanupResult(str, Enum):
+    """Did the probe manage to remove the scratch it created this run?"""
+
     CLEAN = "clean"
     LEAKED = "leaked"
     CLEANUP_FAILED = "cleanup_failed"
 
 
 class LeakInventoryResult(str, Enum):
+    """Did the probe find *prior* leaked entries left in its namespace?"""
+
     NONE = "none"
     LEAKS = "leaks"
     INVENTORY_FAILED = "inventory_failed"
@@ -53,6 +60,17 @@ class LeakInventoryResult(str, Enum):
 
 @dataclass
 class ProbeReport:
+    """One health probe's three-column result plus an optional detail line.
+
+    Attributes:
+        name: Probe identifier surfaced in the doctor report.
+        probe: Whether the probe ran and passed.
+        cleanup: Whether the probe's own scratch was reclaimed.
+        leak: Whether stale entries from earlier runs were found.
+        leak_count: Number of leaked entries counted by the inventory.
+        detail: Human-readable summary or error string.
+    """
+
     name: str
     probe: ProbeOutcome
     cleanup: CleanupResult
@@ -61,6 +79,7 @@ class ProbeReport:
     detail: Optional[str] = None
 
     def to_dict(self) -> Dict[str, object]:
+        """Render as the JSON-serialisable row used by ``doctor --json``."""
         out: Dict[str, object] = {
             "name": self.name,
             "probe": self.probe.value,
@@ -79,9 +98,19 @@ class ProbeReport:
 
 
 def probe_workspace_directory(workspaces_root: Path) -> ProbeReport:
-    """Create a workspace under the reserved name, drop a probe file,
-    remove the workspace, and report. Counts unrelated stale entries
-    under the reserved name as leaks.
+    """Round-trip a workspace under the reserved health-probe namespace.
+
+    Creates a probe workspace, writes a marker, then removes only its own
+    entry. Older sibling entries left under the reserved name are counted
+    as leaks (a previous probe or sweeper failed to clean them).
+
+    Args:
+        workspaces_root: ``store/workspaces/`` root; the reserved
+            ``__mvd_health_probe__`` namespace is created beneath it.
+
+    Returns:
+        A :class:`ProbeReport` named ``workspace_dir`` carrying the
+        probe/cleanup/leak triple.
     """
     workspaces_root.mkdir(parents=True, exist_ok=True)
     probe_root = workspaces_root / HEALTH_PROBE_NAMESPACES["workspace_dir"]
@@ -132,12 +161,20 @@ def sweep_expired_health_probes(
     ttl_seconds: int = HEALTH_PROBE_TTL_SECONDS,
     now: Optional[float] = None,
 ) -> Dict[str, int]:
-    """Walk reserved health-probe namespaces and remove entries older
-    than ``ttl_seconds``. Returns a per-namespace count of removed
-    entries.
+    """Remove expired entries from the reserved health-probe namespaces.
 
     Only operates inside the reserved namespaces. Per R12 Tier-1 GC this
     is one of the closed-list paths the daemon is allowed to clean.
+
+    Args:
+        workspaces_root: ``store/workspaces/`` root holding the reserved
+            ``__mvd_health_probe__`` namespace.
+        ttl_seconds: Entries older than this (by mtime) are removed.
+        now: Override for the current epoch time; injected by tests.
+
+    Returns:
+        Per-namespace count of removed entries (currently only
+        ``workspace_dir``).
     """
     now_ts = time.time() if now is None else float(now)
     removed: Dict[str, int] = {}
@@ -166,6 +203,7 @@ def sweep_expired_health_probes(
 
 
 def _count_expired_under(probe_root: Path) -> int:
+    """Count entries older than the TTL directly under ``probe_root``."""
     if not probe_root.is_dir():
         return 0
     now = time.time()

@@ -23,6 +23,17 @@ GC_REPORTS_SUBDIR = "gc_reports"
 
 @dataclass
 class GcResult:
+    """Outcome of a :func:`apply_plan` call.
+
+    Attributes:
+        plan: The :class:`~plan.GcPlan` that was executed or previewed.
+        deleted_paths: Paths successfully removed (empty for dry runs).
+        refused_paths: Paths that passed the plan stage but were refused
+            at the final gate re-check (e.g. owner token vanished).
+        report_path: Location of the written GC report Markdown file, if
+            one was produced.
+    """
+
     plan: GcPlan
     deleted_paths: List[Path] = field(default_factory=list)
     refused_paths: List[Path] = field(default_factory=list)
@@ -35,12 +46,26 @@ def apply_plan(
     store_root: Path,
     apply: bool,
 ) -> GcResult:
-    """Either write the dry-run report (``apply=False``, default) or
+    """Execute a GC plan or write a dry-run report.
+
+    Either write the dry-run report (``apply=False``, default) or
     perform deletions (``apply=True``).
 
     Even with ``apply=True``, every entry still goes through the gate
     re-check (owner token present); a race that flipped a directory's
     state since the plan was built is refused, not skipped.
+
+    Args:
+        plan: The :class:`~plan.GcPlan` produced by :func:`~plan.build_plan`.
+        store_root: Root of the artifact store; used to place the GC report
+            under ``store/gc_reports/``.
+        apply: When ``False`` (default) only the dry-run report is written;
+            no paths are removed. When ``True`` each planned deletion is
+            re-gated and then executed.
+
+    Returns:
+        A :class:`GcResult` with the lists of deleted/refused paths and the
+        written report path.
     """
     result = GcResult(plan=plan)
     if not apply:
@@ -83,7 +108,19 @@ def _do_delete(entry: PlanEntry) -> None:
 def write_dry_run_report(
     plan: GcPlan, *, store_root: Path, header: str = "GC dry-run report"
 ) -> Path:
-    """Write ``store/gc_reports/<rfc3339>.md``. Returns the report path."""
+    """Write a Markdown GC report to ``store/gc_reports/<rfc3339>.md``.
+
+    Args:
+        plan: The plan whose entries are rendered into the report.
+        store_root: Root of the artifact store; the ``gc_reports/``
+            subdirectory is created if absent.
+        header: Heading line inserted at the top of the report. Defaults
+            to ``"GC dry-run report"``; ``apply_plan`` passes
+            ``"GC apply report"`` for post-deletion records.
+
+    Returns:
+        Path to the written report file.
+    """
     reports = store_root / GC_REPORTS_SUBDIR
     reports.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ%f")

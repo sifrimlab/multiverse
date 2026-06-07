@@ -31,7 +31,16 @@ TOMBSTONE_SUFFIX = ".quarantined"
 
 @dataclass(frozen=True)
 class QuarantineReport:
-    """Where a directory ended up and why."""
+    """Record of a single quarantine move: where a directory went and why.
+
+    Attributes:
+        source_path: Original path the directory occupied before the move.
+        quarantine_path: Destination under ``store/quarantine/<date>/<id>/``.
+        reason: Human-readable cause of the quarantine.
+        physical_attempt_id: Attempt that owned the moved directory, if known.
+        tombstone_path: Marker left at ``source_path`` pointing at the move.
+        owner_token: ``.mvd_owner`` token found at the source, if any.
+    """
 
     source_path: Path
     quarantine_path: Path
@@ -41,6 +50,7 @@ class QuarantineReport:
     owner_token: Optional[OwnerTokenFile]
 
     def to_dict(self) -> dict:
+        """Return a JSON-serialisable representation for journaling and GUI surfacing."""
         return {
             "source_path": str(self.source_path),
             "quarantine_path": str(self.quarantine_path),
@@ -60,6 +70,7 @@ class QuarantineReport:
 
 
 def _today_partition() -> str:
+    """Return today's UTC date as the ``YYYY-MM-DD`` quarantine partition."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
@@ -72,15 +83,33 @@ def quarantine_directory(
     physical_attempt_id: Optional[str] = None,
     extra_report: str = "",
 ) -> QuarantineReport:
-    """Move ``source`` into ``store/quarantine/<date>/<id>/`` with a report.
+    """Move ``source`` into the quarantine tree and drop a tombstone.
 
-    The move is the only mutation. If ``expected_owner_token`` is supplied
-    and does not match the token written at the source, the function
-    raises ``OwnershipMismatchError`` and leaves the source untouched —
-    per R5 the kernel never moves a directory it does not own.
+    The recovery subsystem never deletes; this move-plus-tombstone is its only
+    mutation power (S4 / R5). The directory lands at
+    ``store/quarantine/<date>/<attempt_id>/`` (uniquified if that path already
+    exists, since quarantined data is never overwritten), a report is written
+    beside it, and a ``.quarantined`` tombstone is left at the original path so
+    users following the old location can see what happened.
 
-    Returns a ``QuarantineReport`` describing the move; the caller is
-    expected to journal the report and surface it via the GUI.
+    Args:
+        source: Directory to quarantine.
+        layout: Store layout supplying the quarantine root; ``ensure()``-d.
+        reason: Human-readable cause, recorded in the report and tombstone.
+        expected_owner_token: If given, the source's ``.mvd_owner`` token must
+            match; otherwise the move is refused (R5).
+        physical_attempt_id: Attempt id for the destination directory name;
+            falls back to the source token's id, then ``"unknown-attempt"``.
+        extra_report: Optional free-text appended to the report's notes.
+
+    Returns:
+        A ``QuarantineReport`` describing the move; the caller is expected to
+        journal it and surface it via the GUI.
+
+    Raises:
+        FileNotFoundError: If ``source`` does not exist.
+        OwnershipMismatchError: If ``expected_owner_token`` is supplied and the
+            source token is absent or does not match.
     """
     layout.ensure()
     source_path = Path(source)
@@ -154,6 +183,7 @@ def _render_report(
     token: Optional[OwnerTokenFile],
     extra: str,
 ) -> bytes:
+    """Render the human-readable ``QUARANTINE_REPORT.md`` body as UTF-8 bytes."""
     lines = [
         "# Quarantine report",
         "",

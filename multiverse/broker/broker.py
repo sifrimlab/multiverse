@@ -1,8 +1,14 @@
-"""ResourceBroker (STRATEGY S9 / R11).
+"""ResourceBroker: admission control and pressure observation (STRATEGY S9 / R11).
 
-The broker is single-threaded by contract (matches the kernel's asyncio
-model). Tests instantiate one with an :class:`InMemoryHostObserver` and
-manipulate ``observer.current`` to model pressure.
+The resource broker is single-threaded by contract (matches the mvd kernel's
+asyncio model). Each call to ``admit`` consults the live host observer and the
+in-memory reservation ledger to decide whether to grant a lease for a physical
+attempt. The ledger is durable: journal records are written before in-memory
+mutation (STRATEGY M3), and ``reconstruct_ledger_from_journal`` rebuilds it on
+startup from those records alone.
+
+Tests instantiate one with an :class:`InMemoryHostObserver` and manipulate
+``observer.current`` to model pressure and OOM events without touching the OS.
 """
 
 from __future__ import annotations
@@ -28,7 +34,15 @@ class AdmissionOutcome(str, Enum):
 
 @dataclass
 class AdmissionDecision:
-    """Admission verdict for one physical attempt."""
+    """Admission verdict for one physical attempt.
+
+    Attributes:
+        outcome: Whether the physical attempt was admitted or why it was refused.
+        physical_attempt_id: The attempt this decision covers.
+        detail: Human-readable explanation for a rejection (``None`` on admission).
+        metrics_at_decision: Host metrics snapshot captured at the moment of the
+            decision, recorded for auditability.
+    """
 
     outcome: AdmissionOutcome
     physical_attempt_id: str
@@ -37,6 +51,7 @@ class AdmissionDecision:
 
     @property
     def admitted(self) -> bool:
+        """True iff the outcome was ``ADMITTED``."""
         return self.outcome is AdmissionOutcome.ADMITTED
 
 
@@ -52,12 +67,25 @@ class ContinuousObservation:
 
 @dataclass
 class PressureEvent:
+    """A recorded pressure-mode transition for one resource.
+
+    Emitted by ``observe()`` and journaled by the kernel into the artifact
+    manifest's ``resource_observations`` block.
+
+    Attributes:
+        at_iso: Local ISO-8601 timestamp of the observation.
+        level: Pressure mode that triggered the event.
+        resource: Resource that crossed a threshold (e.g. ``ram``).
+        utilization: Fractional utilization (0..1) at the time.
+    """
+
     at_iso: str
     level: PressureMode
     resource: str
     utilization: float
 
     def to_dict(self) -> Dict[str, object]:
+        """Serialize to the journal/manifest wire shape."""
         return {
             "at": self.at_iso,
             "level": self.level.value,
@@ -74,6 +102,7 @@ class OomEvent:
     at_iso: str
 
     def to_dict(self) -> Dict[str, str]:
+        """Serialize to the wire shape, tagging ``reason`` as ``OOM_KILLED``."""
         return {
             "physical_attempt_id": self.physical_attempt_id,
             "at": self.at_iso,
@@ -113,6 +142,7 @@ class ReservationLedger:
         return sum(r.ram_bytes for r in self.by_attempt.values())
 
     def total_vram_for(self, gpu_index: Optional[int]) -> int:
+        """Sum VRAM bytes reserved on one GPU; 0 when ``gpu_index`` is None."""
         if gpu_index is None:
             return 0
         return sum(
@@ -120,12 +150,14 @@ class ReservationLedger:
         )
 
     def gpu_indices_in_use(self) -> set[int]:
+        """Return the set of GPU indices currently held by reservations."""
         return {
             r.gpu_index for r in self.by_attempt.values() if r.gpu_index is not None
         }
 
 
 def _request_to_payload(request: ResourceRequest) -> Dict[str, object]:
+    """Serialize a resource request into a journal-record payload."""
     return {
         "ram_bytes": int(request.ram_bytes),
         "vram_bytes": int(request.vram_bytes),
@@ -137,6 +169,7 @@ def _request_to_payload(request: ResourceRequest) -> Dict[str, object]:
 
 
 def _request_from_payload(payload: Dict[str, object]) -> ResourceRequest:
+    """Reconstruct a resource request from a journal-record payload."""
     raw_disk = payload.get("disk_bytes_per_path") or {}
     return ResourceRequest(
         ram_bytes=int(payload.get("ram_bytes", 0)),
@@ -173,6 +206,7 @@ def reconstruct_ledger_from_journal(
 
 
 def _now_iso() -> str:
+    """Return the current local time as an ISO-8601 string."""
     return datetime.now(timezone.utc).astimezone().isoformat()
 
 
@@ -392,6 +426,7 @@ class ResourceBroker:
 
     @property
     def mode(self) -> PressureMode:
+        """Current pressure mode, freshly classified from a live observation."""
         return self._classify(self.observer.observe())
 
     # ---- internals ----
@@ -436,6 +471,12 @@ class ResourceBroker:
         )
 
     def _classify(self, metrics: HostMetrics) -> PressureMode:
+        """Map a metrics snapshot to a pressure mode.
+
+        The most severe resource wins: RAM and any single GPU's VRAM are
+        each checked against the critical then pressure thresholds, and the
+        highest mode reached is returned.
+        """
         if metrics.ram_total_bytes:
             ram_util = 1.0 - (metrics.ram_free_bytes / metrics.ram_total_bytes)
             if ram_util >= self.thresholds.ram_critical:

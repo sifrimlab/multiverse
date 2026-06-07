@@ -93,6 +93,19 @@ class MvdDockerExecutor:
     # ------------------------------------------------------------------
 
     async def execute(self, *, record: RunRecord, kernel) -> None:
+        """Drive one run end-to-end: admit, launch, wait, evaluate, promote.
+
+        Walks the run through the full state machine via journaled kernel
+        transitions. Projection sync is emitted only after the
+        ARTIFACT_SUCCESS commit, so an MLflow outage cannot block the
+        scientific outcome (R6). The broker lease is always released in the
+        ``finally`` block.
+
+        Args:
+            record: The run record to execute; its ``options`` carry the
+                job-specific data (image, dataset, resource request).
+            kernel: The owning kernel used for journaled state transitions.
+        """
         options = dict(record.options or {})
         try:
             spec = _ExecutorJobSpec.from_options(options, record.physical_attempt_id)
@@ -354,6 +367,7 @@ class MvdDockerExecutor:
 
     @staticmethod
     def _close_run_logger(handler: Optional[logging.Handler]) -> None:
+        """Detach and close a per-attempt log handler from all logger objects."""
         if handler is None:
             return
         logging.getLogger().removeHandler(handler)
@@ -450,6 +464,12 @@ class MvdDockerExecutor:
         )
 
     def _write_job_spec(self, spec: "_ExecutorJobSpec", workspace: Path) -> None:
+        """Write ``job_spec.json`` into the workspace before launch.
+
+        The workspace is bound to ``/output``, so the container reads the
+        spec at ``/output/job_spec.json`` — the orchestrator writes it, never
+        the container (container contract).
+        """
         payload = job_spec_payload(
             model_name=spec.model_slug,
             model_version=spec.model_version,
@@ -470,10 +490,17 @@ class MvdDockerExecutor:
         record: RunRecord,
         runtime_identity: Optional[ImageIdentity] = None,
     ) -> ArtifactManifest:
-        # Dual-digest invariant (STRATEGY M2). When the engine reported a
-        # runtime SIF, the SIF's built_from MUST equal image_identity.value.
-        # Raises ValueError on mismatch; the caller catches and FAILs the
-        # run rather than promoting a non-comparable artifact.
+        """Assemble the artifact manifest, enforcing the dual-digest invariant.
+
+        Dual-digest invariant (STRATEGY M2): when the engine reported a
+        runtime SIF, the SIF's ``built_from`` MUST equal
+        ``image_identity.value``. The verification raises ``ValueError`` on
+        mismatch; the caller catches it and FAILs the run rather than
+        promoting a non-comparable artifact.
+
+        Raises:
+            ValueError: If the runtime identity does not match its source.
+        """
         verify_runtime_identity_matches_source(identity, runtime_identity)
         return ArtifactManifest(
             logical_run_id=logical_run_id,
@@ -543,6 +570,11 @@ class _BadOptions(ValueError):
 
 @dataclass(frozen=True)
 class _ExecutorJobSpec:
+    """Validated, typed job description derived from the raw ``options`` dict.
+
+    Populated exclusively by :meth:`from_options`; never constructed directly.
+    """
+
     physical_attempt_id: str
     model_slug: str
     model_version: str
@@ -573,6 +605,19 @@ class _ExecutorJobSpec:
     def from_options(
         cls, options: Mapping[str, Any], attempt_id: str
     ) -> "_ExecutorJobSpec":
+        """Parse and validate a raw ``options`` dict into a typed job spec.
+
+        Args:
+            options: The ``options`` dict from ``submit_run``; see
+                :func:`build_executor_options` for the canonical shape.
+            attempt_id: The ``physical_attempt_id`` being prepared.
+
+        Returns:
+            A fully-populated, frozen :class:`_ExecutorJobSpec`.
+
+        Raises:
+            _BadOptions: If a required key is absent or a value is invalid.
+        """
         def _req(key: str) -> Any:
             if key not in options:
                 raise _BadOptions(f"missing option {key!r}")

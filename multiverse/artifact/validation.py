@@ -36,24 +36,46 @@ from .manifest import ArtifactEntry
 
 
 class ValidationLevel(str, Enum):
+    """How strictly to validate an output bundle (S6).
+
+    ``basic`` downgrades soft problems to warnings; ``strict`` (publication)
+    turns those warnings into refusals; ``developer`` additionally exercises a
+    synthetic round-trip driven from outside this module.
+    """
+
     BASIC = "basic"
     STRICT = "strict"
     DEVELOPER = "developer"
 
 
 class IssueSeverity(str, Enum):
+    """Whether a validation issue blocks promotion.
+
+    A ``refusal`` fails the run; a ``warning`` is recorded but does not block.
+    """
+
     WARNING = "warning"
     REFUSAL = "refusal"
 
 
 @dataclass
 class ValidationIssue:
+    """A single problem found while validating an artifact.
+
+    Attributes:
+        code: Stable machine-readable issue code (e.g. ``EMBEDDING_MISSING``).
+        message: Human-readable explanation.
+        severity: Whether the issue refuses promotion or is only a warning.
+        artifact: Name of the offending artifact, when issue is artifact-scoped.
+    """
+
     code: str
     message: str
     severity: IssueSeverity
     artifact: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict; ``artifact`` omitted when unset."""
         out: Dict[str, Any] = {
             "code": self.code,
             "message": self.message,
@@ -66,23 +88,36 @@ class ValidationIssue:
 
 @dataclass
 class ValidationReport:
+    """Outcome of validating an output bundle at a given level.
+
+    Attributes:
+        level: The validation level that produced this report.
+        issues: All issues found, both warnings and refusals.
+        artifact_entries: Checksummed entries for artifacts that were located
+            and stamped, ready to fold into the artifact manifest.
+    """
+
     level: ValidationLevel
     issues: List[ValidationIssue] = field(default_factory=list)
     artifact_entries: List[ArtifactEntry] = field(default_factory=list)
 
     @property
     def refusals(self) -> List[ValidationIssue]:
+        """The subset of issues that refuse promotion."""
         return [i for i in self.issues if i.severity is IssueSeverity.REFUSAL]
 
     @property
     def warnings(self) -> List[ValidationIssue]:
+        """The subset of issues that are warnings only."""
         return [i for i in self.issues if i.severity is IssueSeverity.WARNING]
 
     @property
     def passed(self) -> bool:
+        """True when there are no refusals, i.e. the bundle may be promoted."""
         return not self.refusals
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize the report to the ``validation_report.json`` shape."""
         return {
             "level": self.level.value,
             "passed": self.passed,
@@ -96,6 +131,8 @@ class ValidationReport:
 
 
 class ExpectedArtifactRole(str, Enum):
+    """The kind of artifact a contract entry describes, selecting its validator."""
+
     EMBEDDING = "embedding"
     METRICS = "metrics"
     UMAP = "umap"
@@ -126,6 +163,7 @@ class ExpectedArtifact:
         finite_fraction_min: float = 1.0,
         required: bool = True,
     ) -> "ExpectedArtifact":
+        """Declare a required-by-default embedding artifact (``embeddings.h5``)."""
         return cls(
             name=name,
             role=ExpectedArtifactRole.EMBEDDING,
@@ -142,6 +180,7 @@ class ExpectedArtifact:
         required: bool = False,
         schema_keys: Sequence[str] = (),
     ) -> "ExpectedArtifact":
+        """Declare an optional-by-default metrics JSON artifact (``metrics.json``)."""
         return cls(
             name=name,
             role=ExpectedArtifactRole.METRICS,
@@ -157,6 +196,7 @@ class ExpectedArtifact:
         required: bool = False,
         min_size_bytes: int = 256,
     ) -> "ExpectedArtifact":
+        """Declare an optional-by-default UMAP plot artifact (``umap.png``)."""
         return cls(
             name=name,
             role=ExpectedArtifactRole.UMAP,
@@ -223,6 +263,7 @@ def _refusal_or_warning(
 
 
 def _png_header_ok(path: Path) -> bool:
+    """Return True iff the file starts with the 8-byte PNG signature."""
     try:
         with path.open("rb") as fp:
             return fp.read(8) == b"\x89PNG\r\n\x1a\n"
@@ -353,6 +394,7 @@ def _validate_metrics(
     level: ValidationLevel,
     issues: List[ValidationIssue],
 ) -> Optional[ArtifactEntry]:
+    """Check a metrics JSON: present (if required), parseable object, required keys."""
     if not path.is_file():
         if spec.required:
             issues.append(
@@ -412,6 +454,7 @@ def _validate_umap(
     level: ValidationLevel,
     issues: List[ValidationIssue],
 ) -> Optional[ArtifactEntry]:
+    """Check a UMAP plot: present (if required), non-trivial size, PNG header."""
     if not path.is_file():
         if spec.required:
             issues.append(

@@ -45,6 +45,7 @@ class ArtifactEntry:
     role: Optional[str] = None  # e.g. "embedding", "metrics", "plot"
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict; ``role`` is omitted when unset."""
         out: Dict[str, Any] = {
             "name": self.name,
             "sha256": self.sha256,
@@ -58,6 +59,7 @@ class ArtifactEntry:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ArtifactEntry":
+        """Reconstruct an ``ArtifactEntry`` from its serialized form."""
         return cls(
             name=str(data["name"]),
             sha256=str(data["sha256"]),
@@ -76,6 +78,26 @@ class ArtifactEntry:
         role: Optional[str] = None,
         validated: bool = True,
     ) -> "ArtifactEntry":
+        """Build an ``ArtifactEntry`` from a file on disk, computing its checksum.
+
+        Args:
+            path: Path to the artifact file to stamp into the entry.
+            name: Bundle-relative name to record; defaults to the file's
+                basename when omitted.
+            role: Semantic artifact role (e.g. ``"embedding"``, ``"metrics"``,
+                ``"umap"``); stored for downstream consumers.
+            validated: Whether the artifact passed semantic validation.
+                Set to ``False`` when validation ran but could not complete
+                (e.g. ``h5py`` unavailable) so the entry is distinguishable
+                from a fully validated one.
+
+        Returns:
+            A populated ``ArtifactEntry`` with ``sha256`` and ``size``
+            computed from the on-disk file.
+
+        Raises:
+            FileNotFoundError: If ``path`` does not refer to a regular file.
+        """
         p = Path(path)
         if not p.is_file():
             raise FileNotFoundError(f"artifact not found: {p}")
@@ -99,6 +121,7 @@ class StateTransition:
     reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict; ``reason`` omitted when unset."""
         out: Dict[str, Any] = {
             "from": self.from_state,
             "to": self.to_state,
@@ -110,6 +133,7 @@ class StateTransition:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "StateTransition":
+        """Reconstruct a ``StateTransition`` from its serialized form."""
         return cls(
             from_state=str(data["from"]),
             to_state=str(data["to"]),
@@ -128,6 +152,7 @@ class ProducedAt:
     mvd_boot_id: str
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict."""
         return {
             "wall": self.wall,
             "monotonic_ns": int(self.monotonic_ns),
@@ -137,6 +162,7 @@ class ProducedAt:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ProducedAt":
+        """Reconstruct a ``ProducedAt`` from its serialized form."""
         return cls(
             wall=str(data["wall"]),
             monotonic_ns=int(data["monotonic_ns"]),
@@ -147,6 +173,17 @@ class ProducedAt:
 
 @dataclass
 class ProducedBy:
+    """Producer provenance recorded in the artifact manifest.
+
+    Attributes:
+        mvd_version: Version of the mvd kernel / contract library that wrote
+            the bundle.
+        git_commit: Source commit of the producing checkout, when known.
+        degraded_capabilities: Names of capabilities that ran degraded (e.g.
+            directory fsync unsupported on the storage backend).
+        user_id: Resolved owner of the run (G2); absent from pre-G2 manifests.
+    """
+
     mvd_version: str
     git_commit: Optional[str] = None
     degraded_capabilities: List[str] = field(default_factory=list)
@@ -154,6 +191,7 @@ class ProducedBy:
     """Resolved owner of the run (G2). Absent from pre-G2 manifests."""
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict; unset optional fields are omitted."""
         out: Dict[str, Any] = {"mvd_version": self.mvd_version}
         if self.git_commit is not None:
             out["git_commit"] = self.git_commit
@@ -165,6 +203,7 @@ class ProducedBy:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ProducedBy":
+        """Reconstruct a ``ProducedBy`` from its serialized form."""
         return cls(
             mvd_version=str(data["mvd_version"]),
             git_commit=data.get("git_commit"),
@@ -183,6 +222,7 @@ class ResourceObservations:
     broker_pressure_events: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict; unset metrics are omitted."""
         out: Dict[str, Any] = {"oom_killed": bool(self.oom_killed)}
         if self.peak_rss_bytes is not None:
             out["peak_rss_bytes"] = int(self.peak_rss_bytes)
@@ -196,6 +236,7 @@ class ResourceObservations:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ResourceObservations":
+        """Reconstruct a ``ResourceObservations`` from its serialized form."""
         return cls(
             peak_rss_bytes=(
                 int(data["peak_rss_bytes"])
@@ -244,6 +285,12 @@ class ArtifactManifest:
     # ---- serialization ----
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize the full manifest to a JSON-ready dict.
+
+        Optional fields (``owner_token``, ``resource_observations``,
+        ``runtime_image_identity``) are omitted when unset so older readers
+        do not see unexpected nulls.
+        """
         out: Dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_run_id": self.logical_run_id,
@@ -268,6 +315,18 @@ class ArtifactManifest:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ArtifactManifest":
+        """Reconstruct and structurally validate a manifest from parsed JSON.
+
+        Args:
+            data: The decoded ``artifact_manifest.json`` body.
+
+        Returns:
+            A fully-populated ``ArtifactManifest``.
+
+        Raises:
+            ManifestCorruptError: If the schema version is unsupported, a
+                required field is missing, or a field has the wrong shape.
+        """
         schema_version = str(data.get("schema_version", ""))
         if schema_version != ARTIFACT_MANIFEST_SCHEMA_VERSION:
             raise ManifestCorruptError(
@@ -451,11 +510,17 @@ _NONDETERMINISTIC_FIELDS: Sequence[Sequence[str]] = (
 
 
 def normalize_for_equivalence(manifest_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip fields that are expected to vary between two contract-equivalent
-    bundles produced from the same recipe.
+    """Strip fields expected to vary between two contract-equivalent bundles.
 
-    Used by tests and by the R7 acceptance check (``simple-mode bundle
-    equivalent to daemon bundle modulo approved nondeterministic fields``).
+    Used by tests and by the R7 acceptance check (simple-mode artifact bundle
+    equivalent to mvd kernel bundle modulo approved non-deterministic fields).
+
+    Args:
+        manifest_dict: A raw manifest dict (e.g. from ``ArtifactManifest.to_dict``).
+
+    Returns:
+        A deep copy of ``manifest_dict`` with all entries listed in
+        ``_NONDETERMINISTIC_FIELDS`` removed.
     """
     cleaned = json.loads(json.dumps(manifest_dict))  # deep-copy via JSON
     for path in _NONDETERMINISTIC_FIELDS:

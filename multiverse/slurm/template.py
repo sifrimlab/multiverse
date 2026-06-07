@@ -52,7 +52,14 @@ class SlurmJobSpec:
     error_log: Optional[Path] = None
     apptainer_bin: str = "apptainer"
     use_tmpdir: bool = False
+    """Stage large inputs (and bind ``/output``) on node-local
+    ``$SLURM_TMPDIR`` instead of the shared filesystem, copying results
+    back into the workspace as the final step. Spares the shared FS on
+    the hot path."""
+
     use_tmpdir_sif: bool = False
+    """Also copy the SIF to ``$SLURM_TMPDIR`` before ``apptainer exec``.
+    Only meaningful when ``use_tmpdir`` is set."""
 
 
 def render_sbatch_script(spec: SlurmJobSpec) -> str:

@@ -20,6 +20,7 @@ COPY docker-env/environment-evaluation.yml /tmp/environment.yml
 RUN micromamba create -y -f /tmp/environment.yml && micromamba clean -afy
 
 ENV PATH=/opt/conda/envs/multiverse_evaluation/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/conda/envs/multiverse_evaluation/lib:$LD_LIBRARY_PATH
 
 # Install the multiverse package so multiverse.evaluate and multiverse.worker
 # (plus the [eval] scientific deps) are importable. The heavy stack is pinned

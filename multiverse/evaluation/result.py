@@ -92,14 +92,17 @@ def readiness_to_eval_status(readiness_status: Optional[str]) -> str:
 
 
 def evaluations_dir(output_dir: Path, launch_id: str) -> Path:
+    """Return the per-member results directory for a launch (not created)."""
     return launch_dir(output_dir, launch_id) / "evaluations"
 
 
 def member_result_path(output_dir: Path, launch_id: str, member_id: str) -> Path:
+    """Return the path to one member's ``<member_id>.json`` result (not created)."""
     return evaluations_dir(output_dir, launch_id) / f"{member_id}.json"
 
 
 def report_path(output_dir: Path, launch_id: str) -> Path:
+    """Return the path to a launch's ``evaluation_report.json`` (not created)."""
     return launch_dir(output_dir, launch_id) / "evaluation_report.json"
 
 
@@ -130,10 +133,16 @@ class MemberResult:
     schema_version: int = MEMBER_RESULT_SCHEMA_VERSION
 
     def to_dict(self) -> Dict[str, Any]:
+        """Return the result as a plain dict for JSON serialization."""
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MemberResult":
+        """Build a MemberResult from a dict, ignoring unknown keys.
+
+        Tolerating unknown keys lets newer result files (extra fields from a
+        later schema) load without error in an older reader.
+        """
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known})
 

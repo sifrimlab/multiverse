@@ -8,6 +8,7 @@ import streamlit as st
 
 
 def _safe_float(v, fallback: float = 0.0) -> float:
+    """Coerce a value to float, returning ``fallback`` on failure."""
     try:
         return float(v)
     except (TypeError, ValueError):
@@ -15,6 +16,7 @@ def _safe_float(v, fallback: float = 0.0) -> float:
 
 
 def _safe_int(v, fallback: int = 0) -> int:
+    """Coerce a value to int, returning ``fallback`` on failure."""
     try:
         return int(v)
     except (TypeError, ValueError):

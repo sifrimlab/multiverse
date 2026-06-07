@@ -39,19 +39,31 @@ class KernelSocketServer:
         *,
         socket_path: Path,
     ) -> None:
+        """Configure the server without binding the socket.
+
+        Args:
+            kernel: The mvd kernel whose verbs this server exposes.
+            socket_path: Filesystem path at which to create the Unix socket.
+        """
         self._kernel = kernel
         self._socket_path = socket_path
         self._server: Optional[asyncio.AbstractServer] = None
 
     @property
     def socket_path(self) -> Path:
+        """Path of the Unix socket this server binds (or will bind)."""
         return self._socket_path
 
     async def start(self) -> None:
+        """Create the socket file and begin accepting connections.
+
+        Removes a stale socket left by a previously dead kernel and applies
+        mode 0600 so authorization is purely filesystem-permission-based.
+        """
         if self._socket_path.exists():
-            # The previous mvd died holding the socket file. Per the spec
-            # the socket file is *our* property when we're the kernel for
-            # this state root, so removing a stale socket is allowed.
+            # A previous mvd died holding the socket file. The socket file
+            # is *our* property when we are the kernel for this state root,
+            # so removing a stale socket is allowed.
             self._socket_path.unlink()
         self._socket_path.parent.mkdir(parents=True, exist_ok=True)
         self._server = await asyncio.start_unix_server(
@@ -60,11 +72,17 @@ class KernelSocketServer:
         os.chmod(str(self._socket_path), SOCKET_MODE)
 
     async def serve_forever(self) -> None:
+        """Serve connections until cancelled.
+
+        Raises:
+            AssertionError: If called before :meth:`start`.
+        """
         assert self._server is not None, "call start() before serve_forever()"
         async with self._server:
             await self._server.serve_forever()
 
     async def stop(self) -> None:
+        """Stop accepting connections and remove the socket file."""
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
@@ -84,6 +102,11 @@ class KernelSocketServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        """Serve one connection: read frames, dispatch, reply, until EOF.
+
+        Malformed or unknown-verb frames produce an error response and the
+        loop continues — a bad request never tears down the connection.
+        """
         try:
             while True:
                 line = await reader.readline()
@@ -135,6 +158,13 @@ class KernelSocketServer:
         request: RpcRequest,
         writer: asyncio.StreamWriter,
     ) -> None:
+        """Invoke a non-streaming verb and write its result or mapped error.
+
+        Kernel exceptions are translated into wire error codes:
+        ``KeyError`` -> ``NOT_FOUND``, ``ValueError`` -> ``INVALID_ARGUMENT``,
+        ``RuntimeError`` -> ``INTERNAL``. Streaming verbs are routed to
+        :meth:`_dispatch_stream` instead.
+        """
         if request.verb == "stream_events":
             await self._dispatch_stream(request, writer)
             return
@@ -174,6 +204,7 @@ class KernelSocketServer:
         await writer.drain()
 
     async def _invoke(self, request: RpcRequest) -> Any:
+        """Call the kernel method named by the request verb with its kwargs."""
         method = getattr(self._kernel, request.verb)
         return await method(**request.kwargs)
 
@@ -182,6 +213,11 @@ class KernelSocketServer:
         request: RpcRequest,
         writer: asyncio.StreamWriter,
     ) -> None:
+        """Stream kernel events for one attempt, closing with a stream-end frame.
+
+        Each event is written as a ``stream`` frame; a final ``stream_end``
+        frame always terminates the stream, including on cancellation.
+        """
         try:
             iterator = self._kernel.stream_events(**request.kwargs)
         except KeyError as exc:

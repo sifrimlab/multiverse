@@ -13,6 +13,14 @@ _DEFAULT_PATH = Path.home() / ".multiverse" / "gui_events.jsonl"
 
 
 def telemetry_enabled() -> bool:
+    """Report whether GUI telemetry is enabled.
+
+    Telemetry is on by default and opted out via ``MULTIVERSE_GUI_TELEMETRY``
+    set to a falsy value (``0``/``false``/``no``/``off``).
+
+    Returns:
+        True unless the opt-out flag is set.
+    """
     return os.environ.get(_ENV_FLAG, "1").strip().lower() not in {
         "0",
         "false",
@@ -22,6 +30,16 @@ def telemetry_enabled() -> bool:
 
 
 def track(event_name: str, **fields: Any) -> None:
+    """Append a usage event as one JSON line to the local telemetry log.
+
+    A no-op when telemetry is opted out. Writes are local-only and best-effort:
+    I/O failures are swallowed so telemetry never disrupts the GUI.
+
+    Args:
+        event_name: Identifier for the event being recorded.
+        **fields: Arbitrary event payload merged into the record alongside the
+            event name and a UTC timestamp.
+    """
     if not telemetry_enabled():
         return
     record = {

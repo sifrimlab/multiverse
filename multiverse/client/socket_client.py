@@ -18,16 +18,24 @@ class KernelSocketClient:
     """Async client. Construct, ``await connect()``, then call any verb."""
 
     def __init__(self, socket_path: Path) -> None:
+        """Configure the client without connecting.
+
+        Args:
+            socket_path: Filesystem path to the kernel's Unix socket
+                (``${state_root}/mvd.sock``).
+        """
         self._socket_path = Path(socket_path)
         self._reader: Optional[asyncio.StreamReader] = None
         self._writer: Optional[asyncio.StreamWriter] = None
 
     async def connect(self) -> None:
+        """Open the persistent connection to the kernel socket."""
         self._reader, self._writer = await asyncio.open_unix_connection(
             path=str(self._socket_path)
         )
 
     async def close(self) -> None:
+        """Close the connection, swallowing errors from an already-dead peer."""
         if self._writer is not None:
             self._writer.close()
             try:
@@ -52,15 +60,37 @@ class KernelSocketClient:
         manifest_path: str,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """Submit a manifest for execution over the socket.
+
+        Args:
+            manifest_path: Path to the run manifest describing what to run.
+            options: Optional submission overrides.
+
+        Returns:
+            The ``physical_attempt_id`` of the newly created attempt.
+        """
         return await self._call(
             "submit_run",
             {"manifest_path": manifest_path, "options": options or {}},
         )
 
     async def cancel_run(self, *, physical_attempt_id: str) -> None:
+        """Request cancellation of an in-flight attempt.
+
+        Args:
+            physical_attempt_id: The attempt to cancel.
+        """
         await self._call("cancel_run", {"physical_attempt_id": physical_attempt_id})
 
     async def query_run(self, *, physical_attempt_id: str) -> Dict[str, Any]:
+        """Fetch the current state snapshot for one attempt.
+
+        Args:
+            physical_attempt_id: The attempt to query.
+
+        Returns:
+            A snapshot dict of the attempt's state and metadata.
+        """
         return await self._call(
             "query_run", {"physical_attempt_id": physical_attempt_id}
         )
@@ -71,11 +101,21 @@ class KernelSocketClient:
         state: Optional[str] = None,
         logical_run_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """List run snapshots, optionally filtered.
+
+        Args:
+            state: Restrict to attempts in this state when given.
+            logical_run_id: Restrict to attempts under this logical run when given.
+
+        Returns:
+            A list of run snapshot dicts matching the filters.
+        """
         return await self._call(
             "list_runs", {"state": state, "logical_run_id": logical_run_id}
         )
 
     async def health(self) -> Dict[str, Any]:
+        """Return the kernel's health/status snapshot."""
         return await self._call("health", {})
 
     async def report_projection_status(
@@ -86,6 +126,14 @@ class KernelSocketClient:
         status: str,
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Report a projection plugin's sync outcome back to the kernel.
+
+        Args:
+            plugin: Projection plugin name (e.g. ``mlflow``).
+            physical_attempt_id: The attempt the projection covers.
+            status: Outcome string (e.g. ``TRACKING_SYNCED``).
+            details: Optional structured context for the status.
+        """
         await self._call(
             "report_projection_status",
             {
@@ -99,6 +147,14 @@ class KernelSocketClient:
     def stream_events(
         self, *, physical_attempt_id: str
     ) -> AsyncIterator[Dict[str, Any]]:
+        """Open a live event stream for one attempt.
+
+        Args:
+            physical_attempt_id: The attempt whose events to stream.
+
+        Returns:
+            An async iterator yielding event dicts until the stream ends.
+        """
         return self._stream(
             "stream_events", {"physical_attempt_id": physical_attempt_id}
         )
@@ -106,6 +162,12 @@ class KernelSocketClient:
     # ---- internals ----
 
     async def _call(self, verb: str, kwargs: Dict[str, Any]) -> Any:
+        """Send one request and await its single correlated response.
+
+        Raises:
+            ApiError: ``DISCONNECTED`` if the kernel closed the connection,
+                or the server-supplied error code on a non-OK response.
+        """
         assert self._writer is not None and self._reader is not None
         req_id = uuid.uuid4().hex
         self._writer.write(
@@ -127,6 +189,16 @@ class KernelSocketClient:
     async def _stream(
         self, verb: str, kwargs: Dict[str, Any]
     ) -> AsyncIterator[Dict[str, Any]]:
+        """Send a streaming request and yield result frames until stream end.
+
+        Terminates on the ``stream_end`` frame or a closed connection.
+
+        Raises:
+            ApiError: With the server-supplied code if an error frame arrives.
+
+        Yields:
+            The ``result`` payload of each intermediate stream frame.
+        """
         assert self._writer is not None and self._reader is not None
         req_id = uuid.uuid4().hex
         self._writer.write(

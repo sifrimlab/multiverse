@@ -87,6 +87,7 @@ class ContainerEngine(Protocol):
 
 
 def _normalise_state(status: Optional[str]) -> ContainerState:
+    """Map an engine status string onto the supervisor's coarse state bucket."""
     s = (status or "").lower()
     if s in {"created", "restarting"}:
         return ContainerState.PENDING
@@ -98,6 +99,11 @@ def _normalise_state(status: Optional[str]) -> ContainerState:
 
 
 def _is_not_found(exc: Exception) -> bool:
+    """Detect a "container does not exist" error across Docker SDK shapes.
+
+    Recognises both the SDK's ``NotFound`` exception type and bare HTTP 404
+    responses so out-of-band removal (``docker rm``) is treated uniformly.
+    """
     if exc.__class__.__name__ in {"NotFound", "NoSuchContainerError"}:
         return True
     status_code = getattr(exc, "status_code", None)
@@ -110,6 +116,11 @@ def _is_not_found(exc: Exception) -> bool:
 
 
 def _is_not_running_conflict(exc: Exception) -> bool:
+    """Detect the HTTP 409 "container is not running" conflict.
+
+    Lets ``kill`` treat an already-exited container as a no-op, preserving
+    the cancel saga's idempotence when stop already finished the job.
+    """
     response = getattr(exc, "response", None)
     if getattr(response, "status_code", None) != 409:
         return False
@@ -142,6 +153,14 @@ import subprocess
 
 
 def gpu_available():
+    """Report whether an NVIDIA GPU is usable on this host.
+
+    Probes for a working ``nvidia-smi``; used only as a guard against
+    requesting a device that is not present, never to force GPU allocation.
+
+    Returns:
+        ``True`` if ``nvidia-smi`` runs successfully, ``False`` otherwise.
+    """
     try:
         subprocess.run(
             ["nvidia-smi"],
@@ -180,6 +199,26 @@ class RealDockerEngine:
         entrypoint: Optional[str] = None,
         gpu_requested: bool = False,
     ) -> ContainerInfo:
+        """Create and start a detached container, returning its snapshot.
+
+        Args:
+            image: Image reference to run.
+            command: Command vector, or ``None`` to use the image default.
+            labels: Run-identity labels to stamp on the container.
+            env: Environment variables for the container.
+            volumes: Host->container mount mapping (see ``_docker_volumes``).
+            mem_limit: Memory cap in Docker syntax (e.g. ``"4g"``), if any.
+            name: Explicit container name, if any.
+            entrypoint: Entrypoint override, if any.
+            gpu_requested: Whether the run asked for a GPU; honoured only when
+                a GPU is actually present.
+
+        Returns:
+            A snapshot of the freshly started container.
+
+        Raises:
+            ContainerEngineError: If the daemon refuses the launch.
+        """
         from .errors import ContainerEngineError
 
         device_requests = None
@@ -222,6 +261,18 @@ class RealDockerEngine:
             ) from exc
 
     def list_by_labels(self, *, labels: Dict[str, str]) -> List[ContainerInfo]:
+        """List containers (including stopped) matching all given labels.
+
+        Args:
+            labels: Label key/value pairs that must all match.
+
+        Returns:
+            Snapshots of matching containers; ones that vanished mid-query
+            (out-of-band removal) are silently skipped.
+
+        Raises:
+            ContainerEngineError: If the label query itself fails.
+        """
         from .errors import ContainerEngineError
 
         filters = {"label": [f"{k}={v}" for k, v in labels.items()]}
@@ -243,6 +294,18 @@ class RealDockerEngine:
             ) from exc
 
     def inspect(self, container_id: str) -> ContainerInfo:
+        """Fetch a fresh snapshot of one container by id.
+
+        Args:
+            container_id: Engine id of the container to inspect.
+
+        Returns:
+            The container's current snapshot.
+
+        Raises:
+            NoSuchContainerError: If the engine does not know the container.
+            ContainerEngineError: For any other engine failure.
+        """
         from .errors import ContainerEngineError, NoSuchContainerError
 
         try:
@@ -280,6 +343,16 @@ class RealDockerEngine:
             ) from exc
 
     def stop(self, container_id: str, *, timeout: int) -> None:
+        """Gracefully stop a container, escalating to SIGKILL after timeout.
+
+        Args:
+            container_id: Engine id of the container to stop.
+            timeout: Grace period in seconds before the engine forces a kill.
+
+        Raises:
+            NoSuchContainerError: If the engine does not know the container.
+            ContainerEngineError: For any other engine failure.
+        """
         from .errors import ContainerEngineError, NoSuchContainerError
 
         try:
@@ -294,6 +367,18 @@ class RealDockerEngine:
             ) from exc
 
     def kill(self, container_id: str) -> None:
+        """Send SIGKILL to a container, treating "already stopped" as success.
+
+        The 409 not-running conflict is swallowed so the cancel saga's kill
+        step stays idempotent after a successful stop.
+
+        Args:
+            container_id: Engine id of the container to kill.
+
+        Raises:
+            NoSuchContainerError: If the engine does not know the container.
+            ContainerEngineError: For any other engine failure.
+        """
         from .errors import ContainerEngineError, NoSuchContainerError
 
         try:
@@ -310,6 +395,15 @@ class RealDockerEngine:
             ) from exc
 
     def remove(self, container_id: str, *, force: bool = False) -> None:
+        """Remove a container, treating an already-absent one as success.
+
+        Args:
+            container_id: Engine id of the container to remove.
+            force: Whether to force-remove a still-running container.
+
+        Raises:
+            ContainerEngineError: For engine failures other than not-found.
+        """
         from .errors import ContainerEngineError
 
         try:
@@ -322,6 +416,15 @@ class RealDockerEngine:
             ) from exc
 
     def _client(self):
+        """Lazily build, ping, and cache the Docker SDK client.
+
+        The SDK is imported here (not at module top) so the kernel import
+        graph stays docker-free. The first call contacts the daemon.
+
+        Raises:
+            ContainerEngineError: If the docker package is missing or the
+                daemon is unreachable.
+        """
         from .errors import ContainerEngineError
 
         if self.client is not None:
@@ -345,6 +448,7 @@ class RealDockerEngine:
         return client
 
     def _info(self, container: Any) -> ContainerInfo:
+        """Project a Docker SDK container object into a ``ContainerInfo``."""
         attrs = getattr(container, "attrs", {}) or {}
         state = attrs.get("State", {}) or {}
         config = attrs.get("Config", {}) or {}
@@ -369,6 +473,13 @@ class RealDockerEngine:
 
 @dataclass
 class _InMemoryContainer:
+    """Internal state record for a single simulated container.
+
+    ``stops`` and ``kills`` count how many times the respective operations
+    were called, letting tests assert that the cancellation saga issued the
+    expected control signals.
+    """
+
     container_id: str
     image: str
     labels: Dict[str, str]
@@ -388,6 +499,7 @@ class _InMemoryContainer:
     log_output: bytes = b""
 
     def to_info(self) -> ContainerInfo:
+        """Render this fake container as the engine-facing ``ContainerInfo``."""
         return ContainerInfo(
             container_id=self.container_id,
             state=self.state,
@@ -401,6 +513,7 @@ class _InMemoryContainer:
 
 
 def _iso(t: Optional[float]) -> Optional[str]:
+    """Format an epoch timestamp as a UTC ISO-8601 string, or ``None``."""
     if t is None:
         return None
     from datetime import datetime, timezone
@@ -435,6 +548,11 @@ class InMemoryContainerEngine:
         entrypoint: Optional[str] = None,
         gpu_requested: bool = False,
     ) -> ContainerInfo:
+        """Record a new RUNNING container and return its snapshot.
+
+        Accepts the full ``ContainerEngine.launch`` keyword surface; the
+        fake stores the launch arguments so tests can assert on them.
+        """
         container_id = uuid.uuid4().hex
         container = _InMemoryContainer(
             container_id=container_id,
@@ -452,6 +570,7 @@ class InMemoryContainerEngine:
         return container.to_info()
 
     def list_by_labels(self, *, labels: Dict[str, str]) -> List[ContainerInfo]:
+        """Return snapshots of non-removed containers matching all labels."""
         result: List[ContainerInfo] = []
         for c in self.containers.values():
             if c.removed:
@@ -461,6 +580,11 @@ class InMemoryContainerEngine:
         return result
 
     def inspect(self, container_id: str) -> ContainerInfo:
+        """Snapshot one container; raise if unknown or removed.
+
+        Raises:
+            NoSuchContainerError: If the container is absent or removed.
+        """
         c = self.containers.get(container_id)
         if c is None or c.removed:
             from .errors import NoSuchContainerError
@@ -469,6 +593,11 @@ class InMemoryContainerEngine:
         return c.to_info()
 
     def logs(self, container_id: str) -> bytes:
+        """Return the seeded log bytes for a container.
+
+        Raises:
+            NoSuchContainerError: If the container is absent or removed.
+        """
         c = self.containers.get(container_id)
         if c is None or c.removed:
             from .errors import NoSuchContainerError
@@ -477,21 +606,23 @@ class InMemoryContainerEngine:
         return c.log_output
 
     def stop(self, container_id: str, *, timeout: int) -> None:
+        """Record a stop and transition the container to a graceful exit."""
         c = self._require(container_id)
         c.stops += 1
-        # Simulate a graceful exit.
         c.state = ContainerState.EXITED
         c.exit_code = 0
         c.finished_at = time.time()
 
     def kill(self, container_id: str) -> None:
+        """Record a kill and transition the container to a SIGKILL exit."""
         c = self._require(container_id)
         c.kills += 1
         c.state = ContainerState.EXITED
-        c.exit_code = 137  # SIGKILL conventional exit code
+        c.exit_code = 137  # 128 + SIGKILL(9): conventional kill exit code
         c.finished_at = time.time()
 
     def remove(self, container_id: str, *, force: bool = False) -> None:
+        """Mark a container removed; no-op if it is already absent."""
         c = self.containers.get(container_id)
         if c is None:
             return
@@ -506,6 +637,7 @@ class InMemoryContainerEngine:
         exit_code: int = 0,
         oom_killed: bool = False,
     ) -> None:
+        """Model a container exiting on its own (optionally OOM-killed)."""
         c = self._require(container_id)
         c.state = ContainerState.EXITED
         c.exit_code = exit_code
@@ -524,6 +656,7 @@ class InMemoryContainerEngine:
         c.removed = True
 
     def _require(self, container_id: str) -> _InMemoryContainer:
+        """Fetch a live container or raise ``NoSuchContainerError``."""
         c = self.containers.get(container_id)
         if c is None or c.removed:
             from .errors import NoSuchContainerError

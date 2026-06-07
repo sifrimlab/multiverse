@@ -27,10 +27,16 @@ PathLike = Union[str, os.PathLike[str], Path]
 
 
 class StoreRoot:
-    """Holds a descriptor to the store root.
+    """Hold an ``O_DIRECTORY`` descriptor open on the store root.
 
-    Production callers create one ``StoreRoot`` at kernel boot and pass it
-    to every destructive helper. Tests construct one per-temp-store.
+    Production callers create one ``StoreRoot`` at kernel boot and pass it to
+    every destructive helper; tests construct one per-temp-store. Keeping the
+    descriptor open lets the saga's pre-rename re-check (R13) canonicalise
+    against a fixed directory handle rather than a path that an attacker could
+    swap out from under it.
+
+    Args:
+        root: Store root directory; created (with parents) if absent.
     """
 
     def __init__(self, root: PathLike) -> None:
@@ -45,13 +51,16 @@ class StoreRoot:
 
     @property
     def path(self) -> Path:
+        """Resolved absolute path of the artifact store root."""
         return self._root
 
     @property
     def fd(self) -> Optional[int]:
+        """Open ``O_DIRECTORY`` file descriptor, or ``None`` on non-POSIX."""
         return self._fd
 
     def close(self) -> None:
+        """Close the held directory descriptor, if open."""
         if self._fd is not None and self._fd >= 0:
             try:
                 os.close(self._fd)
@@ -67,11 +76,17 @@ class StoreRoot:
 
 @contextmanager
 def open_dir_fd(path: PathLike) -> Iterator[int]:
-    """``with open_dir_fd(path) as fd:`` — yields an O_DIRECTORY descriptor.
+    """Open ``path`` as an ``O_DIRECTORY`` descriptor for the duration of a block.
 
     Used by the saga's pre-rename re-check (R13 point 3) to canonicalise
     against the live filesystem at the exact moment of the destructive
-    operation.
+    operation, closing a TOCTOU window where the path could be swapped.
+
+    Args:
+        path: Directory to open.
+
+    Yields:
+        An open directory file descriptor, closed when the block exits.
     """
     flags = os.O_RDONLY
     if hasattr(os, "O_DIRECTORY"):
@@ -84,15 +99,26 @@ def open_dir_fd(path: PathLike) -> Iterator[int]:
 
 
 def is_same_filesystem(a: PathLike, b: PathLike) -> bool:
-    """True iff two paths' nearest existing ancestors live on the same FS.
+    """Report whether two paths reside on the same filesystem.
 
     The saga uses this to choose between a same-FS atomic ``os.rename`` and a
-    cross-FS staged copy.
+    cross-FS staged copy. Each path is resolved to its nearest existing
+    ancestor before comparing device ids, so a not-yet-created destination
+    still classifies correctly.
+
+    Args:
+        a: First path.
+        b: Second path.
+
+    Returns:
+        ``True`` iff both paths' nearest existing ancestors share an
+        ``st_dev``.
     """
     return _stat_dev(a) == _stat_dev(b)
 
 
 def _stat_dev(p: PathLike) -> int:
+    """Return the device id of ``p``'s nearest existing ancestor."""
     path = Path(p)
     while True:
         if path.exists():
@@ -104,10 +130,22 @@ def _stat_dev(p: PathLike) -> int:
 
 
 def safe_relative_path(base: PathLike, candidate: PathLike) -> Path:
-    """Return the canonical path of ``candidate``, refusing if it escapes
-    ``base`` after symlink resolution.
+    """Resolve ``candidate`` under ``base``, refusing any path escape.
 
-    Used during registration (S19) and inside the saga's recovery branch.
+    Used during registration (S19) and inside the saga's recovery branch to
+    reject path-traversal attempts. Resolution follows symlinks so a link
+    that points outside ``base`` is also caught.
+
+    Args:
+        base: Managed root the candidate must stay within.
+        candidate: Path to resolve; relative candidates are joined onto
+            ``base``.
+
+    Returns:
+        The canonical (resolved) absolute path of ``candidate``.
+
+    Raises:
+        ValueError: If the resolved path falls outside ``base``.
     """
     base_resolved = Path(base).resolve(strict=False)
     target = Path(candidate)
@@ -122,10 +160,18 @@ def safe_relative_path(base: PathLike, candidate: PathLike) -> Path:
 
 
 def assert_no_symlinks_in_tree(root: PathLike) -> None:
-    """Raise ``SymlinkPolicyError`` if any symlink exists under ``root``.
+    """Verify no symlink exists at or under ``root``.
 
     R13 forbids symlinks inside managed store paths because a swap between
-    validation and use is a real TOCTOU vector.
+    validation and use is a real TOCTOU vector. A missing ``root`` is a
+    no-op.
+
+    Args:
+        root: Directory tree to scan.
+
+    Raises:
+        SymlinkPolicyError: If ``root`` is itself a symlink or any descendant
+            is a symlink.
     """
     base = Path(root)
     if not base.exists():
@@ -151,16 +197,35 @@ def staged_copy_directory(
     staging_token: str,
     fsync_enabled: bool = True,
 ) -> dict:
-    """Copy ``src`` into a per-attempt staging dir, fsync, then atomic-rename
-    to ``dst``. Returns a per-file checksum map of the resulting tree.
+    """Copy a tree cross-filesystem via a staging dir, then atomic-rename onto ``dst``.
+
+    Populates a per-attempt staging directory, fsyncs every file and
+    directory, then publishes the whole tree with a single ``os.replace`` so
+    ``dst`` never exists half-written (S3 step 3, atomic workspace promotion).
 
     The staging dir name embeds ``staging_token`` (typically the saga's
     ``physical_attempt_id``) so two retries never collide and no cleanup is
-    needed on retry. Stale staging dirs from crashed attempts are reclaimed
-    by Tier-1 GC (R12), not by the hot path.
+    needed on retry. Stale staging dirs from crashed attempts are reclaimed by
+    Tier-1 GC (R12), not by the hot path — this package never deletes.
 
-    Refuses to overwrite an existing ``dst``: the saga is responsible for
-    quarantining or refusing before invoking this helper.
+    Args:
+        src: Source tree to copy.
+        dst: Final destination path; must not already exist.
+        staging_token: Per-attempt suffix making the staging dir name unique
+            across retries.
+        fsync_enabled: When ``True`` (default), fsync each file and directory
+            and the parent before returning, trading throughput for crash
+            durability.
+
+    Returns:
+        A map from each copied file's path (relative to ``src``) to its
+        sha256 digest, as computed on the staged copy.
+
+    Raises:
+        FileExistsError: If ``dst`` already exists, or if the staging dir for
+            this token is already present (journal/disk disagreement — a
+            diagnostic event, not a hot-path fix-up).
+        SymlinkPolicyError: If the source tree contains a symlink (R13).
     """
     src_path = Path(src)
     dst_path = Path(dst)

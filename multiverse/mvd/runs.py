@@ -17,7 +17,34 @@ from .state import PROJECTION_STATUSES, PrimaryState
 
 @dataclass
 class RunRecord:
-    """One row in the in-memory run registry."""
+    """One row in the in-memory run registry.
+
+    Attributes:
+        physical_attempt_id: Unique identity for this execution attempt.
+        logical_run_id: Groups retries/resumes of the same recipe; ``None``
+            until the executor resolves it from the job options.
+        manifest_path: Path to the manifest that produced this run, if known.
+        submitted_at_monotonic_ns: ``time.monotonic_ns()`` at submission; used
+            for deterministic list ordering within a single kernel process.
+        submitted_wall_iso: ISO-8601 wall-clock timestamp at submission,
+            recorded in the journal for human-readable provenance.
+        primary_state: Current position in the run-state machine; starts at
+            PENDING and advances only through :meth:`Kernel.transition`.
+        cancel_requested: Set to ``True`` when ``cancel_run`` is called; the
+            executor polls this flag between steps to honour the cancellation
+            saga.
+        failure_reason: Human-readable reason for terminal FAILED,
+            PROMOTION_FAILED, or EVALUATION_FAILED states; ``None`` otherwise.
+        artifact_dir: Absolute path to the promoted artifact bundle in the
+            artifact store; populated after ARTIFACT_SUCCESS.
+        workspace_dir: Absolute path to the in-flight workspace directory
+            under ``store/workspaces/``; populated at container launch.
+        options: Executor-specific job options carried with the run (image,
+            dataset path, resource request, etc.).
+        projections: Per-plugin sync status (e.g.
+            ``{"mlflow": "TRACKING_PENDING"}``); a projection is never the
+            source of run truth — the journal is authoritative.
+    """
 
     physical_attempt_id: str
     logical_run_id: Optional[str]
@@ -38,6 +65,7 @@ class RunRecord:
     )
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize the record to the dict shape the API returns to clients."""
         return {
             "physical_attempt_id": self.physical_attempt_id,
             "logical_run_id": self.logical_run_id,
@@ -66,7 +94,17 @@ class RunRegistry:
         self._fire(record)
 
     def get(self, physical_attempt_id: str) -> RunRecord:
-        """Return the run record; raises ``KeyError`` if unknown."""
+        """Return the run record for an attempt.
+
+        Args:
+            physical_attempt_id: The attempt to look up.
+
+        Returns:
+            The matching :class:`RunRecord`.
+
+        Raises:
+            KeyError: If no run with that id is registered.
+        """
         try:
             return self.records[physical_attempt_id]
         except KeyError as exc:
@@ -82,7 +120,15 @@ class RunRegistry:
         state: Optional[PrimaryState] = None,
         logical_run_id: Optional[str] = None,
     ) -> List[RunRecord]:
-        """List runs, optionally filtered by state or logical run id."""
+        """List runs, optionally filtered, ordered by submit time.
+
+        Args:
+            state: If set, keep only runs in this primary state.
+            logical_run_id: If set, keep only attempts of this logical run.
+
+        Returns:
+            Matching records sorted by monotonic submit time.
+        """
         out = list(self.records.values())
         if state is not None:
             out = [r for r in out if r.primary_state is state]
@@ -96,6 +142,7 @@ class RunRegistry:
         self._listeners.append(listener)
 
     def _fire(self, record: RunRecord) -> None:
+        """Invoke all registered listeners; swallow individual listener errors."""
         for listener in self._listeners:
             try:
                 listener(record)
@@ -111,7 +158,17 @@ def new_run_record(
     logical_run_id: Optional[str] = None,
     options: Optional[Dict[str, Any]] = None,
 ) -> RunRecord:
-    """Create a new run record with submit-time timestamps."""
+    """Create a new run record stamped with submit-time timestamps.
+
+    Args:
+        physical_attempt_id: Identity of this execution attempt.
+        manifest_path: Path to the manifest that produced the run, if known.
+        logical_run_id: Logical run grouping retries/resumes of one recipe.
+        options: Executor-specific job options carried with the run.
+
+    Returns:
+        A :class:`RunRecord` in the PENDING state.
+    """
     return RunRecord(
         physical_attempt_id=physical_attempt_id,
         logical_run_id=logical_run_id,
@@ -123,6 +180,16 @@ def new_run_record(
 
 
 def assert_projection_status_valid(plugin: str, status: str) -> None:
+    """Validate a projection status name against its plugin's allowed set.
+
+    Args:
+        plugin: Projection plugin name (e.g. ``"mlflow"``, ``"optuna"``).
+        status: Candidate status name to check.
+
+    Raises:
+        ValueError: If the plugin is unknown or the status is not allowed
+            for that plugin.
+    """
     allowed = PROJECTION_STATUSES.get(plugin)
     if allowed is None:
         raise ValueError(f"unknown projection plugin {plugin!r}")

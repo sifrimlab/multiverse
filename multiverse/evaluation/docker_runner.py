@@ -57,9 +57,18 @@ class EvaluationPlan:
 
 @dataclass(frozen=True)
 class Mount:
+    """A single ``docker run -v`` bind mount.
+
+    Attributes:
+        host_path: Absolute path on the host to expose.
+        container_path: Path inside the container; kept equal to ``host_path``
+            so the absolute paths recorded in the eval config resolve unchanged.
+        mode: ``"ro"`` (read-only) or ``"rw"`` (read-write).
+    """
+
     host_path: str
     container_path: str
-    mode: str  # "ro" or "rw"
+    mode: str
 
 
 def resolve_image(image: Optional[str] = None) -> str:

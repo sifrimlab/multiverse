@@ -38,6 +38,17 @@ real engine to be usable. ``sinfo`` is informational only."""
 
 @dataclass(frozen=True)
 class EngineCheck:
+    """Result of probing a single container engine for usability.
+
+    Attributes:
+        name: Engine identifier (``docker`` / ``apptainer`` / ``slurm``).
+        available: Whether the engine's binary was found on PATH (and, in
+            deep mode, invoked successfully).
+        binary: The first candidate binary found on PATH, or ``None``.
+        version: First line of ``<binary> --version`` output (deep mode only).
+        note: Human-readable reason the engine is unavailable, or a caveat.
+    """
+
     name: str
     available: bool
     binary: Optional[str]
@@ -46,6 +57,20 @@ class EngineCheck:
 
 
 def check_engine(name: str, *, deep: bool = False) -> EngineCheck:
+    """Detect whether one container engine is usable on this host.
+
+    Args:
+        name: Engine to probe; resolved against the candidate-binary table
+            (``apptainer`` also accepts the ``singularity`` alias).
+        deep: When True, also invoke ``<binary> --version`` to confirm the
+            binary is runnable, not merely present on PATH. A non-zero exit
+            is recorded as a note; an OSError/timeout marks the engine
+            unavailable.
+
+    Returns:
+        An :class:`EngineCheck` describing availability and (in deep mode)
+        the discovered version.
+    """
     candidates = _CANDIDATE_BINS.get(name, [name])
     found: Optional[str] = None
     for c in candidates:
@@ -83,11 +108,20 @@ def check_engine(name: str, *, deep: bool = False) -> EngineCheck:
 
 
 def probe_container_engines(*, deep: bool = False) -> ProbeReport:
-    """Aggregate report for the doctor section.
+    """Aggregate per-engine availability into one doctor probe report.
 
     The probe always *passes* (it's diagnostic, not gating). The detail
     string carries the per-engine availability so callers can decide
     what to gate on.
+
+    Args:
+        deep: Forwarded to :func:`check_engine`; when True each present
+            binary is invoked with ``--version``.
+
+    Returns:
+        A :class:`ProbeReport` named ``engines.container_backends`` whose
+        ``detail`` summarises which engines are available and, for Slurm,
+        any missing companion binaries.
     """
     checks = [check_engine(name, deep=deep) for name in _CANDIDATE_BINS]
     available = [c.name for c in checks if c.available]

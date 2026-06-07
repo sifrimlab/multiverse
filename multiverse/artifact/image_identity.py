@@ -13,6 +13,13 @@ from typing import Any, Dict, Optional
 
 
 class ImageIdentityKind(str, Enum):
+    """The four image-identity variants admissible under R10.
+
+    Ordered from most to least reproducible: a registry digest or
+    build-context hash pins the image content exactly; an unverified local
+    tag pins nothing and is refused under ``--strict``.
+    """
+
     REGISTRY_DIGEST = "registry_digest"
     LOCAL_IMAGE_ID = "local_image_id"
     BUILD_CONTEXT_HASH = "build_context_hash"
@@ -64,6 +71,7 @@ class ImageIdentity:
     check (the built_from invariant covers that)."""
 
     def __post_init__(self) -> None:
+        """Coerce ``kind`` from a raw string and validate that ``value`` is set."""
         if not isinstance(self.kind, ImageIdentityKind):
             object.__setattr__(self, "kind", ImageIdentityKind(self.kind))
         if not self.value or not isinstance(self.value, str):
@@ -85,6 +93,7 @@ class ImageIdentity:
         return self.kind in _STRICT_KINDS
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict, omitting unset optional fields."""
         out: Dict[str, Any] = {"kind": self.kind.value, "value": self.value}
         if self.note is not None:
             out["note"] = self.note
@@ -100,6 +109,15 @@ class ImageIdentity:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ImageIdentity":
+        """Reconstruct an ``ImageIdentity`` from its ``to_dict`` form.
+
+        Args:
+            data: A dict previously produced by :meth:`to_dict`, typically
+                deserialized from ``artifact_manifest.json``.
+
+        Returns:
+            The corresponding ``ImageIdentity`` instance.
+        """
         return cls(
             kind=ImageIdentityKind(data["kind"]),
             value=str(data["value"]),
@@ -114,10 +132,12 @@ class ImageIdentity:
 
     @classmethod
     def registry_digest(cls, digest: str) -> "ImageIdentity":
+        """Build a strict-acceptable identity from a registry ``sha256:`` digest."""
         return cls(kind=ImageIdentityKind.REGISTRY_DIGEST, value=digest)
 
     @classmethod
     def local_image_id(cls, image_id: str) -> "ImageIdentity":
+        """Build an identity from a local docker image ID with no registry provenance."""
         return cls(
             kind=ImageIdentityKind.LOCAL_IMAGE_ID,
             value=image_id,
@@ -131,6 +151,7 @@ class ImageIdentity:
         dockerfile_path: str,
         context_root: str,
     ) -> "ImageIdentity":
+        """Build a strict-acceptable identity from a deterministic build-context hash."""
         return cls(
             kind=ImageIdentityKind.BUILD_CONTEXT_HASH,
             value=context_hash,
@@ -140,6 +161,7 @@ class ImageIdentity:
 
     @classmethod
     def unverified_local(cls, tag_or_id: str) -> "ImageIdentity":
+        """Build a non-pinnable identity from a bare tag; refused under ``--strict``."""
         return cls(
             kind=ImageIdentityKind.UNVERIFIED_LOCAL,
             value=tag_or_id,
@@ -184,8 +206,20 @@ def verify_runtime_identity_matches_source(
     * ``runtime.built_from == source.value`` — the SIF must point back
       to the source OCI digest that the manifest claims as truth.
 
-    Raises ``ValueError`` on violation; callers (PromotionSaga, doctor)
-    surface this as a fail-the-run condition.
+    The dual-digest pair (OCI source digest + executed SIF sha256) ties the
+    promoted result to both registry provenance and the binary that actually
+    ran. Callers (promotion saga, doctor) treat a violation as fail-the-run.
+
+    Args:
+        source: The manifest's source-of-truth ``image_identity`` (the OCI
+            digest the bundle claims to descend from).
+        runtime: The identity of the image that actually executed. ``None``
+            for non-Apptainer backends, in which case the check is a no-op.
+
+    Raises:
+        ValueError: If ``runtime`` is not a ``SIF_DIGEST``, lacks
+            ``built_from``, or its ``built_from`` does not equal
+            ``source.value``.
     """
     if runtime is None:
         return

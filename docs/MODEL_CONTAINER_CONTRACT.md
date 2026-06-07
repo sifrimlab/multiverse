@@ -135,6 +135,7 @@ WORKDIR /app
 COPY store/models/<slug>/container/environment.yml /tmp/environment.yml
 RUN micromamba create -y -f /tmp/environment.yml && micromamba clean -afy
 ENV PATH=/opt/conda/envs/<env-name>/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/conda/envs/<env-name>/lib:$LD_LIBRARY_PATH
 
 COPY pyproject.toml README.md /tmp/multiverse/
 COPY multiverse/ /tmp/multiverse/multiverse/

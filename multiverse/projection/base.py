@@ -9,6 +9,12 @@ from typing import (Any, Dict, List, Mapping, Optional, Protocol,
 
 
 class SyncOutcome(str, Enum):
+    """Terminal status of a projection sync, reported back to the kernel.
+
+    These never gate ``ARTIFACT_SUCCESS`` (R6): a failed sync is recorded,
+    not propagated as a run failure.
+    """
+
     SYNCED = "TRACKING_SYNCED"
     SYNC_FAILED = "TRACKING_SYNC_FAILED"
     NOT_CONFIGURED = "TRACKING_NOT_CONFIGURED"
@@ -17,6 +23,17 @@ class SyncOutcome(str, Enum):
 
 @dataclass
 class SyncResult:
+    """Outcome of syncing one artifact bundle into MLflow.
+
+    Attributes:
+        physical_attempt_id: Attempt whose bundle was synced.
+        outcome: Terminal sync status.
+        target_run_id: MLflow run id the data landed in, when known.
+        failure_reason: Human-readable cause when ``outcome`` is a failure.
+        metrics_logged: Count of scalar metrics pushed to the target.
+        artifacts_logged: Count of artifact files pushed to the target.
+    """
+
     physical_attempt_id: str
     outcome: SyncOutcome
     target_run_id: Optional[str] = None

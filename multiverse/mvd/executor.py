@@ -22,15 +22,25 @@ from .state import PrimaryState
 
 @runtime_checkable
 class RunExecutor(Protocol):
+    """Backend that runs a model and drives its run record to a terminal state.
+
+    Attributes:
+        name: Short executor identity reported by ``Kernel.health``.
+    """
+
     name: str
 
     async def execute(self, *, record: RunRecord, kernel: "Kernel") -> None:  # type: ignore[name-defined]
         """Drive ``record`` from PENDING to a terminal state.
 
         The executor must use ``kernel.transition()`` for every state
-        change so the journal stays authoritative. The executor must check
+        change so the journal stays authoritative. It must also check
         ``record.cancel_requested`` between steps and honour it by
         transitioning through CANCEL_REQUESTED → CANCELLED.
+
+        Args:
+            record: The run record to execute and mutate via the kernel.
+            kernel: The owning kernel, used for journaled state transitions.
         """
         ...
 
@@ -45,6 +55,12 @@ class NullRunExecutor:
     name = "null"
 
     async def execute(self, *, record: RunRecord, kernel) -> None:
+        """Transition ``record`` straight to FAILED.
+
+        Args:
+            record: The run record to fail.
+            kernel: The owning kernel used for the journaled transition.
+        """
         await kernel.transition(
             record.physical_attempt_id,
             to_state=PrimaryState.FAILED,
@@ -53,23 +69,42 @@ class NullRunExecutor:
 
 
 class SyntheticRunExecutor:
-    """Executor that drives a run deterministically through the state
-    machine. Used by tests and by the in-memory simple-mode pipeline.
+    """Executor that walks a run deterministically through the state machine.
 
-    ``outcome`` controls the terminal state:
-        * ``"success"`` → PENDING → ADMITTED → RUNNING → TRAINING_SUCCEEDED
-                          → EVALUATING → PROMOTING → ARTIFACT_SUCCESS
-        * ``"eval_fail"`` → ... → EVALUATING → EVALUATION_FAILED → RECOVERY_PENDING
-        * ``"container_fail"`` → ... → RUNNING → FAILED
+    Used by tests and by the in-memory simple-mode pipeline. ``outcome``
+    selects which terminal path is taken:
+
+    * ``"success"`` → PENDING → ADMITTED → RUNNING → TRAINING_SUCCEEDED
+                      → EVALUATING → PROMOTING → ARTIFACT_SUCCESS
+    * ``"eval_fail"`` → ... → EVALUATING → EVALUATION_FAILED → RECOVERY_PENDING
+    * ``"container_fail"`` → ... → RUNNING → FAILED
     """
 
     def __init__(self, outcome: str = "success") -> None:
+        """Construct a synthetic executor for one of the supported paths.
+
+        Args:
+            outcome: One of ``"success"``, ``"eval_fail"``, or
+                ``"container_fail"``; selects the terminal path.
+
+        Raises:
+            ValueError: If ``outcome`` is not a recognized path.
+        """
         if outcome not in {"success", "eval_fail", "container_fail"}:
             raise ValueError(outcome)
         self.outcome = outcome
         self.name = f"synthetic-{outcome}"
 
     async def execute(self, *, record: RunRecord, kernel) -> None:
+        """Drive ``record`` through the path selected by ``outcome``.
+
+        Honours ``record.cancel_requested`` between steps, transitioning to
+        CANCELLED if a cancel is observed.
+
+        Args:
+            record: The run record to drive through the state machine.
+            kernel: The owning kernel used for journaled transitions.
+        """
         async def _check_cancel() -> bool:
             if record.cancel_requested:
                 await kernel.transition(

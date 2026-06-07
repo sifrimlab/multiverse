@@ -1,4 +1,13 @@
-"""Streamlit GUI for datasets, models, run submission, and results."""
+"""Streamlit GUI entry point for the multiverse benchmarking platform.
+
+Renders the tabs that drive the platform end to end: the asset registry
+(dataset/model catalog), Configure (build a run manifest from dataset x model
+pairs on the compatibility matrix), Run (resource ledger, launch, and live mvd
+kernel monitoring), Results (artifact bundle drill-down), and Analysis (MLflow
+projection). The GUI never mutates run state directly — launches and queries go
+through the in-process mvd kernel controller, and the SQLite index / MLflow are
+read-only projections.
+"""
 
 import html
 import json
@@ -41,6 +50,15 @@ from multiverse.registry_db import (get_all_datasets, get_all_models,
 
 @st.cache_data
 def fetch_registry_data():
+    """Load the active dataset/model catalog from the asset registry.
+
+    Cached across reruns; callers invalidate with ``fetch_registry_data.clear()``
+    after a registration or removal. Datasets marked ``REMOVED`` are filtered out
+    so they no longer appear in new job plans, while historical runs keep them.
+
+    Returns:
+        A ``(datasets, models)`` pair of row lists drawn from the asset registry.
+    """
     init_db()
     datasets = [d for d in get_all_datasets() if d.get("status") != "REMOVED"]
     models = get_all_models()
@@ -53,12 +71,34 @@ def fetch_registry_data():
 
 
 def slugify_experiment_name(raw_name: str) -> str:
+    """Normalize a free-text experiment name into a filesystem/MLflow-safe slug.
+
+    Args:
+        raw_name: User-entered experiment name from the Configure tab.
+
+    Returns:
+        The lowercased, hyphen-collapsed slug used for manifest generation and
+        as the MLflow experiment key.
+
+    Raises:
+        ValueError: If the name has no alphanumeric content to slugify.
+    """
     slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw_name.strip()).strip("-").lower()
     if not slug:
         raise ValueError(
             "Experiment Name must contain at least one alphanumeric character."
         )
     return slug
+
+
+def _is_sweep_spec(value) -> bool:
+    """True if a model-param value is an Optuna sweep spec, not a scalar.
+
+    Sweep specs are dicts carrying a distribution ``type`` (``int``, ``float``,
+    ``categorical``, ``loguniform``) as produced by the hyperparameter form's
+    Sweep toggle. Scalars (and plain mapping params) are routed unchanged.
+    """
+    return isinstance(value, dict) and "type" in value
 
 
 def build_run_manifest(
@@ -72,7 +112,36 @@ def build_run_manifest(
     pair_mem_limits: dict[tuple[str, str], str] | None = None,
     pair_gpu: dict[tuple[str, str], bool] | None = None,
     pair_preprocessing: dict[tuple[str, str], dict] | None = None,
+    pair_sweep_config: dict[tuple[str, str], dict] | None = None,
 ) -> dict:
+    """Assemble the run manifest dict the kernel consumes from GUI selections.
+
+    Translates the Configure tab's per-pair widget state into the ``globals`` +
+    ``jobs`` manifest shape, scoping params/overrides to the pairs the user
+    actually selected. Per-job overrides are emitted only when explicitly set,
+    so omitted fields fall back to each model's ``model.yaml`` defaults.
+
+    Args:
+        experiment_name: Free-text experiment name (slugified into globals).
+        random_seed: Seed recorded in globals for reproducibility.
+        run_mode: Either ``"Use User Params"`` or ``"Run Gridsearch"``; sets the
+            mutually exclusive ``run_user_params`` / ``run_gridsearch`` globals.
+        planned_jobs: Selected dataset x model pairs (rows from the job editor).
+        dataset_name_to_slug: Maps a dataset display name to its dataset slug.
+        pair_params: Per-pair hyperparameter dicts keyed by ``(dataset, model)``.
+        pair_mem_limits: Optional per-pair Docker memory limits (issue #28).
+        pair_gpu: Optional per-pair GPU opt-in flags (issue #30).
+        pair_preprocessing: Optional per-pair preprocessing overrides (issue #22).
+        pair_sweep_config: Optional per-pair Optuna study settings (``n_trials``,
+            ``optimize_metric``, ``direction``, ``study_storage``), required for
+            any pair whose ``model_params`` contain at least one sweep spec.
+
+    Returns:
+        A manifest dict with ``globals`` and one ``jobs`` entry per planned pair.
+        Jobs with any swept parameter are emitted in sweep shape (``mode:
+        sweep`` + ``search_space``) so the runner routes them to ``run_sweep``
+        instead of passing sweep dicts to containers as scalar values.
+    """
     run_user_params = run_mode == "Use User Params"
     run_gridsearch = run_mode == "Run Gridsearch"
     selected_pairs = {(job["Dataset"], job["Model"]) for job in planned_jobs}
@@ -93,14 +162,33 @@ def build_run_manifest(
     pair_mem_limits = pair_mem_limits or {}
     pair_gpu = pair_gpu or {}
     pair_preprocessing = pair_preprocessing or {}
+    pair_sweep_config = pair_sweep_config or {}
     for job in planned_jobs:
         ds_name = job["Dataset"]
         mod_name = job["Model"]
+        params = scoped_pair_params.get((ds_name, mod_name), {}) or {}
+        sweep_params = {k: v for k, v in params.items() if _is_sweep_spec(v)}
+        fixed_params = {k: v for k, v in params.items() if not _is_sweep_spec(v)}
         job_entry = {
             "dataset_slug": dataset_name_to_slug[ds_name],
             "model_name": mod_name,
-            "model_params": scoped_pair_params.get((ds_name, mod_name), {}) or {},
+            # Scalar overrides only; sweep specs move to ``search_space`` below.
+            "model_params": fixed_params,
         }
+        if sweep_params:
+            # At least one parameter is swept: emit the sweep job shape the
+            # runner routes to Optuna (cli.py: mode == "sweep" -> run_sweep).
+            sweep_cfg = pair_sweep_config.get((ds_name, mod_name), {}) or {}
+            job_entry["mode"] = "sweep"
+            job_entry["search_space"] = sweep_params
+            job_entry["n_trials"] = int(sweep_cfg.get("n_trials", 20))
+            job_entry["optimize_metric"] = (
+                sweep_cfg.get("optimize_metric") or "silhouette_score"
+            )
+            job_entry["direction"] = sweep_cfg.get("direction") or "maximize"
+            job_entry["study_storage"] = (
+                sweep_cfg.get("study_storage") or "sqlite:///optuna.db"
+            )
         mem_limit = pair_mem_limits.get((ds_name, mod_name))
         if mem_limit:
             job_entry["mem_limit"] = mem_limit
@@ -118,6 +206,13 @@ def build_run_manifest(
 def render_manifest_errors(
     errors: list[dict], *, title: str = "Manifest validation failed"
 ) -> None:
+    """Render manifest validation errors as expanders plus a summary table.
+
+    Args:
+        errors: Structured validation errors, each with ``code``/``field``/
+            ``message`` keys, as produced by manifest parsing.
+        title: Headline shown above the error breakdown.
+    """
     st.error(title)
     if not errors:
         return
@@ -134,6 +229,18 @@ def render_manifest_errors(
 def paginate(
     total_count_fn, page_fn, page_size: int = 50, key: str = "page"
 ) -> list[dict]:
+    """Render a page-number widget and fetch the corresponding page of rows.
+
+    Args:
+        total_count_fn: Zero-arg callable returning the total row count.
+        page_fn: Callable taking ``limit`` and ``offset`` keyword args and
+            returning the rows for that page.
+        page_size: Rows per page.
+        key: Streamlit widget key, unique per paginated table on the page.
+
+    Returns:
+        The rows for the page the user currently has selected.
+    """
     total = int(total_count_fn())
     n_pages = max(1, (total + page_size - 1) // page_size)
     page = st.number_input("Page", min_value=1, max_value=n_pages, value=1, key=key)
@@ -261,6 +368,11 @@ def _load_model_resources(manifest_path: str | None) -> dict:
 
 
 def _load_hyperparameter_schema(schema_path: str | None) -> dict | None:
+    """Load a model's hyperparameter JSON schema, or None if unavailable.
+
+    Returns None (rather than raising) for a missing/unreadable/non-object
+    schema so the Configure tab can fall back to a raw-JSON params text area.
+    """
     if not schema_path:
         return None
     path = Path(schema_path)
@@ -280,6 +392,18 @@ def _load_hyperparameter_schema(schema_path: str | None) -> dict | None:
 
 
 def _stream_subprocess(cmd: list[str], status_label: str) -> bool:
+    """Run a subprocess, streaming its merged stdout/stderr into an st.status box.
+
+    Used for CLI side-effects launched from the GUI (registration, image/SIF
+    builds, evaluation runs) so the user sees live output.
+
+    Args:
+        cmd: Argv list passed to ``subprocess.Popen``.
+        status_label: Label for the status widget; suffixed on completion.
+
+    Returns:
+        True if the process exited 0, False otherwise.
+    """
     with st.status(status_label, expanded=True) as status:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
@@ -386,6 +510,14 @@ def _render_registry_welcome() -> None:
 
 
 def _render_registry_tab() -> None:
+    """Render the Asset Registry tab: browse, register, and remove assets.
+
+    Shows the current dataset/model catalog, the first-run welcome panel when
+    empty, and the registration/removal forms. Registration shells out to the
+    ``register-dataset`` / ``register-model`` CLI verbs (the authoritative
+    writers to the asset registry); removals are soft (mark removed/inactive so
+    historical runs keep their references).
+    """
     st.header("Asset Registry")
 
     if st.session_state.get("registry_dirty"):
@@ -811,6 +943,18 @@ def _render_registry_tab() -> None:
 def _parse_manifest_job_selection(
     loaded: dict,
 ) -> tuple[list[dict], dict[tuple[str, str], dict]]:
+    """Extract job selections and per-pair params from a loaded manifest.
+
+    Tolerant of malformed input: non-dict jobs and entries missing a dataset
+    slug or model name are skipped rather than raising.
+
+    Args:
+        loaded: Parsed manifest dict (as read from a run manifest YAML).
+
+    Returns:
+        A ``(staged_jobs, staged_params)`` pair — the job list keyed for
+        re-selection in the editor, and params keyed by ``(slug, model_name)``.
+    """
     jobs = loaded.get("jobs", []) if isinstance(loaded, dict) else []
     staged_jobs: list[dict] = []
     staged_params: dict[tuple[str, str], dict] = {}
@@ -831,6 +975,16 @@ def _parse_manifest_job_selection(
 
 
 def _stage_loaded_manifest(loaded: dict, load_path: str) -> None:
+    """Stage a loaded manifest's settings into session state for the next rerun.
+
+    Writes ``_pending_*`` keys (globals, jobs, params, save path) that
+    ``_apply_pending_shared_config`` / ``_apply_pending_manifest_jobs`` consume
+    on the following run, so loading happens outside the widget render pass.
+
+    Args:
+        loaded: Parsed manifest dict.
+        load_path: Path the manifest was read from, reused as the save path.
+    """
     globals_cfg = loaded.get("globals", {}) if isinstance(loaded, dict) else {}
     if "experiment_name" in globals_cfg:
         st.session_state["_pending_shared_experiment_name"] = str(
@@ -859,6 +1013,21 @@ def _apply_pending_manifest_jobs(
     datasets: list[dict],
     models: list[dict],
 ) -> dict[tuple[str, str], dict]:
+    """Resolve staged manifest jobs against the live registry and select them.
+
+    Maps each staged job's dataset slug and model name (also accepting model
+    slugs / case-insensitive names) back to current registry display names,
+    drops jobs whose dataset or model is no longer registered, and pre-selects
+    the survivors in the Configure tab's multiselects.
+
+    Args:
+        datasets: Current dataset rows from the asset registry.
+        models: Current model rows from the asset registry.
+
+    Returns:
+        Per-pair params keyed by ``(dataset_name, model_name)`` for the jobs
+        that resolved, used to pre-fill the hyperparameter forms.
+    """
     staged_jobs = st.session_state.pop("_pending_manifest_jobs", None)
     staged_params = st.session_state.pop("_pending_manifest_pair_params", {})
     if not staged_jobs:
@@ -914,6 +1083,16 @@ def _apply_pending_manifest_jobs(
 
 
 def _prefill_hyperparameter_widget_state(job_key: str, params: dict) -> None:
+    """Seed hyperparameter-form widget state from a loaded manifest's params.
+
+    Distinguishes sweep specs (dicts with an int/float/categorical ``type``,
+    which flip the per-param sweep toggle and populate range/choice widgets)
+    from plain fixed values, so a reloaded manifest reproduces the same form.
+
+    Args:
+        job_key: ``"<dataset>::<model>"`` prefix namespacing the widget keys.
+        params: Per-job ``model_params`` from the manifest.
+    """
     for param_name, value in params.items():
         if isinstance(value, dict) and value.get("type") in {
             "int",
@@ -945,7 +1124,117 @@ def _prefill_hyperparameter_widget_state(job_key: str, params: dict) -> None:
         st.session_state[f"{job_key}::fixed::{param_name}"] = value
 
 
+_SEED_PARAM_NAMES = frozenset({"random_state", "seed", "umap_random_state"})
+
+
+def _is_seed_param(param_name: str) -> bool:
+    """True if a hyperparameter name looks like a seed / RNG-state field.
+
+    Matches the well-known names plus the ``_seed`` / ``_state`` suffix
+    convention used across model hyperparameter schemas.
+    """
+    name = param_name.lower()
+    return (
+        name in _SEED_PARAM_NAMES
+        or name.endswith("_seed")
+        or name.endswith("_state")
+    )
+
+
+def _prefill_seed_params(job_key: str, schema: dict, random_seed: int) -> None:
+    """Pre-fill seed-like hyperparameter fields with the global random seed.
+
+    Bridges the gap (Bug 1) between the Configure tab's Random Seed field
+    (``globals.random_seed``) and per-model seed hyperparameters such as
+    ``random_state`` / ``umap_random_state``, which are otherwise independent
+    widgets that keep their schema defaults.
+
+    Uses ``setdefault`` so a value the user typed or loaded from a manifest
+    always wins — only empty/default seed fields inherit ``random_seed``. The
+    ``::fixed::`` key shape matches what ``_render_fixed_widget`` reads.
+    """
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return
+    for param_name in properties:
+        if _is_seed_param(param_name):
+            st.session_state.setdefault(
+                f"{job_key}::fixed::{param_name}", int(random_seed)
+            )
+
+
+def _render_sweep_config(
+    job_key: str,
+    ds_name: str,
+    mod_name: str,
+    pair_sweep_config: dict[tuple[str, str], dict],
+) -> None:
+    """Render per-job Optuna study settings when a pair has any swept param.
+
+    Bug 2: a job with at least one sweep spec needs ``n_trials``,
+    ``optimize_metric``, ``direction``, and ``study_storage`` to be routed to
+    ``run_sweep``. These are collected here and stored in ``pair_sweep_config``
+    keyed by ``(dataset, model)``, mirroring how ``pair_params`` is scoped.
+
+    Reads the live form values out of session state (``::sweep::`` keys), so
+    the section only appears once the user has actually toggled a Sweep on.
+    """
+    # The toggle keys are the reliable signal for "is anything swept for this
+    # job"; scan them directly rather than inferring from sub-widget keys.
+    has_sweep = any(
+        k.startswith(f"{job_key}::sweep_toggle::") and bool(v)
+        for k, v in st.session_state.items()
+    )
+    if not has_sweep:
+        return
+
+    with st.expander("Sweep configuration (Optuna)", expanded=True):
+        st.caption(
+            "At least one parameter is swept for this job. These settings drive "
+            "the Optuna study."
+        )
+        n_trials = st.number_input(
+            "n_trials",
+            min_value=1,
+            value=int(st.session_state.get(f"sweep_ntrials::{job_key}", 20)),
+            step=1,
+            key=f"sweep_ntrials::{job_key}",
+            help="Number of Optuna trials to run for this job.",
+        )
+        optimize_metric = st.text_input(
+            "optimize_metric",
+            value=st.session_state.get(f"sweep_metric::{job_key}", "silhouette_score"),
+            key=f"sweep_metric::{job_key}",
+            help="Metric key (from metrics.json) the study optimizes.",
+        )
+        direction = st.selectbox(
+            "direction",
+            options=["maximize", "minimize"],
+            index=0,
+            key=f"sweep_dir::{job_key}",
+        )
+        study_storage = st.text_input(
+            "study_storage",
+            value=st.session_state.get(
+                f"sweep_storage::{job_key}", "sqlite:///optuna.db"
+            ),
+            key=f"sweep_storage::{job_key}",
+            help="Optuna storage URI for the study DB.",
+        )
+        pair_sweep_config[(ds_name, mod_name)] = {
+            "n_trials": int(n_trials),
+            "optimize_metric": (optimize_metric or "").strip() or "silhouette_score",
+            "direction": direction,
+            "study_storage": (study_storage or "").strip() or "sqlite:///optuna.db",
+        }
+
+
 def _consume_loaded_pair_params(ds_name: str, mod_name: str) -> dict:
+    """Pop one pair's loaded manifest params, clearing the cache when drained.
+
+    One-shot consumption ensures loaded params prefill a form exactly once and
+    don't override later edits on subsequent reruns.
+    """
     loaded = st.session_state.get("_loaded_manifest_pair_params", {})
     if not isinstance(loaded, dict):
         return {}
@@ -956,6 +1245,12 @@ def _consume_loaded_pair_params(ds_name: str, mod_name: str) -> dict:
 
 
 def _apply_pending_shared_config() -> None:
+    """Promote staged ``_pending_shared_*`` settings into the live widget keys.
+
+    Run at the top of the Configure tab so a manifest loaded on the previous
+    rerun seeds the experiment name, seed, run mode, and manifest path widgets
+    before they render.
+    """
     pending_map = {
         "_pending_shared_experiment_name": "shared_experiment_name",
         "_pending_shared_seed": "shared_seed",
@@ -974,6 +1269,7 @@ def _apply_pending_shared_config() -> None:
 
 
 def _render_load_manifest_panel() -> None:
+    """Render the 'Load Existing Manifest' panel and stage it on submit."""
     st.subheader("Load Existing Manifest")
     st.info(
         "Import global settings from an existing run manifest before selecting jobs."
@@ -993,12 +1289,19 @@ def _render_load_manifest_panel() -> None:
 
 
 def _render_manifest_load_notice() -> None:
+    """Show and clear the one-shot success notice left by a manifest load."""
     notice = st.session_state.pop("_manifest_load_notice", None)
     if notice:
         st.success(str(notice))
 
 
 def _render_run_configuration() -> tuple[str, int, str, str]:
+    """Render the shared run-configuration widgets and return their values.
+
+    Returns:
+        A ``(experiment_name, random_seed, run_mode, manifest_path)`` tuple
+        reflecting the current widget state.
+    """
     st.subheader("Run Configuration")
     experiment_name_input = st.text_input(
         "Experiment Name",
@@ -1041,6 +1344,13 @@ def _render_run_configuration() -> tuple[str, int, str, str]:
 
 
 def _render_configure_tab() -> None:
+    """Render the Configure tab: plan dataset x model jobs into a run manifest.
+
+    Builds the compatibility matrix for the selected datasets/models, lets the
+    user check pairs into a job plan (auto-deselecting incompatible ones),
+    collects per-job hyperparameter and resource/preprocessing overrides, then
+    writes the run manifest the Run tab launches.
+    """
     _apply_pending_shared_config()
 
     st.header("Configure")
@@ -1200,6 +1510,7 @@ def _render_configure_tab() -> None:
     pair_mem_limits: dict[tuple[str, str], str] = {}
     pair_gpu: dict[tuple[str, str], bool] = {}
     pair_preprocessing: dict[tuple[str, str], dict] = {}
+    pair_sweep_config: dict[tuple[str, str], dict] = {}
 
     for job in planned_jobs:
         ds_name = job["Dataset"]
@@ -1289,9 +1600,13 @@ def _render_configure_tab() -> None:
             if loaded_params:
                 _prefill_hyperparameter_widget_state(job_key, loaded_params)
             if schema and isinstance(schema.get("properties"), dict):
+                # Bug 1: inherit the global random seed into seed-like fields
+                # (non-destructively) before the form renders.
+                _prefill_seed_params(job_key, schema, random_seed)
                 pair_params[(ds_name, mod_name)] = render_hyperparameters_form(
                     schema, job_key
                 )
+                _render_sweep_config(job_key, ds_name, mod_name, pair_sweep_config)
             else:
                 st.info(
                     f"No hyperparameter schema found at `{expected_path}`. "
@@ -1328,6 +1643,7 @@ def _render_configure_tab() -> None:
     st.session_state["pair_mem_limits"] = pair_mem_limits
     st.session_state["pair_gpu"] = pair_gpu
     st.session_state["pair_preprocessing"] = pair_preprocessing
+    st.session_state["pair_sweep_config"] = pair_sweep_config
 
     if st.button("Generate & Save Manifest", key="btn_gen_manifest"):
         try:
@@ -1341,6 +1657,7 @@ def _render_configure_tab() -> None:
                 pair_mem_limits=pair_mem_limits,
                 pair_gpu=pair_gpu,
                 pair_preprocessing=pair_preprocessing,
+                pair_sweep_config=pair_sweep_config,
             )
         except (ValueError, KeyError) as exc:
             st.error(str(exc))
@@ -1385,6 +1702,16 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mGKHF]")
 # API calls across concurrent sessions within each 5-second window.
 @st.fragment(run_every=timedelta(seconds=5))
 def _live_metrics_panel(experiment_name: str, tracking_uri: str) -> None:
+    """Render a self-refreshing table of live MLflow metrics for an experiment.
+
+    The MLflow run table is a read-only projection, never the source of run
+    truth. Only metric columns with at least one logged history are shown so
+    sparse experiments stay compact.
+
+    Args:
+        experiment_name: MLflow experiment slug to poll.
+        tracking_uri: MLflow tracking server base URL.
+    """
     rows = fetch_live_metrics(experiment_name, tracking_uri)
 
     if not rows:
@@ -1466,6 +1793,12 @@ _MVD_RUNNING_STATES = {
 
 
 def _gui_status_for_mvd_state(state: str) -> str:
+    """Collapse a raw mvd kernel state into a user-facing status label.
+
+    Maps the kernel's fine-grained primary states (e.g. ``ARTIFACT_SUCCESS``,
+    ``EVALUATING``, ``PROMOTION_FAILED``) onto the four buckets the monitor
+    shows: Done, Running, Failed, or Cancelled.
+    """
     if state == "ARTIFACT_SUCCESS":
         return "Done"
     if state == "CANCELLED":
@@ -1478,6 +1811,12 @@ def _gui_status_for_mvd_state(state: str) -> str:
 
 
 def _mvd_controller_for_session():
+    """Return the per-session in-process mvd kernel controller, building it once.
+
+    The controller is cached in session state and bound to the resolved output
+    (artifact) directory and its derived state root, so all monitoring queries
+    in a session target the same kernel.
+    """
     cached = st.session_state.get("_mvd_controller")
     if cached is not None:
         return cached
@@ -1497,6 +1836,11 @@ def _mvd_controller_for_session():
 
 
 def _append_run_log(line: str) -> None:
+    """Append one line to the session event log, capping its length.
+
+    Old lines are dropped past ``_LOG_DEQUE_MAX`` so a long-running session's
+    log stays bounded.
+    """
     lines = st.session_state.setdefault("_run_log_lines", [])
     lines.append(line)
     if len(lines) > _LOG_DEQUE_MAX:
@@ -1656,6 +2000,28 @@ def _launch_mvd_runs(
     experiment_name: str = "",
     backend: str = "docker",
 ) -> None:
+    """Submit a resume-decorated job plan to the mvd kernel and seed monitoring.
+
+    Persists the launch cohort, surfaces resume-skipped jobs in the event log,
+    submits the runnable jobs to the kernel controller, and records the
+    submissions / initial states in session state for the live monitor.
+
+    Args:
+        manifest_file: Path to the run manifest the kernel parses.
+        output_dir: Artifact (output) directory; resolved against ``repo_root``
+            when relative. The cohort and mvd state root derive from it.
+        seed: Random seed forwarded to the kernel submission.
+        pending_jobs: Job plan already decorated with resume markers by the Run
+            tab; entries flagged ``_skipped`` are logged but not submitted.
+        manifest_text: Verbatim manifest text, stored with the cohort.
+        repo_root: Repository root used to resolve a relative output dir.
+        manifest_hash: Content hash of the manifest, used in the launch id.
+        experiment_name: Experiment name recorded on the cohort.
+        backend: Execution backend (``"docker"`` or ``"slurm"``).
+
+    Raises:
+        RuntimeError: If a non-empty runnable plan produces no kernel submissions.
+    """
     # ``pending_jobs`` is already resume-decorated by the caller (the Run tab),
     # so this function never decorates a second time (Gap 2). It only submits
     # runnable jobs, surfaces skipped ones in the event log, and treats an
@@ -1735,12 +2101,20 @@ def _launch_mvd_runs(
 
     st.session_state["_run_all_skipped"] = False
     submitted_dicts = [s.to_dict() for s in submitted]
-    st.session_state["_mvd_submissions"] = submitted_dicts
+    # Sweep jobs come back as placeholders with an empty attempt_id — their
+    # trials stream into the monitor via the controller's sweep registry (merged
+    # in _run_monitor_fragment). Only real attempts are polled directly here.
+    st.session_state["_mvd_submissions"] = [
+        s for s in submitted_dicts if s.get("attempt_id")
+    ]
     st.session_state["_mvd_last_states"] = {
-        s.attempt_id: "SUBMITTED" for s in submitted
+        s.attempt_id: "SUBMITTED" for s in submitted if s.attempt_id
     }
     for s in submitted:
-        _append_run_log(f"{s.job_name}: SUBMITTED ({s.attempt_id})")
+        if s.attempt_id:
+            _append_run_log(f"{s.job_name}: SUBMITTED ({s.attempt_id})")
+        else:
+            _append_run_log(f"{s.job_name}: SWEEP STARTED")
 
     # Update cohort members with their submitted attempt IDs.
     # Primary identity comes from SubmittedRun.to_dict() which now carries
@@ -1778,6 +2152,16 @@ def _launch_mvd_runs(
 
 
 def _refresh_mvd_snapshots() -> list[dict]:
+    """Query current kernel snapshots for this session's submitted attempts.
+
+    Falls back to reading the append-only journal when the kernel index is
+    locked (``JournalLocked``), logs any state transitions to the event log, and
+    back-fills ``artifact_dir`` into the cohort for jobs that just reached
+    ARTIFACT_SUCCESS (artifact bundles don't exist until promotion completes).
+
+    Returns:
+        The latest snapshot dicts for the session's submitted attempts.
+    """
     submissions: list[dict] = st.session_state.get("_mvd_submissions", [])
     if not submissions:
         return []
@@ -1856,13 +2240,64 @@ def _render_run_event_log() -> None:
     )
 
 
+def _merge_sweep_submissions() -> None:
+    """Pull live sweep trial attempts from the controller into the monitor list.
+
+    Sweeps run on a background thread and register each trial's attempt id as it
+    starts (the controller can't touch Streamlit session state from that
+    thread). On every monitor refresh we drain that registry into
+    ``_mvd_submissions`` — deduped by attempt id — so trials appear and tick in
+    the status table exactly like plain run jobs.
+    """
+    controller = st.session_state.get("_mvd_controller")
+    if controller is None or not hasattr(controller, "sweep_submissions"):
+        return
+    try:
+        sweep_subs = controller.sweep_submissions()
+    except Exception:
+        return
+    existing: list[dict] = st.session_state.setdefault("_mvd_submissions", [])
+    have = {s.get("attempt_id") for s in existing}
+    for entry in sweep_subs:
+        attempt_id = entry.get("attempt_id")
+        if attempt_id and attempt_id not in have:
+            existing.append(entry)
+            have.add(attempt_id)
+
+
 @st.fragment(run_every=timedelta(seconds=1))
 def _run_monitor_fragment() -> None:
+    """Self-refreshing fragment: poll kernel state, render status, finalize run.
+
+    Re-runs once a second without a full page refresh. Renders the per-job
+    status table and event log, and when every submission reaches a terminal
+    state flips the session into a finalized state with an overall return code.
+    """
+    # Surface any sweep trials that started since the last tick before reading.
+    _merge_sweep_submissions()
     submissions: list[dict] = st.session_state.get("_mvd_submissions", [])
     if not submissions:
-        # No runnable submissions (e.g. an all-skipped resume, Gap 3). Still
-        # render the event log so the skipped jobs and their provenance show.
+        # No runnable submissions yet. Two cases: an all-skipped resume (Gap 3),
+        # or a sweep that hasn't registered its first trial. While a study is
+        # still active, keep spinning; once it ends with nothing submitted (e.g.
+        # the study errored before any trial), finalize so the UI doesn't hang.
         _render_run_event_log()
+        controller = st.session_state.get("_mvd_controller")
+        sweeps_active = bool(
+            controller
+            and hasattr(controller, "has_active_sweeps")
+            and controller.has_active_sweeps()
+        )
+        if (
+            not sweeps_active
+            and st.session_state.get("is_running")
+            and not st.session_state.get("run_finalized")
+        ):
+            st.session_state["is_running"] = False
+            st.session_state["run_finalized"] = True
+            st.session_state["_run_returncode"] = 1
+            st.session_state["_run_just_finalized"] = True
+            st.rerun()
         return
 
     try:
@@ -1915,7 +2350,16 @@ def _run_monitor_fragment() -> None:
     # unconditional scroll-to-bottom yanks the whole page down (issue #26).
     _render_run_event_log()
 
-    if all_terminal and not st.session_state.get("run_finalized"):
+    # A sweep can be between trials (current ones terminal, next not yet
+    # submitted), so don't finalize while any background study is still running.
+    controller = st.session_state.get("_mvd_controller")
+    sweeps_active = bool(
+        controller
+        and hasattr(controller, "has_active_sweeps")
+        and controller.has_active_sweeps()
+    )
+
+    if all_terminal and not sweeps_active and not st.session_state.get("run_finalized"):
         st.session_state["is_running"] = False
         st.session_state["run_finalized"] = True
         st.session_state["_run_returncode"] = 0 if all_success else 1
@@ -1929,6 +2373,12 @@ def _run_monitor_fragment() -> None:
 
 
 def _render_run_monitor() -> None:
+    """Render the live run monitor: cancel controls plus the status fragment.
+
+    Offers a confirm-gated Cancel Run control that drives the kernel's
+    cancellation saga for in-flight attempts, hosts the auto-refreshing monitor
+    fragment, and renders the terminal outcome with a downloadable event log.
+    """
     submissions: list[dict] = st.session_state.get("_mvd_submissions", [])
     snapshots: list[dict] = st.session_state.get("_mvd_snapshots", [])
     active_attempts = [
@@ -2191,6 +2641,14 @@ def _render_evaluate_section() -> None:
 
 
 def _render_execute_tab() -> None:
+    """Render the Run tab: resource ledger, launch, monitor, and evaluate.
+
+    Shows the Resource Ledger (committed-RAM bands and a greedy admission-wave
+    simulation against a host RAM cap) plus a GPU preflight, resolves the
+    tri-state resume policy, builds any missing container images, launches the
+    plan through the mvd kernel, and hosts the live monitor, evaluation, and
+    live MLflow metrics sections.
+    """
     import psutil
 
     st.header("Run")
@@ -2583,6 +3041,11 @@ def _fetch_runs(
 
 
 def _mvd_output_root_for_results() -> Path:
+    """Resolve the artifact (output) root the Results tab should read from.
+
+    Prefers the active session's output dir; relative paths and the default
+    fall back under the resolved state root.
+    """
     from multiverse.state_paths import resolve_state_root
 
     output_dir = st.session_state.get("_mvd_output_dir") or st.session_state.get(
@@ -2597,12 +3060,22 @@ def _mvd_output_root_for_results() -> Path:
 
 
 def _mvd_state_root_for_results() -> Path:
+    """Return the mvd state root (journals, index, leases) for the Results tab."""
     from multiverse.runner.mvd_entrypoint import _state_root_for_output
 
     return _state_root_for_output(_mvd_output_root_for_results())
 
 
 def _mvd_snapshot_to_results_row(snap: dict, *, source: str) -> dict:
+    """Flatten a kernel/index snapshot into the Results table's row schema.
+
+    Prefers the promoted ``artifact_dir`` for output_path, falling back to the
+    in-flight ``workspace_dir`` when no artifact bundle exists yet.
+
+    Args:
+        snap: A kernel snapshot or index row.
+        source: Provenance tag (``"mvd"`` or ``"mvd-index"``) used for dedupe.
+    """
     opts = snap.get("options") or {}
     if not opts and snap.get("options_json"):
         try:
@@ -2626,6 +3099,7 @@ def _mvd_snapshot_to_results_row(snap: dict, *, source: str) -> dict:
 
 
 def _sort_mvd_result_rows(rows: list[dict]) -> list[dict]:
+    """Sort result rows newest-first by submission time, then run id."""
     rows.sort(
         key=lambda r: (
             str(r.get("submitted_wall_iso") or ""),
@@ -2637,6 +3111,12 @@ def _sort_mvd_result_rows(rows: list[dict]) -> list[dict]:
 
 
 def _fetch_mvd_runs(status_filter: str | None = None) -> list[dict]:
+    """List runs from the live mvd kernel, with a journal fallback.
+
+    Falls back to reading the append-only journal directly when the SQLite
+    index is locked, and returns an empty list on any other failure so the
+    Results tab degrades gracefully.
+    """
     try:
         from multiverse.runner.mvd_inprocess import get_controller
 
@@ -2665,6 +3145,11 @@ def _fetch_mvd_runs(status_filter: str | None = None) -> list[dict]:
 
 
 def _fetch_mvd_index_runs(status_filter: str | None = None) -> list[dict]:
+    """List runs from the SQLite index projection (empty if missing/unopenable).
+
+    The run index is a rebuildable projection, so a missing or unreadable index
+    is tolerated and yields no rows rather than an error.
+    """
     index_path = _mvd_state_root_for_results() / INDEX_FILENAME
     try:
         with open_index(index_path, create_if_missing=False) as index:
@@ -2676,6 +3161,11 @@ def _fetch_mvd_index_runs(status_filter: str | None = None) -> list[dict]:
 
 
 def _dedupe_runs(rows: list[dict]) -> list[dict]:
+    """Drop duplicate runs that appear in both the kernel and the index.
+
+    Dedupes on run id, falling back to ``source:run_id`` for rows without an id
+    so distinct id-less rows are preserved. First occurrence wins.
+    """
     seen: set[str] = set()
     out: list[dict] = []
     for row in rows:
@@ -2701,6 +3191,11 @@ def _flatten_dict(d: dict, parent_key: str = "", sep: str = ".") -> dict:
 
 
 def _arrow_safe_summary_df(summary_df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce summary columns to filled strings for Arrow-safe st.dataframe.
+
+    Mixed-type or null-bearing object columns can break Streamlit's Arrow
+    serialization; stringifying the known display columns avoids that.
+    """
     display_df = summary_df.copy()
     for column in [
         "Run ID",
@@ -2716,6 +3211,19 @@ def _arrow_safe_summary_df(summary_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _selected_run_from_summary(summary_df: pd.DataFrame, runs: list[dict]) -> dict:
+    """Render the runs table and return the run the user selected.
+
+    Uses dataframe row-selection where supported, falling back to a selectbox
+    on older Streamlit versions that lack ``selection_mode`` (the ``TypeError``
+    branch). Defaults to the first run when nothing is selected.
+
+    Args:
+        summary_df: Display dataframe of run summary rows.
+        runs: The underlying run dicts, index-aligned with ``summary_df``.
+
+    Returns:
+        The selected run dict.
+    """
     display_df = _arrow_safe_summary_df(summary_df)
     try:
         event = st.dataframe(
@@ -2755,6 +3263,15 @@ def _selected_run_from_summary(summary_df: pd.DataFrame, runs: list[dict]) -> di
 def _set_mlflow_context_from_job_spec(
     job_spec_file: Path, mlflow_base: str
 ) -> str | None:
+    """Link the Analysis tab to the MLflow experiment named in a job spec.
+
+    Reads the experiment name from a run's ``job_spec.json``, resolves it to an
+    MLflow experiment id, and records both in session state for deep-linking.
+
+    Returns:
+        The experiment name on success, or None if the spec is missing, has no
+        experiment name, or the name can't be resolved in MLflow.
+    """
     if not job_spec_file.exists():
         return None
     try:
@@ -2803,6 +3320,13 @@ def _delete_run(run: dict) -> None:
 
 
 def _render_results_tab() -> None:
+    """Render the Results tab: browse runs and drill into one artifact bundle.
+
+    Merges and dedupes runs from the mvd kernel, its SQLite index, and the
+    legacy registry, then for the selected run renders its metrics, artifact
+    tree, logs, and provenance. Deleting a run removes only registry/index rows;
+    artifact files on disk are never touched.
+    """
     st.header("Results")
 
     col_filter, col_refresh = st.columns([4, 1])

@@ -21,6 +21,8 @@ from .template import SlurmJobSpec, render_sbatch_script
 
 @dataclass
 class _Job:
+    """One simulated Slurm job tracked by the in-memory engine."""
+
     job_id: str
     spec: SlurmJobSpec
     state: SlurmJobState = SlurmJobState.PENDING
@@ -57,6 +59,16 @@ class InMemorySlurmEngine:
     # ---- protocol surface -------------------------------------------
 
     def submit(self, spec: SlurmJobSpec, *, script_dir: Path) -> SlurmSubmission:
+        """Stage a job in ``PENDING`` and render its script like the real engine.
+
+        Args:
+            spec: Job description; rendered to a script on disk so golden
+                tests can inspect it.
+            script_dir: Directory the script is written into.
+
+        Returns:
+            Submission record with a sequential synthetic job id.
+        """
         assert self._id_iter is not None
         self.submit_count += 1
         job_id = str(next(self._id_iter))
@@ -68,6 +80,15 @@ class InMemorySlurmEngine:
         return SlurmSubmission(job_id=job_id, script_path=script_path)
 
     def query(self, job_id: str) -> SlurmJobInfo:
+        """Report the current simulated observation for ``job_id``.
+
+        Args:
+            job_id: Job id returned by ``submit``.
+
+        Returns:
+            The job's current observation, or a ``PENDING`` observation
+            for an unknown id (mirroring the real engine).
+        """
         job = self.jobs.get(str(job_id))
         if job is None:
             # The real engine would surface as PENDING for an unknown
@@ -82,6 +103,11 @@ class InMemorySlurmEngine:
         )
 
     def cancel(self, job_id: str) -> None:
+        """Mark ``job_id`` cancelled, flipping non-terminal jobs to ``CANCELLED``.
+
+        Args:
+            job_id: Job id to cancel; unknown ids are a no-op.
+        """
         job = self.jobs.get(str(job_id))
         if job is None:
             return
@@ -101,9 +127,11 @@ class InMemorySlurmEngine:
     # ---- test helpers ------------------------------------------------
 
     def simulate_running(self, job_id: str) -> None:
+        """Move ``job_id`` to ``RUNNING``."""
         self._mutate(job_id, state=SlurmJobState.RUNNING)
 
     def simulate_completed(self, job_id: str, *, exit_code: int = 0) -> None:
+        """Move ``job_id`` to ``COMPLETED`` with the given exit code."""
         self._mutate(
             job_id,
             state=SlurmJobState.COMPLETED,
@@ -113,6 +141,7 @@ class InMemorySlurmEngine:
     def simulate_failed(
         self, job_id: str, *, exit_code: int = 1, reason: Optional[str] = None
     ) -> None:
+        """Move ``job_id`` to ``FAILED`` with an optional reason string."""
         self._mutate(
             job_id,
             state=SlurmJobState.FAILED,
@@ -121,6 +150,7 @@ class InMemorySlurmEngine:
         )
 
     def simulate_oom(self, job_id: str) -> None:
+        """Move ``job_id`` to ``OUT_OF_MEMORY`` (exit 137)."""
         self._mutate(
             job_id,
             state=SlurmJobState.OUT_OF_MEMORY,
@@ -129,6 +159,7 @@ class InMemorySlurmEngine:
         )
 
     def simulate_timeout(self, job_id: str) -> None:
+        """Move ``job_id`` to ``TIMEOUT`` (exit 124)."""
         self._mutate(
             job_id,
             state=SlurmJobState.TIMEOUT,
@@ -137,6 +168,7 @@ class InMemorySlurmEngine:
         )
 
     def simulate_node_fail(self, job_id: str) -> None:
+        """Move ``job_id`` to ``NODE_FAIL`` (exit code unknown)."""
         self._mutate(
             job_id,
             state=SlurmJobState.NODE_FAIL,
@@ -154,6 +186,18 @@ class InMemorySlurmEngine:
         exit_code: Optional[int] = None,
         reason: Optional[str] = None,
     ) -> None:
+        """Apply a state transition to a known job.
+
+        Args:
+            job_id: Job id to mutate.
+            state: New Slurm state to record.
+            exit_code: Exit code to set; also set implicitly for terminal
+                states even when ``None``.
+            reason: Optional reason string to record.
+
+        Raises:
+            KeyError: If ``job_id`` was never submitted to this engine.
+        """
         job = self.jobs.get(str(job_id))
         if job is None:
             raise KeyError(f"unknown job_id {job_id!r}")

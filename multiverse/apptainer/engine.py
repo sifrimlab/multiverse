@@ -161,6 +161,31 @@ class RealApptainerEngine:
         entrypoint: Optional[str] = None,
         gpu_requested: bool = False,
     ) -> ContainerInfo:
+        """Acquire the SIF, spawn ``apptainer exec``, and record the sidecar.
+
+        Args:
+            image: SIF path or any reference Apptainer can pull.
+            command: Argv passed to the container after the entrypoint.
+            labels: Reconciliation labels; ``multiverse.image_digest``
+                supplies the OCI half of the dual-digest pair and names
+                the SIF cache entry.
+            env: Extra environment overlaid on the engine's environment.
+            volumes: Host->target bind mounts (e.g. ``/input/data.h5mu``
+                read-only, ``/output`` writable).
+            mem_limit: ``--memory`` value; advisory unless a user cgroup
+                namespace is available (feeds the OOM heuristic).
+            name: Optional human label recorded in the sidecar.
+            entrypoint: Optional executable to run instead of the SIF
+                default.
+            gpu_requested: When True, pass ``--nv`` for GPU passthrough.
+
+        Returns:
+            The launched container's info snapshot.
+
+        Raises:
+            ContainerEngineError: If image acquisition, SIF hashing, or
+                the subprocess spawn fails.
+        """
         from ..docker_supervisor.errors import ContainerEngineError
 
         labels = dict(labels or {})
@@ -225,12 +250,32 @@ class RealApptainerEngine:
         return self._info(record)
 
     def list_by_labels(self, *, labels: Dict[str, str]) -> List[ContainerInfo]:
-        # Refresh liveness for all records before filtering.
+        """Return live snapshots of containers whose labels match ``labels``.
+
+        Args:
+            labels: Subset of labels every returned container must carry.
+
+        Returns:
+            Info snapshots for matching, non-removed containers.
+        """
+        # Reap exited PIDs first so the snapshot reflects current liveness,
+        # not the state at last launch.
         for rec in list(self._sidecar.containers.values()):
             self._reap_if_exited(rec)
         return [self._info(rec) for rec in self._sidecar.matching_labels(labels)]
 
     def inspect(self, container_id: str) -> ContainerInfo:
+        """Return the current info snapshot for one container.
+
+        Args:
+            container_id: Synthetic id assigned at launch.
+
+        Returns:
+            The container's info, with liveness refreshed.
+
+        Raises:
+            NoSuchContainerError: If the id is unknown or removed.
+        """
         rec = self._sidecar.get(container_id)
         if rec is None or rec.removed:
             from ..docker_supervisor.errors import NoSuchContainerError

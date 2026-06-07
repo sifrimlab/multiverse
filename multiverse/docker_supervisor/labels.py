@@ -52,6 +52,13 @@ class MultiverseLabels:
     host_pid: int
 
     def to_dict(self) -> Dict[str, str]:
+        """Render the label set as the engine-facing string dict.
+
+        Returns:
+            Mapping of canonical ``multiverse.*`` label keys to string
+            values, ready to hand to the container engine's ``launch``.
+            ``host_pid`` is stringified since engine labels are strings.
+        """
         return {
             LABEL_RUN_ID: self.run_id,
             LABEL_LOGICAL_RUN_ID: self.logical_run_id,
@@ -64,8 +71,19 @@ class MultiverseLabels:
 
     @classmethod
     def from_dict(cls, labels: Dict[str, str]) -> Optional["MultiverseLabels"]:
-        """Build labels from an engine response. Returns None if any required
-        label is missing — i.e. the container is not ours."""
+        """Reconstruct the label set from an engine container's labels.
+
+        Used during reconciliation to decide whether a container the engine
+        reports is one of ours and which run it belongs to.
+
+        Args:
+            labels: Raw label mapping as returned by the container engine
+                for a single container.
+
+        Returns:
+            The parsed label set, or ``None`` if any required ``multiverse.*``
+            label is absent or malformed — i.e. the container is not ours.
+        """
         try:
             return cls(
                 run_id=labels[LABEL_RUN_ID],
@@ -90,6 +108,25 @@ def multiverse_labels(
     mvd_version: str,
     host_pid: Optional[int] = None,
 ) -> MultiverseLabels:
+    """Construct a run-launch label set, defaulting ``host_pid`` to this process.
+
+    Args:
+        run_id: The physical attempt id; the value of ``multiverse.run_id``
+            and the primary key reconciliation queries the engine by.
+        logical_run_id: Identifier of the logical run grouping this attempt's
+            retries/resumes.
+        manifest_hash: Hash of the run manifest pinning this attempt's inputs.
+        workspace: Absolute path of the in-flight workspace directory.
+        owner_token: Token answering "is this workspace mine to continue?"
+            after a crash.
+        mvd_version: Version string of the mvd kernel that launched the
+            container.
+        host_pid: PID of the launching mvd process; defaults to the current
+            process id when omitted.
+
+    Returns:
+        A frozen ``MultiverseLabels`` carrying the full run identity.
+    """
     return MultiverseLabels(
         run_id=run_id,
         logical_run_id=logical_run_id,
@@ -102,9 +139,17 @@ def multiverse_labels(
 
 
 def label_query(run_id: str) -> Dict[str, str]:
-    """Helper returning the label filter dict for one run."""
+    """Build the engine label filter selecting a single run's container.
+
+    Args:
+        run_id: The physical attempt id to filter on.
+
+    Returns:
+        A ``{LABEL_RUN_ID: run_id}`` mapping for ``list_by_labels``.
+    """
     return {LABEL_RUN_ID: run_id}
 
 
 def all_run_labels() -> tuple[str, ...]:
+    """Return the frozen tuple of every required run-identity label key."""
     return _ALL_RUN_LABELS

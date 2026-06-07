@@ -52,9 +52,6 @@ def emit_event(event: str, **payload: Any) -> None:
     print(json.dumps(record, sort_keys=True), file=sys.stderr, flush=True)
 
 
-# Required omics per model slug. Empty set means any combination is acceptable.
-
-
 @dataclass
 class ParsedManifest:
     """Result of parsing and validating a run manifest YAML file."""
@@ -80,9 +77,22 @@ class ManifestValidationError(ValueError):
 
 
 def _manifest_error(field: str, message: str, code: str = "invalid") -> Dict[str, str]:
+    """Build one structured manifest validation error record.
+
+    Args:
+        field: Dotted manifest path the error attaches to (e.g. ``jobs[0].slurm``).
+        message: Human-readable explanation surfaced to the user.
+        code: Machine-readable category used by callers/tests to branch on.
+
+    Returns:
+        A ``{"field", "message", "code"}`` dict appended to ``ParsedManifest.errors``.
+    """
     return {"field": field, "message": message, "code": code}
 
 
+# Required omics per model slug. An empty set means any modality combination
+# is acceptable; a non-empty set must be a subset of the dataset's available
+# omics or the job is dropped in pre-flight validation.
 MODEL_REQUIRED_OMICS = {
     "multivi": {"rna", "atac"},
     "totalvi": {"rna", "adt"},
@@ -95,6 +105,15 @@ MODEL_REQUIRED_OMICS = {
 
 @dataclass
 class _PeekResult:
+    """Outcome of a best-effort HDF5 header peek.
+
+    Attributes:
+        value: The peeked value (column set, obs count, batch count) — a
+            type-appropriate empty/zero default when the peek failed.
+        error: A short structured reason code (e.g. ``"file_unreadable"``,
+            ``"missing_obs"``) when the peek failed, else None.
+    """
+
     value: Any
     error: str | None = None
 
@@ -148,7 +167,15 @@ def _peek_obs_columns(path: str) -> _PeekResult:
 
 
 def _read_obs_columns(path: str) -> set:
-    """Return the set of obs column names from an h5ad or h5mu file via h5py."""
+    """Return obs column names from an h5ad/h5mu file, or empty set if unreadable.
+
+    Args:
+        path: Filesystem path to the ``.h5ad`` / ``.h5mu`` dataset file.
+
+    Returns:
+        The merged obs column names (top-level plus modality-level for h5mu);
+        an empty set when the header cannot be read for any reason.
+    """
     result = _peek_obs_columns(path)
     return result.value if isinstance(result.value, set) else set()
 
@@ -179,6 +206,7 @@ def _peek_obs_count(path: str) -> _PeekResult:
 
 
 def _read_obs_count(path: str) -> int:
+    """Return n_obs for the dataset file, or 0 when it cannot be determined."""
     result = _peek_obs_count(path)
     return int(result.value or 0)
 
@@ -219,13 +247,22 @@ def _peek_batch_count(path: str, batch_key: str) -> _PeekResult:
 
 
 def _read_batch_count(path: str, batch_key: str) -> int:
-    """Return number of unique batch values. 0 if unreadable."""
+    """Return number of unique values of ``batch_key`` in obs; 0 if unreadable.
+
+    Args:
+        path: Filesystem path to the dataset file.
+        batch_key: obs column whose distinct value count is wanted.
+    """
     result = _peek_batch_count(path, batch_key)
     return int(result.value or 0)
 
 
 def _record_validation_failure(job: Dict[str, Any], reason: str) -> None:
-    # Legacy runs-table write removed in G6; log only.
+    """Log a pre-flight validation failure for a job.
+
+    The legacy ``runs``-table write was removed in G6; this now only logs, since
+    the SQLite index is a rebuildable projection and not the source of run truth.
+    """
     logger.warning(
         "Validation failure for %s/%s: %s",
         job.get("dataset_name", "?"),
@@ -238,12 +275,24 @@ def validate_pending_jobs(
     pending_jobs: List[Dict],
     record_failures: bool = False,
 ) -> Tuple[List[Dict], List[str]]:
-    """Pre-flight validation gate.
+    """Pre-flight validation gate run before any container is launched.
 
-    Checks each job for modality compatibility, batch key presence, and
-    cell type key presence. Returns (validated_jobs, warnings). Incompatible
-    jobs are silently dropped with a logged reason; warnings are surfaced in
-    the end-of-run summary.
+    Checks each job for required-omics compatibility, non-zero cell count, and
+    batch-key presence, reading dataset obs headers via h5py (each file opened at
+    most once via the per-dataset caches). Incompatible jobs are not dropped:
+    they are marked ``_skipped`` so they stay visible in the run summary with a
+    reason. Soft problems (missing cell_type_key, single batch value) become
+    warnings instead of skips.
+
+    Args:
+        pending_jobs: Planned job dicts from a plan generator.
+        record_failures: When True, also log each hard failure via
+            ``_record_validation_failure`` (the legacy runs-table write is gone).
+
+    Returns:
+        ``(validated_jobs, warnings)`` where ``validated_jobs`` contains every
+        input job (runnable ones unchanged, incompatible ones flagged
+        ``_skipped``) and ``warnings`` are human-readable strings for the summary.
     """
     warnings: List[str] = []
     validated: List[Dict] = []
@@ -269,7 +318,6 @@ def validate_pending_jobs(
         batch_key = job.get("batch_key")
         cell_type_key = job.get("cell_type_key")
 
-        # 1. Required omics check
         required = MODEL_REQUIRED_OMICS.get(model_slug, set())
         if required and not required.issubset(omics_available):
             skip_job(
@@ -359,6 +407,16 @@ def validate_pending_jobs(
 
 
 def _docker_image_status(image: str) -> tuple[bool, str | None]:
+    """Probe whether a Docker image tag is usable on the local daemon.
+
+    Args:
+        image: The model's Docker image tag from the asset registry.
+
+    Returns:
+        ``(True, None)`` when the image is present locally, otherwise
+        ``(False, reason)`` where ``reason`` explains the failure (no tag, no
+        Docker SDK, daemon unreachable, or image absent).
+    """
     if not image:
         return False, "model registry has no Docker image tag"
     try:
@@ -852,6 +910,20 @@ def require_parsed_manifest(
     backend_override: Optional[str] = None,
     check_images: bool = True,
 ) -> ParsedManifest:
+    """Parse a manifest and raise unless it validated cleanly.
+
+    Args:
+        manifest_path: Path to the run manifest YAML.
+        db_conn: Run-index DB connection threaded into ``parse_manifest``.
+        backend_override: CLI ``--backend`` value that wins over ``globals.backend``.
+        check_images: Forwarded to ``parse_manifest``; see it for image-probe semantics.
+
+    Returns:
+        The validated :class:`ParsedManifest`.
+
+    Raises:
+        ManifestValidationError: If the manifest produced any validation errors.
+    """
     parsed = parse_manifest(
         manifest_path,
         db_conn,
@@ -864,7 +936,22 @@ def require_parsed_manifest(
 
 
 def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dict]:
-    """Generates a list of required ML jobs based on a manifest."""
+    """Expand a parsed manifest into a flat list of planned job dicts.
+
+    This is a *pure* manifest-to-plan expansion: it cross-references each
+    (dataset, model) pair against the asset registry (READY datasets, ACTIVE
+    models) and emits one job per resolvable pair, with its resolved image,
+    version, params hash, and artifact directory name. It deliberately does not
+    apply resume/dedupe — see the inline ``STRATEGY`` note and the
+    ``multiverse.runner.resume`` module, which owns opt-in skip policy.
+
+    Args:
+        conn: Run-index DB connection used to resolve dataset/model rows.
+        manifest_data: The already-validated manifest mapping.
+
+    Returns:
+        Planned job dicts; pairs that fail registry lookup are logged and omitted.
+    """
     cursor = conn.cursor()
     pending_jobs = []
     global_metrics = manifest_data.get("globals", {}).get("metrics", {})
@@ -913,6 +1000,24 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
             m_image, m_slug, m_version = model_row
 
             model_params = job.get("model_params", {}) or {}
+            # Defensive guard: a sweep spec ({"type": ...}) left in a non-sweep
+            # job's model_params means the GUI emitted a run job for a swept
+            # parameter (the container would receive a dict where it expects a
+            # scalar and crash). Surface it here, at manifest-parse time,
+            # instead of inside the container.
+            if mode != "sweep":
+                for _pk, _pv in model_params.items():
+                    if isinstance(_pv, dict) and "type" in _pv:
+                        logger.error(
+                            "Job %s/%s: param '%s' is a sweep spec but mode is "
+                            "'%s'. Re-generate the manifest from the Configure "
+                            "tab (sweep specs must live in 'search_space' with "
+                            "mode: sweep).",
+                            dataset_key,
+                            m_name,
+                            _pk,
+                            mode,
+                        )
             params_hash = hashlib.sha256(
                 json.dumps(model_params, sort_keys=True).encode()
             ).hexdigest()[:12]
@@ -987,7 +1092,18 @@ def generate_execution_plan_from_manifest(conn, manifest_data: Dict) -> List[Dic
 
 
 def generate_execution_plan(conn) -> List[Dict]:
-    """Generates a list of required ML jobs by checking the database."""
+    """Build a manifest-free plan from every compatible dataset/model pairing.
+
+    The non-manifest fallback path: cross-joins all READY datasets with all
+    ACTIVE models whose supported omics are a subset of the dataset's, emitting a
+    job for each pair not already recorded SUCCESS in the legacy ``runs`` table.
+
+    Args:
+        conn: Run-index DB connection.
+
+    Returns:
+        Planned job dicts for the catalog cross-product, minus already-succeeded pairs.
+    """
     cursor = conn.cursor()
 
     cursor.execute(
@@ -1042,7 +1158,15 @@ def generate_execution_plan(conn) -> List[Dict]:
 
 
 def generate_status_table(tasks: Dict[str, str]) -> Table:
-    """Generates a Rich Table representing the current status of all tasks."""
+    """Render the live dashboard table for the concurrent run workflow.
+
+    Args:
+        tasks: Mapping of task/model name to its current status string; the
+            status text drives the cell colour (green/red/yellow).
+
+    Returns:
+        A Rich ``Table`` for display in the ``Live`` dashboard.
+    """
     table = Table(title="Multiverse Parallel Execution Dashboard")
     table.add_column("Task/Model", justify="left", style="cyan", no_wrap=True)
     table.add_column("Status", justify="center", style="magenta")
@@ -1111,7 +1235,18 @@ def _print_run_summary(
 
 
 async def run_workflow_async(args: argparse.Namespace):
-    """Executes the concurrent Docker-based workflow with pre-flight validation."""
+    """Drive the concurrent Docker-backed run workflow end to end.
+
+    Sets up SIGTERM/SIGINT handlers that mark active runs CANCELLED and cancel
+    the current task, verifies the Docker daemon, plans jobs (from a manifest or
+    the catalog cross-product), runs pre-flight validation, then funnels all DB
+    writes through the single writer actor while running jobs and sweeps
+    concurrently. Prints the run summary and drains the writer on exit.
+
+    Args:
+        args: Parsed CLI namespace; reads ``output``, ``seed``, and optionally
+            ``manifest``.
+    """
     os.makedirs(args.output, exist_ok=True)
     setup_logging(args.output)
 
@@ -1434,7 +1569,17 @@ def _resolve_effective_seed_for_args(args: argparse.Namespace) -> int:
 
 
 def execute_run(args: argparse.Namespace):
-    """Executes the model running logic — always uses async/parallel for registry jobs."""
+    """Route a ``run`` invocation to the correct execution path.
+
+    Dispatch order: ``--simple`` (contract-only simple mode, no
+    mvd/SQLite/MLflow/Optuna), then ``--local`` (legacy local path), otherwise
+    the production mvd path selected by backend — ``run_via_slurm`` for the slurm
+    backend, ``run_via_mvd`` for docker. Backend precedence is ``--backend`` flag,
+    then ``globals.backend`` in the manifest, then docker.
+
+    Args:
+        args: Parsed CLI namespace for the ``run`` subcommand.
+    """
     if getattr(args, "simple", False):
         # Simple-mode is the contract-only path: no SQLite, no MLflow, no
         # Optuna, no daemon. See STRATEGY R7.

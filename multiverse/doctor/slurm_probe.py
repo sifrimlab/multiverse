@@ -37,6 +37,20 @@ DEFAULT_SMOKE_TIMEOUT_SECONDS = 60
 
 @dataclass
 class SlurmCapability:
+    """What the deep probe learned about this host's Slurm install.
+
+    Attributes:
+        sbatch: ``sbatch`` is on PATH.
+        sacct: ``sacct`` is on PATH (needed for completion polling).
+        scancel: ``scancel`` is on PATH (needed for cancellation).
+        sinfo: ``sinfo`` is on PATH (informational; partition listing).
+        partitions: Partition names discovered via ``sinfo``.
+        smoke_job_id: Job id of the ``--wrap=true`` smoke job, if submitted.
+        smoke_final_state: Terminal state of the smoke job, or
+            ``"TIMEOUT_DURING_PROBE"`` if it had to be scancelled.
+        errors: Accumulated non-fatal error strings for the detail line.
+    """
+
     sbatch: bool = False
     sacct: bool = False
     scancel: bool = False
@@ -122,6 +136,7 @@ def probe_slurm_deep(
 
 
 def _enumerate_partitions(*, timeout_seconds: int) -> List[str]:
+    """Return de-duplicated partition names from ``sinfo``, or empty on error."""
     try:
         result = subprocess.run(
             ["sinfo", "--noheader", "--format=%P"],
@@ -214,6 +229,8 @@ def _run_smoke_test(
 
 
 def _query_state(job_id: str) -> Optional[str]:
+    """Return the first ``sacct`` State token for ``job_id``, or ``None``
+    if sacct fails or has not yet recorded the job."""
     try:
         result = subprocess.run(
             [
@@ -242,6 +259,7 @@ def _query_state(job_id: str) -> Optional[str]:
 
 
 def _describe(cap: SlurmCapability) -> str:
+    """Build the probe's detail line from a capability snapshot."""
     parts = []
     if cap.partitions:
         parts.append(f"partitions={','.join(cap.partitions[:5])}")
@@ -255,6 +273,7 @@ def _describe(cap: SlurmCapability) -> str:
 
 
 def _report(cap: SlurmCapability, *, probe: ProbeOutcome, detail: str) -> ProbeReport:
+    """Wrap a capability + outcome into the ``engines.slurm_deep`` report."""
     return ProbeReport(
         name="engines.slurm_deep",
         probe=probe,

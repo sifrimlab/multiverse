@@ -53,37 +53,50 @@ install whose state lived inside the package directory."""
 
 @dataclass(frozen=True)
 class StatePaths:
-    """Bundle of paths derived from a single ``state_root``."""
+    """Bundle of paths derived from a single ``state_root``.
+
+    Attributes:
+        state_root: Resolved root of the multiverse state tree.
+        user_id: Identity that owns this state (informational today; the
+            multi-user-future hook).
+    """
 
     state_root: Path
     user_id: str
 
     @property
     def db_path(self) -> Path:
+        """Path to the combined SQLite run index DB."""
         return self.state_root / STATE_FILENAME
 
     @property
     def store_root(self) -> Path:
+        """Root of the artifact store tree (the durable scientific record)."""
         return self.state_root / "store"
 
     @property
     def journal_root(self) -> Path:
+        """Root of the append-only journal (source of run truth)."""
         return self.state_root / "journal"
 
     @property
     def datasets_dir(self) -> Path:
+        """Dataset slugs registered in the asset registry."""
         return self.store_root / "datasets"
 
     @property
     def models_dir(self) -> Path:
+        """Model slugs registered in the asset registry."""
         return self.store_root / "models"
 
     @property
     def artifacts_dir(self) -> Path:
+        """Promoted artifact bundles (immutable run outputs)."""
         return self.store_root / "artifacts"
 
     @property
     def workspaces_dir(self) -> Path:
+        """In-flight run workspaces, before promotion."""
         return self.store_root / "workspaces"
 
 
@@ -120,6 +133,11 @@ def find_config_file(env: Optional[Mapping[str, str]] = None) -> Optional[Path]:
 
 
 def _read_state_root_from_config(path: Path) -> Optional[Path]:
+    """Return the ``state_root:`` entry from a config file, or None.
+
+    Returns None on a missing/unparseable file or when the key is absent or
+    empty, so the caller can fall through to the next precedence tier.
+    """
     try:
         with path.open("r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}

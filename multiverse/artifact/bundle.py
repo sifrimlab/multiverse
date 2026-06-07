@@ -54,6 +54,7 @@ RUN_ATTEMPT_MANIFEST_FILENAME = "run_attempt_manifest.json"
 
 
 def _normalize_inputs(inputs: Mapping[str, PathLike]) -> Dict[str, Path]:
+    """Coerce bundle-name → path mapping values to ``Path`` objects."""
     return {str(k): Path(v) for k, v in inputs.items()}
 
 
@@ -107,6 +108,11 @@ def _copy_into(dst_dir: Path, files: Mapping[str, Path]) -> List[Dict[str, Any]]
 
 
 def _default_environment() -> Dict[str, Any]:
+    """Return a baseline environment record for the current process.
+
+    Captured at bundle-write time so the artifact bundle carries enough context
+    to reproduce or explain a result without access to the originating machine.
+    """
     return {
         "python_version": sys.version,
         "platform": platform.platform(),
@@ -116,6 +122,16 @@ def _default_environment() -> Dict[str, Any]:
 
 
 def _readme_text(manifest: ArtifactManifest, extra: str) -> str:
+    """Render the README.md body for the artifact bundle.
+
+    Args:
+        manifest: The ``ArtifactManifest`` whose ``logical_run_id`` is embedded
+            in the reproduce instructions.
+        extra: Optional caller-supplied text appended after the standard body.
+
+    Returns:
+        A UTF-8-safe Markdown string suitable for writing as ``README.md``.
+    """
     base = (
         "# multiverse export bundle\n"
         "\n"
@@ -232,6 +248,7 @@ class RunAttemptManifest:
     schema_version: str = "1"
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize to a JSON-ready dict; optional fields are omitted when ``None``."""
         out: Dict[str, Any] = {
             "schema_version": self.schema_version,
             "physical_attempt_id": self.physical_attempt_id,

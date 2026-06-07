@@ -42,22 +42,27 @@ def multiverse_root(output_dir: Path) -> Path:
 
 
 def launches_dir(output_dir: Path) -> Path:
+    """Return the directory holding all per-launch subdirectories (not created)."""
     return multiverse_root(output_dir) / "launches"
 
 
 def launch_dir(output_dir: Path, launch_id: str) -> Path:
+    """Return one launch's directory under ``.multiverse/launches/`` (not created)."""
     return launches_dir(output_dir) / launch_id
 
 
 def cohort_path(output_dir: Path, launch_id: str) -> Path:
+    """Return the path to a launch's ``cohort.json`` (not created)."""
     return launch_dir(output_dir, launch_id) / "cohort.json"
 
 
 def manifest_copy_path(output_dir: Path, launch_id: str) -> Path:
+    """Return the path to a launch's archived ``manifest.yaml`` copy (not created)."""
     return launch_dir(output_dir, launch_id) / "manifest.yaml"
 
 
 def latest_launch_path(output_dir: Path) -> Path:
+    """Return the path to the ``latest_launch.json`` pointer file (not created)."""
     return multiverse_root(output_dir) / "latest_launch.json"
 
 
@@ -140,6 +145,7 @@ def _resolve_dataset_path(dataset_path: str) -> Tuple[str, str]:
 
 
 def _job_source(job: Dict[str, Any]) -> str:
+    """Classify how a member entered the cohort (submitted vs resume-skipped)."""
     if job.get("_skipped") and job.get("_completed_attempt_id"):
         return "skipped_completed"
     if job.get("_skipped"):

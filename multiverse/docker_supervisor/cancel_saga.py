@@ -43,6 +43,13 @@ DEFAULT_CANCEL_GRACE_SECONDS = 10
 
 
 class CancelStep(str, Enum):
+    """Ordered checkpoints of the cancellation saga.
+
+    Each step corresponds to one journalled intent written *before* the
+    matching side-effect, matching the promotion saga's idempotent-step
+    pattern (STRATEGY S8).
+    """
+
     REQUESTED = "CANCEL_REQUESTED"
     STOPPED = "CANCEL_STOPPED"
     KILLED = "CANCEL_KILLED"
@@ -51,6 +58,8 @@ class CancelStep(str, Enum):
 
 
 class CancelOutcome(str, Enum):
+    """Terminal result of a :class:`CancelSaga` run."""
+
     CANCELLED = "CANCELLED"
     ALREADY_TERMINAL = "ALREADY_TERMINAL"
     FAILED = "FAILED"
@@ -58,6 +67,20 @@ class CancelOutcome(str, Enum):
 
 @dataclass
 class CancelResult:
+    """Return value of :meth:`CancelSaga.run`.
+
+    Attributes:
+        outcome: Whether the saga completed, found the run already terminal,
+            or failed part-way.
+        committed_steps: Ordered list of saga steps that were successfully
+            journalled; useful for post-mortem inspection.
+        cancelled_dir: Absolute path of the preserved workspace under
+            ``store/cancelled/<date>/<physical_attempt_id>``, or ``None``
+            if no workspace existed.
+        failure_reason: Human-readable reason string when ``outcome`` is
+            ``FAILED``; ``None`` on success.
+    """
+
     outcome: CancelOutcome
     committed_steps: List[CancelStep] = field(default_factory=list)
     cancelled_dir: Optional[Path] = None
@@ -66,7 +89,25 @@ class CancelResult:
 
 @dataclass
 class CancelSaga:
-    """One-shot driver for a single physical_attempt_id."""
+    """One-shot driver for the cancellation saga of a single physical attempt.
+
+    Each call to :meth:`run` drives the five-step saga from
+    ``CANCEL_REQUESTED`` through ``CANCELLED``, journalling intent before
+    every side-effect so a crash mid-saga can be detected and replayed.
+    The saga is safe to re-enter: every step is idempotent.
+
+    Attributes:
+        engine: Container engine used to stop/kill the running container.
+        journal: Append-only writer for the physical attempt's journal.
+        layout: Store layout providing the ``cancelled`` root path.
+        boot: Boot context supplying the mvd version for the attempt manifest.
+        physical_attempt_id: Id of the attempt being cancelled.
+        logical_run_id: Logical run grouping this attempt's retries/resumes.
+        lease: Active lease for the container; closed when the saga finishes.
+        grace_seconds: SIGTERM grace period before escalating to SIGKILL.
+        after_step_hook: Optional test hook called after each committed step;
+            raise inside it to simulate a crash at a specific checkpoint.
+    """
 
     engine: ContainerEngine
     journal: JournalWriter
@@ -79,6 +120,12 @@ class CancelSaga:
     after_step_hook: Optional[Callable[[CancelStep], None]] = None
 
     def run(self) -> CancelResult:
+        """Execute the full cancellation saga and return the result.
+
+        Returns:
+            A :class:`CancelResult` with ``outcome=CANCELLED`` on success,
+            or ``outcome=FAILED`` if an unhandled exception escapes a step.
+        """
         result = CancelResult(outcome=CancelOutcome.FAILED)
 
         # Step 1: CANCEL_REQUESTED.
@@ -158,6 +205,17 @@ class CancelSaga:
     # ------------------------------------------------------------------
 
     def _preserve_workspace(self) -> Optional[Path]:
+        """Move the workspace into ``store/cancelled/<date>/<attempt_id>``.
+
+        Uses ``os.replace`` (atomic rename) so the workspace is never in a
+        partially-moved state — the hot path never deletes (quarantine rule).
+        A :class:`~multiverse.artifact.RunAttemptManifest` is written beside
+        the preserved directory so the cancelled run remains diagnosable.
+
+        Returns:
+            Path to the preserved directory, or ``None`` if the workspace no
+            longer exists (already moved by a prior saga replay).
+        """
         workspace = Path(self.lease.workspace)
         if not workspace.exists():
             return None
@@ -200,5 +258,6 @@ class CancelSaga:
         return target
 
     def _maybe_fault(self, step: CancelStep) -> None:
+        """Invoke the test hook (if any) after a committed step."""
         if self.after_step_hook is not None:
             self.after_step_hook(step)

@@ -44,6 +44,7 @@ class JournalLayout:
         return self.root / WRITER_LOCK_FILENAME
 
     def ensure(self) -> "JournalLayout":
+        """Create the journal root and its subdirectories; return ``self``."""
         self.root.mkdir(parents=True, exist_ok=True)
         self.rotated_dir.mkdir(parents=True, exist_ok=True)
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
@@ -51,4 +52,9 @@ class JournalLayout:
 
     @classmethod
     def at(cls, root: str | os.PathLike[str] | Path) -> "JournalLayout":
+        """Construct a layout rooted at ``root`` (does not create directories).
+
+        Args:
+            root: The journal root directory, e.g. ``<state root>/journal``.
+        """
         return cls(root=Path(root))

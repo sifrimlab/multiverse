@@ -1,5 +1,10 @@
 """Append-only journal writer with group commit, rotation, and blob spill.
 
+The journal is the kernel's intent record: a record is appended and committed
+*before* the side effect it describes is performed, so crash replay can resume
+the saga idempotently from the last durable record without re-running already-
+acked side effects.
+
 Durability protocol (R3):
     * Open the segment with append semantics. Buffer record bytes in memory
       only between ``append`` and ``flush`` calls in the same group-commit
@@ -366,6 +371,7 @@ def _scan_max_seq_plus_one(layout: JournalLayout) -> int:
 
 
 def _first_seq_in(segment: Path) -> Optional[int]:
+    """Return the seq of the first record in a segment, or ``None`` if empty."""
     try:
         with segment.open("rb") as fp:
             for line in fp:

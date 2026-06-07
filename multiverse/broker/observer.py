@@ -40,7 +40,9 @@ class HostObserver(Protocol):
 
     name: str
 
-    def observe(self) -> HostMetrics: ...
+    def observe(self) -> HostMetrics:
+        """Return a fresh snapshot of host resources."""
+        ...
 
 
 @dataclass
@@ -52,4 +54,5 @@ class InMemoryHostObserver:
     name: str = "in-memory"
 
     def observe(self) -> HostMetrics:
+        """Return the currently configured ``current`` snapshot verbatim."""
         return self.current

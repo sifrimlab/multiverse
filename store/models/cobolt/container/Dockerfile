@@ -10,6 +10,7 @@ COPY store/models/cobolt/container/environment.yml /tmp/environment.yml
 RUN micromamba create -y -f /tmp/environment.yml && micromamba clean -afy
 
 ENV PATH=/opt/conda/envs/multiverse_cobolt/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/conda/envs/multiverse_cobolt/lib:$LD_LIBRARY_PATH
 
 COPY pyproject.toml README.md /tmp/multiverse/
 COPY multiverse/ /tmp/multiverse/multiverse/

@@ -58,6 +58,14 @@ class StrictModeViolation(Exception):
 
 
 class JobStatus(str, Enum):
+    """Terminal state of a single simple-mode job.
+
+    Attributes:
+        ARTIFACT_SUCCESS: Bundle written; the only success state.
+        EVALUATION_FAILED: Backend ran but post-flight validators refused.
+        FAILED: Backend or strict-mode image gate failed before evaluation.
+    """
+
     ARTIFACT_SUCCESS = "ARTIFACT_SUCCESS"
     EVALUATION_FAILED = "EVALUATION_FAILED"
     FAILED = "FAILED"
@@ -124,6 +132,20 @@ class SimpleModeRunner:
     # ---- public API ----
 
     def run(self, manifest: SimpleManifest) -> SimpleModeResult:
+        """Run every job in the manifest and collect their outcomes.
+
+        Creates the output root, the shared ``_workspaces/`` scratch root,
+        and a single ``BootContext`` whose ``boot_id`` ties together every
+        timestamp in this invocation. Jobs run sequentially; one job's
+        failure does not abort the rest.
+
+        Args:
+            manifest: Parsed manifest whose ``jobs`` are executed in order.
+
+        Returns:
+            Aggregate result carrying the boot id and one ``JobOutcome`` per
+            job in manifest order.
+        """
         boot = BootContext.new(mvd_version=self.mvd_version, git_commit=self.git_commit)
         self.output_root.mkdir(parents=True, exist_ok=True)
         workspaces_root = self.output_root / "_workspaces"
@@ -153,6 +175,26 @@ class SimpleModeRunner:
         workspaces_root: Path,
         failed_root: Path,
     ) -> JobOutcome:
+        """Execute one job through the full simple-mode pipeline.
+
+        Runs the backend, applies the strict-mode image-identity gate, runs
+        the post-flight validators, and on success composes the artifact
+        manifest and writes the bundle under ``<out>/<job-name>/``. Any
+        failure short-circuits to ``_record_failure`` which preserves the
+        workspace and writes a ``run_attempt_manifest.json``.
+
+        Args:
+            job: The job to run.
+            manifest: The owning manifest; its raw text feeds the manifest
+                hash and its path is bundled as an input when present.
+            boot: Boot context whose ``boot_id`` stamps every transition.
+            workspaces_root: Scratch root; this job's workspace is recreated
+                under ``<workspaces_root>/<job-name>/``.
+            failed_root: Root under which failures are recorded.
+
+        Returns:
+            The job outcome (success bundle path or failure directory).
+        """
         physical_attempt_id = new_physical_attempt_id()
         workspace = workspaces_root / job.name
         if workspace.exists():
@@ -353,6 +395,29 @@ class SimpleModeRunner:
         transitions: List[StateTransition],
         validation_report: Optional[ValidationReport],
     ) -> JobOutcome:
+        """Record a failed job and preserve its workspace for diagnosis.
+
+        Writes a ``run_attempt_manifest.json`` under
+        ``<out>/_failed/<job-name>/`` and moves the workspace there as
+        ``workspace/``. The copy-then-remove is guarded so a copy failure
+        never destroys the only surviving copy (S5: workspace preserved).
+
+        Args:
+            job: The failed job.
+            manifest: Owning manifest (for the manifest hash).
+            boot: Boot context for transition timestamps.
+            physical_attempt_id: Id of this execution attempt.
+            image_identity: Resolved (or fallback) image identity to record.
+            failed_root: Root under which the failure directory is created.
+            workspace: The job's workspace to preserve.
+            final_state: Terminal status to record (FAILED / EVALUATION_FAILED).
+            failure_reason: Human-readable cause stored in the attempt record.
+            transitions: State transitions accumulated so far.
+            validation_report: Validator report when evaluation ran, else None.
+
+        Returns:
+            The failure outcome pointing at the recorded failure directory.
+        """
         failed_root.mkdir(parents=True, exist_ok=True)
         failure_dir = failed_root / job.name
         failure_dir.mkdir(parents=True, exist_ok=True)
@@ -431,6 +496,12 @@ def _recovery_hint_for(
     identity: ImageIdentity,
     report: Optional[ValidationReport],
 ) -> str:
+    """Compose an operator-facing recovery hint for a failed attempt.
+
+    Returns:
+        A sentence telling the user where to look and what to fix, tailored
+        to validator refusals or an ``unverified_local`` image identity.
+    """
     if status is JobStatus.EVALUATION_FAILED and report:
         return (
             "Inspect the saved workspace under workspace/. Re-run "

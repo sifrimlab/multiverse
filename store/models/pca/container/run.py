@@ -1,4 +1,11 @@
-"""PCA container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+"""PCA model container entrypoint.
+
+Implements the model container contract: reads the read-only input MuData at
+``/input/data.h5mu`` and the job spec at ``/output/job_spec.json``, runs PCA,
+and writes its latent embedding and metrics under ``/output/`` (the only
+writable tree). Host paths never appear inside this module — all I/O goes
+through ``multiverse.worker`` helpers bound to the contract paths.
+"""
 
 import random
 from typing import Union
@@ -44,6 +51,8 @@ class PCAModel(ModelFactory):
             config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
+            cell_type_key (str): Key in .obs for cell type annotations. Defaults to "cell_type".
+            batch_key (str): Key in .obs for batch annotations. Defaults to "batch".
 
         Raises:
             ValueError: If 'pca' configuration is not found in the model parameters.
@@ -60,7 +69,6 @@ class PCAModel(ModelFactory):
             batch_key=batch_key,
         )
 
-        # Check if model-specific params are present
         if self.model_name not in self.model_params:
             raise ValueError(
                 f"'{self.model_name}' configuration not found in the model parameters."
@@ -68,7 +76,6 @@ class PCAModel(ModelFactory):
 
         pca_params = self.model_params.get(self.model_name)
 
-        # PCA parameters from config file
         self.n_components = pca_params.get("n_components")
         self.device = pca_params.get("device")
         self.umap_random_state = pca_params.get("umap_random_state")

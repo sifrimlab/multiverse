@@ -32,14 +32,29 @@ DEFAULT_STALE_AFTER_SECONDS = 30 * 60  # 30 minutes
 
 @dataclass(frozen=True)
 class StuckReservation:
+    """A broker lease that was granted but never released.
+
+    Attributes:
+        physical_attempt_id: The attempt that holds the unreleased grant.
+        ram_bytes: RAM the lease reserved (so the operator sees what is
+            being held out of the broker's pool).
+        granted_wall_iso: Wall-clock ISO timestamp of the grant, or
+            ``"unknown"`` if the grant record could not be located.
+        terminal_state: Final run state when the leak is attributable to a
+            terminal run; ``None`` for unknown/stale reasons.
+        reason: Why the lease is stuck — one of ``"terminal"``,
+            ``"unknown_run"``, or ``"stale"``.
+    """
+
     physical_attempt_id: str
     ram_bytes: int
     granted_wall_iso: str
     terminal_state: Optional[str]
     """``None`` if the run is unknown to the journal (no JOB_INTENT seen)."""
-    reason: str  # "terminal" | "unknown_run" | "stale"
+    reason: str
 
     def to_dict(self) -> Dict[str, object]:
+        """Render as a JSON-serialisable row for the doctor report."""
         return {
             "physical_attempt_id": self.physical_attempt_id,
             "ram_bytes": int(self.ram_bytes),
@@ -55,8 +70,25 @@ def probe_reservation_ledger(
     stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS,
     now_iso: Optional[str] = None,
 ) -> ProbeReport:
-    """Scan the journal at ``state_root/journal`` and report stuck
-    reservations. Read-only.
+    """Scan the journal and report leases granted but never released.
+
+    Read-only. Reconstructs the broker ledger from the journal, then for
+    each in-flight grant classifies it as stuck when the run is terminal,
+    unknown to the journal, or non-terminal but older than the staleness
+    threshold (the kernel hung).
+
+    Args:
+        state_root: Root of the mvd state tree; the journal is read from
+            ``state_root/journal``.
+        stale_after_seconds: Age past which a still-running grant is
+            treated as stale (the kernel is presumed hung).
+        now_iso: Reference "now" as an ISO timestamp; defaults to the
+            current UTC time. Injected by tests for deterministic ages.
+
+    Returns:
+        A :class:`ProbeReport` named ``broker.reservation_ledger``:
+        ``SKIPPED`` when no journal exists, ``PASS`` when nothing is stuck,
+        ``FAIL`` (with a leak count) otherwise.
     """
     journal_root = Path(state_root) / "journal"
     if not journal_root.is_dir():
@@ -170,6 +202,7 @@ def probe_reservation_ledger(
 def _latest_grant_by_attempt(
     records: List[JournalRecord],
 ) -> Dict[str, JournalRecord]:
+    """Map each attempt to its most recent RESERVATION_GRANTED record."""
     out: Dict[str, JournalRecord] = {}
     for record in records:
         if (
@@ -183,6 +216,11 @@ def _latest_grant_by_attempt(
 def _terminal_state_by_attempt(
     records: List[JournalRecord],
 ) -> Dict[str, str]:
+    """Map each attempt to its terminal state, if it reached one.
+
+    An attempt that later transitions back out of a terminal state is
+    dropped from the map (rare, but treated as not-terminal).
+    """
     # Import locally to avoid circular: doctor → mvd → doctor.
     from ..mvd.state import PrimaryState
 
@@ -207,6 +245,7 @@ def _terminal_state_by_attempt(
 
 
 def _seen_job_intent(records: List[JournalRecord]) -> set[str]:
+    """Return attempt ids that have a JOB_INTENT record (known runs)."""
     return {
         record.physical_attempt_id
         for record in records
@@ -215,6 +254,7 @@ def _seen_job_intent(records: List[JournalRecord]) -> set[str]:
 
 
 def _parse_iso(value: str) -> datetime:
+    """Parse an ISO timestamp, falling back to current UTC on garbage."""
     try:
         return datetime.fromisoformat(value)
     except ValueError:
@@ -222,6 +262,8 @@ def _parse_iso(value: str) -> datetime:
 
 
 def _age_seconds(record: JournalRecord, now: datetime) -> float:
+    """Seconds between a record's wall time and ``now`` (>= 0; naive
+    timestamps are treated as UTC)."""
     try:
         granted = datetime.fromisoformat(record.wall_iso)
     except ValueError:

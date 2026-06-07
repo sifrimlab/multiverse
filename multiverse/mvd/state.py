@@ -146,6 +146,14 @@ def assert_valid_transition(from_state: PrimaryState, to_state: PrimaryState) ->
     Used by every state-mutating kernel verb; the kernel's invariants make
     illegal moves impossible from the API surface — illegal moves come from
     bugs in the executor or in replay.
+
+    Args:
+        from_state: The current primary state before the transition.
+        to_state: The proposed next primary state.
+
+    Raises:
+        ValueError: If ``from_state -> to_state`` is not an edge in
+            :data:`STATE_TRANSITIONS`.
     """
     if to_state == from_state:
         return  # idempotent self-loop (rare; the kernel accepts).

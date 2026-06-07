@@ -48,6 +48,17 @@ class RebuildOutcome(str, Enum):
 
 @dataclass
 class RebuildClassification:
+    """The rebuild's verdict for one attempt.
+
+    Attributes:
+        physical_attempt_id: The attempt this verdict is about.
+        outcome: How the three sources were reconciled (see RebuildOutcome).
+        primary_state: The authoritative state written into the index row.
+        artifact_dir: Promoted artifact bundle directory, if any.
+        failure_reason: Human-readable reason when the state is non-success.
+        notes: Evidence trail for ``doctor`` / the GUI to surface.
+    """
+
     physical_attempt_id: str
     outcome: RebuildOutcome
     primary_state: PrimaryState
@@ -58,6 +69,8 @@ class RebuildClassification:
 
 @dataclass
 class RebuildResult:
+    """Aggregate of one full index rebuild, including per-attempt verdicts."""
+
     classifications: List[RebuildClassification] = field(default_factory=list)
     total_runs: int = 0
     artifact_success: int = 0
@@ -69,6 +82,7 @@ class RebuildResult:
     """Set when the active journal segment ended in a truncated tail."""
 
     def summary_dict(self) -> Dict[str, Any]:
+        """Return a JSON-ready summary row for ``record_rebuild_report``."""
         return {
             "rebuilt_at_iso": datetime.now(timezone.utc).astimezone().isoformat(),
             "total_runs": self.total_runs,
@@ -169,6 +183,8 @@ def rebuild_index(
 
 @dataclass
 class _AttemptFacts:
+    """Folded-up journal facts for one attempt, built by replaying records."""
+
     physical_attempt_id: str
     logical_run_id: Optional[str] = None
     workspace_dir: Optional[str] = None
@@ -188,6 +204,7 @@ class _AttemptFacts:
     reservation_events: List[Dict[str, Any]] = field(default_factory=list)
 
     def consume(self, record) -> None:
+        """Fold one journal record into the accumulated facts for this attempt."""
         self.last_seq = max(self.last_seq, record.seq)
         if record.logical_run_id and not self.logical_run_id:
             self.logical_run_id = record.logical_run_id
@@ -253,6 +270,13 @@ def _classify(
     store: StoreLayout,
     engine: Optional[ContainerEngine],
 ) -> RebuildClassification:
+    """Reconcile journal facts, the live engine, and the artifact tree.
+
+    The outcome record (a sidecar-verified artifact manifest) outranks the
+    journal's last state: a verified bundle is ARTIFACT_SUCCESS even if the
+    journal crashed before recording it. Any unresolved ambiguity resolves to
+    RECOVERY_PENDING (S4 / R5) rather than guessing or dropping the run.
+    """
     # Outcome priority: a sidecar-verified artifact manifest wins.
     if facts.artifact_dir:
         manifest_state = _check_artifact_manifest(Path(facts.artifact_dir))
@@ -359,6 +383,7 @@ def _classify(
 
 
 def _check_artifact_manifest(artifact_dir: Path) -> str:
+    """Classify a bundle's manifest as ``missing``, ``verified``, or ``corrupt``."""
     if not (artifact_dir / ARTIFACT_MANIFEST_FILENAME).is_file():
         return "missing"
     try:
@@ -371,6 +396,7 @@ def _check_artifact_manifest(artifact_dir: Path) -> str:
 
 
 def _tally(result: RebuildResult, state: PrimaryState) -> None:
+    """Increment the per-state counter on ``result`` for one classification."""
     if state is PrimaryState.ARTIFACT_SUCCESS:
         result.artifact_success += 1
     elif state is PrimaryState.RECOVERY_PENDING:

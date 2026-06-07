@@ -47,6 +47,33 @@ class SimpleManifestError(ValueError):
 
 @dataclass
 class SimpleJob:
+    """One fully-resolved job from a simple-mode manifest.
+
+    Because simple mode never consults the asset registry, every value the
+    runner needs is carried here directly rather than looked up by slug.
+
+    Attributes:
+        name: Job name; also the bundle subdirectory under ``--out``.
+        model_slug: Model catalog identifier (e.g. ``pca``).
+        model_version: Declared model version, recorded in the bundle.
+        model_image: Container image reference actually run (tag or ref).
+        contract_version: model-container contract version the job targets.
+        dataset_slug: Dataset catalog identifier.
+        dataset_path: Host path to the ``.h5mu`` dataset mounted read-only.
+        dataset_n_obs: Expected observation count; drives embedding validation.
+        dataset_n_vars: Optional variable count; recorded in the fingerprint.
+        batch_key: Optional obs column naming the batch covariate.
+        cell_type_key: Optional obs column naming the cell-type label.
+        dataset_fingerprint_extra: Caller-supplied keys merged into the
+            dataset fingerprint.
+        image_digest: Optional OCI digest; promotes image identity to
+            ``registry_digest`` (strict-acceptable).
+        params: Model hyperparameters; hashed into the logical run id.
+        validators: Validation level for the job (basic/strict/developer).
+        gpu: Whether the job opts in to GPU allocation (issue #30).
+        preprocessing: Optional preprocessing block forwarded to the model.
+    """
+
     name: str
     model_slug: str
     model_version: str
@@ -66,6 +93,17 @@ class SimpleJob:
     preprocessing: Optional[Dict[str, Any]] = None
 
     def dataset_fingerprint(self) -> Dict[str, Any]:
+        """Build the dataset fingerprint recorded in the artifact bundle.
+
+        The ``path_sha256`` entry is included only when the dataset file is
+        present locally, so the fingerprint stays computable even when the
+        manifest describes a dataset that is not on this host.
+
+        Returns:
+            Mapping with at least ``slug`` and ``n_obs``, plus ``n_vars``,
+            ``path_sha256``, and any ``dataset_fingerprint_extra`` keys when
+            available.
+        """
         fp: Dict[str, Any] = {
             "slug": self.dataset_slug,
             "n_obs": int(self.dataset_n_obs),
@@ -80,6 +118,18 @@ class SimpleJob:
 
 @dataclass
 class SimpleManifest:
+    """Parsed simple-mode manifest with its jobs and verbatim source text.
+
+    Attributes:
+        raw_text: Original YAML text; hashed into the manifest hash so the
+            bundle records exactly what was submitted.
+        schema_version: Declared manifest schema version.
+        mv_contract_version: Default model-container contract version applied
+            to jobs that do not override it.
+        jobs: Parsed jobs in manifest order.
+        path: Source file path when parsed from a file; ``None`` for strings.
+    """
+
     raw_text: str
     schema_version: str
     mv_contract_version: str
@@ -97,12 +147,29 @@ def _sha256_path(path: Path) -> str:
 
 
 def _require(mapping: Mapping[str, Any], key: str, where: str) -> Any:
+    """Return ``mapping[key]`` or raise a located ``SimpleManifestError``."""
     if key not in mapping:
         raise SimpleManifestError(f"{where}: missing required field '{key}'")
     return mapping[key]
 
 
 def _parse_job(idx: int, raw: Mapping[str, Any], default_contract: str) -> SimpleJob:
+    """Validate and coerce one raw ``jobs[]`` entry into a ``SimpleJob``.
+
+    Args:
+        idx: Index of the job within the manifest, used for error locating.
+        raw: Raw mapping for this job as loaded from YAML.
+        default_contract: Contract version to apply when the job's model
+            block omits ``contract_version``.
+
+    Returns:
+        The validated job.
+
+    Raises:
+        SimpleManifestError: If a required field is missing or a value has
+            the wrong type/range (e.g. non-positive ``n_obs``, unknown
+            validators level).
+    """
     where = f"jobs[{idx}]"
     if not isinstance(raw, Mapping):
         raise SimpleManifestError(f"{where} must be a mapping")

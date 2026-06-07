@@ -1,4 +1,11 @@
-"""MOFA container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+"""MOFA model container entrypoint.
+
+Implements the model container contract: reads the read-only input MuData at
+``/input/data.h5mu`` and the job spec at ``/output/job_spec.json``, trains
+MOFA+, and writes its latent embedding and metrics under ``/output/`` (the only
+writable tree). Host paths never appear inside this module — all I/O goes
+through ``multiverse.worker`` helpers bound to the contract paths.
+"""
 
 import random
 from typing import Union
@@ -83,12 +90,12 @@ class MOFAModel(ModelFactory):
             self.dataset.obsm[self.latent_key] = self.dataset.obsm["X_mofa"]
             logger.info("MOFA training completed.")
 
-            # Compute explained variance if not available
+            # muon stores explained variance in .uns after fitting; if absent
+            # (older muon / certain backends), fall back to computing it.
             if "explained_variance" in self.dataset.uns.get("mofa", {}):
                 self.explained_variance = self.dataset.uns["mofa"]["explained_variance"]
                 logger.info(f"Explained variance per factor: {self.explained_variance}")
             else:
-                # Manually calculate explained variance
                 self.explained_variance = self._compute_explained_variance()
                 logger.info(
                     f"Computed explained variance per factor: {self.explained_variance}"

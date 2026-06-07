@@ -66,6 +66,132 @@ def test_build_run_manifest_ignores_stale_pair_params():
     assert "stale" not in str(manifest)
 
 
+def test_build_run_manifest_splits_sweep_and_scalar_params():
+    # Bug 2: a job with any sweep spec must emit mode=sweep + search_space, with
+    # only scalar params left in model_params. Scalars never reach the container
+    # as dicts (the root cause of the Cobolt Bug 3a crash).
+    manifest = build_run_manifest(
+        experiment_name="exp",
+        random_seed=44,
+        run_mode="Use User Params",
+        planned_jobs=[{"Dataset": "pbmc10k", "Model": "cobolt"}],
+        dataset_name_to_slug={"pbmc10k": "pbmc10k"},
+        pair_params={
+            ("pbmc10k", "cobolt"): {
+                "umap_random_state": 44,
+                "latent_dimensions": {"type": "int", "low": 2, "high": 4, "log": False},
+                "learning_rate": {
+                    "type": "float",
+                    "low": 1e-4,
+                    "high": 1e-1,
+                    "log": True,
+                },
+            }
+        },
+        pair_sweep_config={
+            ("pbmc10k", "cobolt"): {
+                "n_trials": 5,
+                "optimize_metric": "ari",
+                "direction": "minimize",
+                "study_storage": "sqlite:///custom.db",
+            }
+        },
+    )
+
+    job = manifest["jobs"][0]
+    assert job["mode"] == "sweep"
+    assert job["model_params"] == {"umap_random_state": 44}
+    assert job["search_space"] == {
+        "latent_dimensions": {"type": "int", "low": 2, "high": 4, "log": False},
+        "learning_rate": {"type": "float", "low": 1e-4, "high": 1e-1, "log": True},
+    }
+    assert job["n_trials"] == 5
+    assert job["optimize_metric"] == "ari"
+    assert job["direction"] == "minimize"
+    assert job["study_storage"] == "sqlite:///custom.db"
+
+
+def test_build_run_manifest_sweep_falls_back_to_defaults():
+    # When a pair has swept params but no sweep config (e.g. an older session),
+    # build_run_manifest still emits a runnable sweep job with sane defaults.
+    manifest = build_run_manifest(
+        experiment_name="exp",
+        random_seed=1,
+        run_mode="Use User Params",
+        planned_jobs=[{"Dataset": "ds", "Model": "pca"}],
+        dataset_name_to_slug={"ds": "ds"},
+        pair_params={
+            ("ds", "pca"): {
+                "n_components": {"type": "int", "low": 2, "high": 5, "log": False}
+            }
+        },
+    )
+
+    job = manifest["jobs"][0]
+    assert job["mode"] == "sweep"
+    assert job["n_trials"] == 20
+    assert job["optimize_metric"] == "silhouette_score"
+    assert job["direction"] == "maximize"
+    assert job["study_storage"] == "sqlite:///optuna.db"
+
+
+def test_build_run_manifest_scalar_only_job_has_no_sweep_keys():
+    # A job with no swept params stays in plain run shape — no mode/search_space.
+    manifest = build_run_manifest(
+        experiment_name="exp",
+        random_seed=7,
+        run_mode="Use User Params",
+        planned_jobs=[{"Dataset": "ds", "Model": "pca"}],
+        dataset_name_to_slug={"ds": "ds"},
+        pair_params={("ds", "pca"): {"n_components": 20}},
+    )
+
+    job = manifest["jobs"][0]
+    assert job == {
+        "dataset_slug": "ds",
+        "model_name": "pca",
+        "model_params": {"n_components": 20},
+    }
+
+
+def test_prefill_seed_params_fills_seed_fields_nondestructively(monkeypatch):
+    # Bug 1: seed-like fields inherit the global seed, but only when the user
+    # (or a loaded manifest) hasn't already set them.
+    from multiverse import gui
+
+    fake_state = {"PBMC10K::PCA::fixed::random_state": 99}
+    monkeypatch.setattr(gui.st, "session_state", fake_state)
+
+    schema = {
+        "properties": {
+            "random_state": {"type": "integer"},
+            "umap_random_state": {"type": "integer"},
+            "encoder_seed": {"type": "integer"},
+            "n_components": {"type": "integer"},
+        }
+    }
+    gui._prefill_seed_params("PBMC10K::PCA", schema, 44)
+
+    # Already-set field is preserved; empty seed fields inherit the global seed.
+    assert fake_state["PBMC10K::PCA::fixed::random_state"] == 99
+    assert fake_state["PBMC10K::PCA::fixed::umap_random_state"] == 44
+    assert fake_state["PBMC10K::PCA::fixed::encoder_seed"] == 44
+    # Non-seed fields are untouched.
+    assert "PBMC10K::PCA::fixed::n_components" not in fake_state
+
+
+def test_is_seed_param_matches_known_names_and_suffixes():
+    from multiverse import gui
+
+    assert gui._is_seed_param("random_state")
+    assert gui._is_seed_param("seed")
+    assert gui._is_seed_param("umap_random_state")
+    assert gui._is_seed_param("Encoder_Seed")
+    assert gui._is_seed_param("torch_state")
+    assert not gui._is_seed_param("n_components")
+    assert not gui._is_seed_param("learning_rate")
+
+
 def test_slugify_experiment_name_rejects_empty_value():
     try:
         slugify_experiment_name(" !!! ")

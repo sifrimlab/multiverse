@@ -50,6 +50,12 @@ from .tokens import (OWNER_TOKEN_FILENAME, new_owner_token, read_owner_token,
 
 
 class PromotionStep(str, Enum):
+    """The journaled, idempotent steps of the promotion saga, in order.
+
+    Each value matches the corresponding journal record kind so replay can map
+    a committed step back to where it resumes.
+    """
+
     PREPARE = "PROMOTE_PREPARE"
     VALIDATE = "PROMOTE_VALIDATE"
     STAGE = "PROMOTE_STAGE"
@@ -57,6 +63,15 @@ class PromotionStep(str, Enum):
 
 
 class PromotionOutcome(str, Enum):
+    """Terminal outcome of a saga run.
+
+    Attributes:
+        PROMOTED: Workspace published as an artifact bundle.
+        QUARANTINED: Staging dir moved to quarantine (e.g. validator refused).
+        FAILED_PRE_PREPARE: Refused before PREPARE wrote any owner token, so
+            nothing was staged and there is nothing to recover.
+    """
+
     PROMOTED = "PROMOTED"
     QUARANTINED = "QUARANTINED"
     FAILED_PRE_PREPARE = "FAILED_PRE_PREPARE"
@@ -68,6 +83,18 @@ OwnerToken = str
 
 @dataclass
 class PromotionResult:
+    """Outcome of one saga run plus the evidence needed to interpret it.
+
+    Attributes:
+        outcome: Terminal ``PromotionOutcome``.
+        artifact_dir: Planned (and, once promoted, actual) artifact path.
+        owner_token: Owner token minted at PREPARE, if reached.
+        validation_report: Output-validation result, if VALIDATE ran.
+        quarantine_report: Quarantine move record, if the saga quarantined.
+        committed_steps: Steps whose journal records were committed.
+        failure_reason: Human-readable cause when not PROMOTED.
+    """
+
     outcome: PromotionOutcome
     artifact_dir: Optional[Path] = None
     owner_token: Optional[OwnerToken] = None
@@ -78,18 +105,32 @@ class PromotionResult:
 
     @property
     def succeeded(self) -> bool:
+        """True iff the outcome is ``PROMOTED``."""
         return self.outcome is PromotionOutcome.PROMOTED
 
 
 @dataclass
 class PromotionSaga:
-    """Drives one workspace through PREPARE → ... → COMMIT_MANIFEST.
+    """Drive one workspace through PREPARE → ... → COMMIT_MANIFEST.
 
     The saga reads from ``workspace_dir`` (the output of a model container)
     and writes into ``target_artifact_dir`` (under ``store/artifacts/``).
-    All journaling is done through the supplied ``journal`` writer; the
-    caller is responsible for calling ``journal.commit()`` cadence-wise
-    (the saga does so at every step).
+    All journaling is done through the supplied ``journal`` writer; the saga
+    commits at every step.
+
+    Attributes:
+        journal: Append-only journal writer; the source of truth for replay.
+        layout: Resolved store layout (supplies the quarantine root).
+        physical_attempt_id: This execution; also embedded in the staging dir
+            name to guarantee uniqueness across retries.
+        logical_run_id: Logical run grouping retries/resumes of this attempt.
+        workspace_dir: In-flight run directory to promote.
+        target_artifact_dir: Planned final artifact-bundle path.
+        manifest: Artifact manifest written at COMMIT_MANIFEST.
+        contract: Output contract validated against the workspace/staging.
+        validators: Validation level applied (default ``BASIC``).
+        fsync_enabled: Whether to fsync on the durability-critical paths.
+        after_step_hook: Test-only fault-injection hook (see below).
     """
 
     journal: JournalWriter
@@ -113,6 +154,16 @@ class PromotionSaga:
     # ------------------------------------------------------------------
 
     def run(self) -> PromotionResult:
+        """Drive a fresh workspace through PREPARE → COMMIT_MANIFEST.
+
+        Each step journals its intent before its side-effect and appends
+        itself to ``committed_steps``. A validator refusal at VALIDATE
+        diverts into the quarantine branch rather than raising.
+
+        Returns:
+            A ``PromotionResult`` whose ``outcome`` is PROMOTED, QUARANTINED,
+            or FAILED_PRE_PREPARE.
+        """
         result = PromotionResult(outcome=PromotionOutcome.FAILED_PRE_PREPARE)
 
         # Step 1: PREPARE — owner token written into the *staging* dir
@@ -172,9 +223,21 @@ class PromotionSaga:
         """Resume a saga that crashed after ``last_committed_step``.
 
         Looks for ``<artifact>.staging.<attempt_id>/.mvd_owner`` to prove
-        ownership of the in-flight staging directory. If the staging dir
-        is gone (e.g. the crash was after step 4's atomic swap), we treat
-        the run as already PROMOTED and return.
+        ownership of the in-flight staging directory. If the staging dir is
+        gone (e.g. the crash was after step 4's atomic swap), the run is
+        treated as already PROMOTED. If the staging dir's token names a
+        different attempt, resume is refused rather than mutating it.
+
+        Args:
+            last_committed_step: The last step whose journal record was
+                committed before the crash; resume starts at the next step.
+
+        Returns:
+            A ``PromotionResult`` for the resumed (or already-completed) saga.
+
+        Raises:
+            OwnershipMismatchError: If the staging dir belongs to a different
+                physical attempt.
         """
         # Already-promoted case: if the final artifact dir exists with a
         # token under this attempt, the atomic swap already happened.
@@ -272,6 +335,19 @@ class PromotionSaga:
         )
 
     def _step_prepare(self) -> OwnerToken:
+        """Mint an owner token and write it into a fresh staging dir.
+
+        Journals the PREPARE record before writing the ``.mvd_owner`` token so
+        a crash leaves a directory the saga can recognise on replay. Refuses
+        if either the final artifact path or the staging dir already exists.
+
+        Returns:
+            The newly minted owner token.
+
+        Raises:
+            FileExistsError: If the target artifact dir or the staging dir
+                already exists (a prior owner or leftover scratch).
+        """
         owner_token = new_owner_token()
         if self.target_artifact_dir.exists():
             raise FileExistsError(
@@ -313,6 +389,11 @@ class PromotionSaga:
         return owner_token
 
     def _step_validate(self) -> ValidationReport:
+        """Run output-bundle validation against the workspace and journal it.
+
+        Returns:
+            The ``ValidationReport``; the caller inspects ``report.passed``.
+        """
         report = validate_output_bundle(
             self.workspace_dir, self.contract, level=self.validators
         )
@@ -339,6 +420,14 @@ class PromotionSaga:
         substaging that we then absorb file-by-file. Both branches end
         with every file present under staging — never under the final
         artifact path.
+
+        Args:
+            owner_token: Token recorded in the STAGE journal entry to tie the
+                staged contents to the owning attempt.
+
+        Returns:
+            A map from each staged file's path (relative to the workspace) to
+            its sha256 digest.
         """
         staging_dir = self._staging_dir()
         same_fs = is_same_filesystem(self.workspace_dir, staging_dir)
@@ -416,6 +505,16 @@ class PromotionSaga:
         single atomic operation. A crash between any prior steps leaves a
         recognisable staging dir and no final-path debris — there is no
         split-truth window.
+
+        Args:
+            staged_checksums: Per-file digests from STAGE, recorded in the
+                COMMIT_MANIFEST journal entry as ``staged_file_count``.
+
+        Raises:
+            ValueError: If the staged bundle fails re-validation when the
+                manifest carries no artifacts.
+            FileExistsError: If the target artifact path appeared after
+                PREPARE (recover via the quarantine path).
         """
         staging_dir = self._staging_dir()
         if not self.manifest.artifacts:
@@ -465,6 +564,16 @@ class PromotionSaga:
         owner_token: OwnerToken,
         refusal_codes: List[str],
     ) -> QuarantineReport:
+        """Journal the failure, then quarantine the owned staging dir.
+
+        Args:
+            owner_token: Token proving the saga owns the staging dir to move.
+            refusal_codes: Validator refusal codes, recorded in the journal
+                and surfaced in the quarantine reason.
+
+        Returns:
+            The ``QuarantineReport`` for the moved staging dir.
+        """
         staging_dir = self._staging_dir()
         self.journal.append(
             JournalKind.PROMOTION_QUARANTINE,
@@ -500,5 +609,6 @@ class PromotionSaga:
     # ------------------------------------------------------------------
 
     def _maybe_fault(self, step: PromotionStep) -> None:
+        """Invoke the test-only fault hook after ``step``, if one is set."""
         if self.after_step_hook is not None:
             self.after_step_hook(step)

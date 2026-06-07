@@ -28,6 +28,15 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_iter(chunks: Iterable[bytes]) -> str:
+    """Return the hex-encoded sha256 over an iterable of byte chunks.
+
+    Args:
+        chunks: An iterable yielding the data in arbitrary-sized pieces; the
+            digest is order-sensitive over the concatenation.
+
+    Returns:
+        The hex-encoded sha256 of the concatenated chunks.
+    """
     h = hashlib.sha256()
     for chunk in chunks:
         h.update(chunk)

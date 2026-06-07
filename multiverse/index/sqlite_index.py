@@ -25,6 +25,11 @@ SCHEMA_VERSION = "4"
 
 
 _SCHEMA_SQL = """
+-- WAL + synchronous=NORMAL: readers (GUI, CLI, doctor) never block the
+-- single writer, and writers never block readers. The durability trade-off
+-- (a crash can lose the last few transactions) is acceptable because the
+-- index is a projection — it is fully rebuildable from the journal and the
+-- artifact tree, so it is allowed to be stale or lost.
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
 PRAGMA foreign_keys=ON;
@@ -102,6 +107,7 @@ class SqliteIndex:
     # ---- lifecycle ----
 
     def close(self) -> None:
+        """Commit any open transaction and close the connection."""
         if self.conn is not None:
             self.conn.commit()
             self.conn.close()
@@ -115,6 +121,18 @@ class SqliteIndex:
     # ---- run upserts ----
 
     def upsert_run(self, record: Dict[str, Any]) -> None:
+        """Insert or update one run row from a projected fact dict.
+
+        Idempotent: re-applying an older record never regresses progress.
+        ``last_seq`` only ever advances (``MAX``) and ``user_id`` is never
+        cleared (``COALESCE``), so replaying journal records out of order or
+        more than once converges to the same row.
+
+        Args:
+            record: Projected facts for one attempt, keyed by column name.
+                ``physical_attempt_id`` and ``primary_state`` are required;
+                the rest are optional and default per the schema.
+        """
         with self.conn:
             self.conn.execute(
                 """
@@ -162,6 +180,15 @@ class SqliteIndex:
         last_seq: int = 0,
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Record the status of one projection plugin for one attempt.
+
+        Args:
+            physical_attempt_id: The attempt this projection status belongs to.
+            plugin: Projection plugin name (e.g. MLflow, Optuna, SQLite index).
+            status: Plugin-reported status string for the attempt.
+            last_seq: Highest journal seq this status reflects; only advances.
+            details: Optional plugin-specific detail, stored as sorted JSON.
+        """
         with self.conn:
             self.conn.execute(
                 """
@@ -185,6 +212,14 @@ class SqliteIndex:
     # ---- queries ----
 
     def get_run(self, physical_attempt_id: str) -> Optional[Dict[str, Any]]:
+        """Return the run row as a dict, or ``None`` if the attempt is unknown.
+
+        Args:
+            physical_attempt_id: The attempt to look up.
+
+        Returns:
+            Column-name-keyed dict for the run, or ``None`` if absent.
+        """
         cur = self.conn.execute(
             "SELECT * FROM runs WHERE physical_attempt_id = ?",
             (physical_attempt_id,),
@@ -199,6 +234,16 @@ class SqliteIndex:
         logical_run_id: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        """List run rows, optionally filtered, in submission order.
+
+        Args:
+            primary_state: If given, only runs in this state are returned.
+            logical_run_id: If given, only attempts of this logical run.
+            limit: Optional maximum number of rows.
+
+        Returns:
+            Run rows as dicts, ordered by submission time then attempt id.
+        """
         where: List[str] = []
         params: List[Any] = []
         if primary_state is not None:
@@ -217,6 +262,14 @@ class SqliteIndex:
         return [_row_to_dict(row, cur.description) for row in cur.fetchall()]
 
     def projections_for(self, physical_attempt_id: str) -> Dict[str, str]:
+        """Return a ``{plugin: status}`` map of projections for one attempt.
+
+        Args:
+            physical_attempt_id: The attempt whose projection statuses to read.
+
+        Returns:
+            Mapping from projection plugin name to its last recorded status.
+        """
         cur = self.conn.execute(
             "SELECT plugin, status FROM run_projections WHERE physical_attempt_id = ?",
             (physical_attempt_id,),
@@ -234,6 +287,20 @@ class SqliteIndex:
         gpu_index: Optional[int] = None,
         release_reason: Optional[str] = None,
     ) -> None:
+        """Record one broker reservation event (grant or release).
+
+        Keyed by ``(physical_attempt_id, seq)`` so replaying the journal
+        re-applies the same event idempotently.
+
+        Args:
+            physical_attempt_id: The attempt the lease event belongs to.
+            seq: Journal seq of the event; part of the primary key.
+            kind: ``"granted"`` or ``"released"``.
+            wall_iso: Wall-clock timestamp of the event.
+            ram_bytes: RAM held by the lease, for grants.
+            gpu_index: GPU index held by the lease, for grants.
+            release_reason: Why the lease was released, for releases.
+        """
         with self.conn:
             self.conn.execute(
                 """
@@ -254,6 +321,14 @@ class SqliteIndex:
             )
 
     def list_reservation_events(self, physical_attempt_id: str) -> List[Dict[str, Any]]:
+        """Return the reservation timeline for one attempt in seq order.
+
+        Args:
+            physical_attempt_id: The attempt whose lease events to read.
+
+        Returns:
+            Reservation event rows as dicts, ordered by ``seq`` ascending.
+        """
         cur = self.conn.execute(
             "SELECT * FROM reservation_events WHERE physical_attempt_id = ? "
             "ORDER BY seq ASC",
@@ -262,12 +337,19 @@ class SqliteIndex:
         return [_row_to_dict(row, cur.description) for row in cur.fetchall()]
 
     def truncate_reservation_events(self) -> None:
+        """Delete all reservation events, e.g. before a partial rebuild."""
         with self.conn:
             self.conn.execute("DELETE FROM reservation_events")
 
     # ---- rebuild bookkeeping ----
 
     def record_rebuild_report(self, report: Dict[str, Any]) -> None:
+        """Persist a summary row from a full index rebuild.
+
+        Args:
+            report: Summary dict as produced by ``RebuildResult.summary_dict``;
+                ``rebuilt_at_iso`` and ``total_runs`` are required.
+        """
         with self.conn:
             self.conn.execute(
                 """
@@ -314,6 +396,11 @@ class SqliteIndex:
 
     @contextmanager
     def cursor(self) -> Any:
+        """Yield a cursor that is closed on exit.
+
+        Yields:
+            A SQLite cursor on this index's connection.
+        """
         cur = self.conn.cursor()
         try:
             yield cur
@@ -322,6 +409,7 @@ class SqliteIndex:
 
 
 def _row_to_dict(row, description) -> Optional[Dict[str, Any]]:
+    """Map a SQLite row to a column-name-keyed dict (``None`` passes through)."""
     if row is None:
         return None
     return {col[0]: row[i] for i, col in enumerate(description)}

@@ -1,4 +1,11 @@
-"""Cobolt container entrypoint. Reads /input/data.h5mu, writes /output/embeddings.h5."""
+"""Cobolt model container entrypoint.
+
+Implements the model container contract: reads the read-only input MuData at
+``/input/data.h5mu`` and the job spec at ``/output/job_spec.json``, trains
+Cobolt, and writes its latent embedding and metrics under ``/output/`` (the only
+writable tree). Host paths never appear inside this module — all I/O goes
+through ``multiverse.worker`` helpers bound to the contract paths.
+"""
 
 import os
 import random
@@ -48,6 +55,8 @@ class CoboltModel(ModelFactory):
             config_path: Path to the JSON configuration file or an in-memory config dict.
             is_gridsearch (bool): Flag indicating if this is a grid search run.
                 Defaults to False.
+            cell_type_key (str): Key in .obs for cell type annotations. Defaults to "cell_type".
+            batch_key (str): Key in .obs for batch annotations. Defaults to "batch".
 
         Raises:
             ValueError: If 'cobolt' configuration is not found in the model parameters.
@@ -82,7 +91,6 @@ class CoboltModel(ModelFactory):
         self.torch_device = get_device(self.device)
         self.dataset_name = dataset_name
         self.modalities = dataset["modalities"]
-        # initialize dataset
         self.single_data_list = []
         for modality, adata in zip(self.dataset["modalities"], self.dataset["data"]):
             self.single_data_list.append(

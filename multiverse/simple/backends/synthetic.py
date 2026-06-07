@@ -37,6 +37,17 @@ class SyntheticBackend:
         workspace_dir: Path,
         seed: Optional[int],
     ) -> ExecutionResult:
+        """Resolve image identity and invoke the producer to fill the workspace.
+
+        Args:
+            job: The job whose declared image identity is resolved.
+            workspace_dir: Workspace the producer writes outputs into.
+            seed: Accepted for protocol parity; the synthetic backend leaves
+                seed handling to the producer.
+
+        Returns:
+            Execution result carrying the resolved image identity.
+        """
         workspace_dir.mkdir(parents=True, exist_ok=True)
         identity = self._resolve_identity(job)
         self.producer(workspace_dir, job)
@@ -44,6 +55,7 @@ class SyntheticBackend:
 
     @staticmethod
     def _resolve_identity(job: Any) -> ImageIdentity:
+        """Resolve image identity from the job's digest, else unverified_local."""
         digest = getattr(job, "image_digest", None)
         if digest:
             return ImageIdentity.registry_digest(digest)

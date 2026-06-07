@@ -28,10 +28,30 @@ TrialRunner = Callable[[Dict[str, Any], Dict[str, Any], int], Dict[str, Any]]
 
 
 def _sample_param(trial: Any, name: str, spec: Dict[str, Any]) -> Any:
+    """Sample one hyperparameter from its search-space spec via the Optuna trial.
+
+    Supports ``int`` (optionally log-scaled), ``float`` (optionally log-scaled),
+    ``categorical``, and the legacy ``loguniform`` distribution specs. The
+    ``int`` and ``float`` shapes with a ``log`` flag are what the GUI sweep
+    widgets emit (``{"type": "float", "low": ..., "high": ..., "log": bool}``).
+
+    Raises:
+        ValueError: If ``spec['type']`` is not a supported distribution.
+    """
     dist_type = spec.get("type")
     if dist_type == "int":
+        # Optuna forbids a custom step together with log=True, so the log path
+        # must omit step rather than pass the default.
+        if spec.get("log"):
+            return trial.suggest_int(
+                name, int(spec["low"]), int(spec["high"]), log=True
+            )
         return trial.suggest_int(
             name, int(spec["low"]), int(spec["high"]), step=int(spec.get("step", 1))
+        )
+    if dist_type == "float":
+        return trial.suggest_float(
+            name, float(spec["low"]), float(spec["high"]), log=bool(spec.get("log"))
         )
     if dist_type == "categorical":
         return trial.suggest_categorical(name, list(spec["choices"]))
@@ -45,6 +65,15 @@ def _sample_param(trial: Any, name: str, spec: Dict[str, Any]) -> Any:
 def sample_hyperparameters(
     trial: Any, distributions: Dict[str, Dict[str, Any]]
 ) -> Dict[str, Any]:
+    """Sample a full hyperparameter vector for one trial.
+
+    Args:
+        trial: The Optuna trial doing the suggesting.
+        distributions: Search space mapping param name to its distribution spec.
+
+    Returns:
+        Mapping of param name to its sampled value for this trial.
+    """
     sampled: Dict[str, Any] = {}
     for param_name, spec in distributions.items():
         sampled[param_name] = _sample_param(trial, param_name, spec)
@@ -52,6 +81,22 @@ def sample_hyperparameters(
 
 
 def _extract_metric(metrics: Dict[str, Any], metric_name: str) -> float:
+    """Pull a scalar optimize target out of an attempt's ``metrics.json``.
+
+    Supports dotted keys for nested metrics (e.g. ``batch.ilisi``). A missing,
+    non-scalar, or ``history`` target raises ``optuna.TrialPruned`` so the
+    offending trial is pruned without failing the whole study.
+
+    Args:
+        metrics: The parsed ``metrics.json`` contents for the attempt.
+        metric_name: The (possibly dotted) metric key to optimize.
+
+    Returns:
+        The metric value as a float.
+
+    Raises:
+        optuna.TrialPruned: If the metric is absent, non-numeric, or ``history``.
+    """
     optuna = __import__("optuna")
     if metric_name == "history":
         raise optuna.TrialPruned("Metric 'history' is not a scalar optimize target")
@@ -125,6 +170,44 @@ def objective(
     return _extract_metric(metrics, metric_name)
 
 
+def build_trial_job(
+    base_job: Dict[str, Any],
+    sampled: Dict[str, Any],
+    trial_number: int,
+    *,
+    study_name: "str | None" = None,
+) -> Dict[str, Any]:
+    """Derive one trial's single-run job dict from the sweep base job.
+
+    Shared by every trial runner (the default kernel-spawning one and the GUI
+    in-process controller's): merges the sampled hyperparameters over the base
+    ``model_params``, forces ``mode: "run"``, gives the trial its own artifact
+    directory so trials never clobber one another, and stamps the trial/study
+    identity into the container env for workspace/optuna-dashboard correlation.
+    The private ``_exec`` block is stripped so it never reaches the executor.
+    """
+    trial_job = {k: v for k, v in base_job.items() if k != "_exec"}
+    merged_params = dict(base_job.get("model_params") or {})
+    merged_params.update(sampled)
+    trial_job["model_params"] = merged_params
+    trial_job["mode"] = "run"
+    base_name = (
+        base_job.get("artifact_dir_name")
+        or base_job.get("name")
+        or f"{base_job.get('dataset_name', 'dataset')}_"
+        f"{base_job.get('model_slug') or base_job.get('model_name', 'model')}"
+    )
+    trial_job["artifact_dir_name"] = f"{base_name}_trial{trial_number}"
+    if base_job.get("output_path"):
+        trial_job["output_path"] = f"{base_job['output_path']}_trial{trial_number}"
+    env_extra: Dict[str, str] = dict(trial_job.get("container_env_extra") or {})
+    env_extra["MULTIVERSE_TRIAL_NUMBER"] = str(trial_number)
+    if study_name:
+        env_extra["MULTIVERSE_STUDY_NAME"] = str(study_name)
+    trial_job["container_env_extra"] = env_extra
+    return trial_job
+
+
 def _default_trial_runner(job_manifest: Dict[str, Any]) -> TrialRunner:
     """Build the production trial runner from a sweep job's execution context.
 
@@ -138,30 +221,9 @@ def _default_trial_runner(job_manifest: Dict[str, Any]) -> TrialRunner:
     exec_ctx = dict(job_manifest.get("_exec") or {})
 
     def _run(base_job: Dict[str, Any], sampled: Dict[str, Any], trial_number: int):
-        trial_job = {k: v for k, v in base_job.items() if k != "_exec"}
-        merged_params = dict(base_job.get("model_params") or {})
-        merged_params.update(sampled)
-        trial_job["model_params"] = merged_params
-        # Each trial is a plain single run with its own artifact directory.
-        trial_job["mode"] = "run"
-        base_name = (
-            base_job.get("artifact_dir_name")
-            or base_job.get("name")
-            or f"{base_job.get('dataset_name', 'dataset')}_"
-            f"{base_job.get('model_slug') or base_job.get('model_name', 'model')}"
+        trial_job = build_trial_job(
+            base_job, sampled, trial_number, study_name=exec_ctx.get("study_name")
         )
-        trial_job["artifact_dir_name"] = f"{base_name}_trial{trial_number}"
-        if base_job.get("output_path"):
-            trial_job["output_path"] = (
-                f"{base_job['output_path']}_trial{trial_number}"
-            )
-        # Stamp trial identity into container env so the workspace and
-        # optuna-dashboard can correlate container runs to study trials.
-        env_extra: Dict[str, str] = dict(trial_job.get("container_env_extra") or {})
-        env_extra["MULTIVERSE_TRIAL_NUMBER"] = str(trial_number)
-        if exec_ctx.get("study_name"):
-            env_extra["MULTIVERSE_STUDY_NAME"] = str(exec_ctx["study_name"])
-        trial_job["container_env_extra"] = env_extra
         return run_trial_attempt(
             job=trial_job,
             state_root=exec_ctx["state_root"],
@@ -266,9 +328,24 @@ def run_sweep(
         n_trials=n_trials,
     )
 
+    # Surface the winning trial's attempt identity so callers (e.g. the GUI
+    # controller) can represent the sweep as a monitorable run pointing at the
+    # best trial's artifact bundle. Guarded: best_trial raises if no trial
+    # completed, in which case best_value/best_params above already raised.
+    best_attempt_id = ""
+    best_artifact_dir = ""
+    try:
+        best = study.best_trial
+        best_attempt_id = str(best.user_attrs.get("physical_attempt_id") or "")
+        best_artifact_dir = str(best.user_attrs.get("artifact_dir") or "")
+    except Exception:
+        pass
+
     return {
         "study_name": study.study_name,
         "best_value": study.best_value,
         "best_params": study.best_params,
         "trials": len(study.trials),
+        "best_attempt_id": best_attempt_id,
+        "best_artifact_dir": best_artifact_dir,
     }

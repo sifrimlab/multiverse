@@ -75,6 +75,17 @@ def list_runs(
 
 
 def projections_for(state_root: Path, *, physical_attempt_id: str) -> Dict[str, str]:
+    """Return the ``{plugin: status}`` projection map for one attempt.
+
+    Read-only over the projection; returns ``{}`` if the index file is absent.
+
+    Args:
+        state_root: Root of the mvd state tree (journals, index, leases).
+        physical_attempt_id: The attempt whose projection statuses to read.
+
+    Returns:
+        Mapping from projection plugin name to its last recorded status.
+    """
     db_path = Path(state_root) / INDEX_FILENAME
     if not db_path.is_file():
         return {}

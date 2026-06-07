@@ -84,6 +84,17 @@ class MvdSlurmExecutor:
     # ------------------------------------------------------------------
 
     async def execute(self, *, record: RunRecord, kernel) -> None:
+        """Drive one run end-to-end via Slurm: admit, sbatch, poll, promote.
+
+        Submits one ``sbatch``, polls ``sacct`` until the job reaches a
+        terminal state, then drives the same promotion saga as the Docker
+        path. The broker lease is always released in the ``finally`` block.
+
+        Args:
+            record: The run record to execute; its ``options`` carry the
+                job-specific data (SIF, dataset, Slurm directives).
+            kernel: The owning kernel used for journaled state transitions.
+        """
         options = dict(record.options or {})
         try:
             spec = _SlurmJobSpec.from_options(options, record.physical_attempt_id)
@@ -381,6 +392,19 @@ class MvdSlurmExecutor:
         record: RunRecord,
         kernel,
     ):
+        """Poll ``sacct`` until the job is terminal, cancelled, or times out.
+
+        Args:
+            job_id: The Slurm job id to poll.
+            record: The run record; its ``cancel_requested`` flag is polled
+                between queries.
+            kernel: The owning kernel used for journaled transitions.
+
+        Returns:
+            The terminal Slurm job info on natural completion, or ``None`` if
+            the run was cancelled or the poll budget was exhausted (in which
+            case the run has already been transitioned to a terminal state).
+        """
         for _ in range(self.max_poll_iterations):
             if record.cancel_requested:
                 await self._cancel_terminate(
@@ -417,6 +441,14 @@ class MvdSlurmExecutor:
         job_id: Optional[str] = None,
         reason: str = "cancel",
     ) -> None:
+        """Drive the cancellation transitions and scancel the Slurm job.
+
+        Args:
+            record: The run record being cancelled.
+            kernel: The owning kernel used for journaled transitions.
+            job_id: Slurm job id to ``scancel``; ``None`` if not yet dispatched.
+            reason: Reason recorded on the CANCELLED transition.
+        """
         await kernel.transition(
             record.physical_attempt_id, to_state=PrimaryState.CANCEL_REQUESTED
         )
@@ -454,6 +486,15 @@ class MvdSlurmExecutor:
         record: RunRecord,
         runtime_identity: Optional[ImageIdentity],
     ) -> ArtifactManifest:
+        """Assemble the artifact manifest, enforcing the dual-digest invariant.
+
+        Mirrors :meth:`MvdDockerExecutor._compose_manifest`: when a runtime SIF
+        is present its ``built_from`` must equal the source identity (STRATEGY
+        M2), otherwise the verification raises and the caller FAILs the run.
+
+        Raises:
+            ValueError: If the runtime identity does not match its source.
+        """
         verify_runtime_identity_matches_source(identity, runtime_identity)
         return ArtifactManifest(
             logical_run_id=logical_run_id,

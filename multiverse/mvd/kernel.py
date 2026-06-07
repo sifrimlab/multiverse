@@ -204,7 +204,17 @@ class Kernel:  # implements KernelAPI
 
         Only the run executor should call this; transitions are validated
         against :data:`~multiverse.mvd.state.STATE_TRANSITIONS` and journaled
-        before the in-memory registry is updated.
+        before the in-memory registry is updated, so crash replay can resume
+        idempotently.
+
+        Args:
+            physical_attempt_id: The attempt whose state is changing.
+            to_state: Target primary state to move into.
+            reason: Optional human-readable reason; recorded as the failure
+                reason for failure-class target states.
+
+        Raises:
+            ValueError: If the transition is not in the canonical set.
         """
         record = self._registry.get(physical_attempt_id)
         from_state = record.primary_state
@@ -252,6 +262,23 @@ class Kernel:  # implements KernelAPI
         manifest_path: str,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """Validate, journal, and schedule a new run (see :class:`KernelAPI`).
+
+        Writes ``JOB_INTENT`` to the journal before scheduling the executor
+        task, so the intent survives a crash and replays idempotently.
+
+        Args:
+            manifest_path: Path to the manifest to execute.
+            options: Executor-specific job options; an ``idempotency_key`` is
+                derived from manifest + options when not supplied so duplicate
+                submits collapse to the same attempt.
+
+        Returns:
+            The ``physical_attempt_id`` of the new or deduped attempt.
+
+        Raises:
+            RuntimeError: If the kernel is paused for maintenance.
+        """
         if self._config.paused:
             raise RuntimeError("kernel is paused for maintenance; refuses submit_run")
         options = dict(options or {})
@@ -304,6 +331,15 @@ class Kernel:  # implements KernelAPI
         return physical_attempt_id
 
     async def cancel_run(self, *, physical_attempt_id: str) -> None:
+        """Request cancellation of a run (see :class:`KernelAPI`).
+
+        Idempotent: a no-op if the run is already terminal or a cancel is
+        already pending. Appends ``CANCEL_REQUESTED`` and returns; the
+        executor drives the cancellation saga.
+
+        Args:
+            physical_attempt_id: The attempt to cancel.
+        """
         record = self._registry.get(physical_attempt_id)
         if record.primary_state.is_terminal:
             return  # idempotent — already done
@@ -326,6 +362,14 @@ class Kernel:  # implements KernelAPI
         )
 
     async def query_run(self, *, physical_attempt_id: str) -> Dict[str, Any]:
+        """Return a read-only snapshot of one run (see :class:`KernelAPI`).
+
+        Args:
+            physical_attempt_id: The attempt to inspect.
+
+        Returns:
+            The run record's serialized snapshot.
+        """
         return self._registry.get(physical_attempt_id).to_dict()
 
     async def list_runs(
@@ -334,6 +378,15 @@ class Kernel:  # implements KernelAPI
         state: Optional[str] = None,
         logical_run_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
+        """Return a read-only summary list of runs (see :class:`KernelAPI`).
+
+        Args:
+            state: Optional primary-state name to filter by.
+            logical_run_id: Optional logical run to group attempts under.
+
+        Returns:
+            One serialized summary per matching run.
+        """
         primary = PrimaryState(state) if state else None
         records = self._registry.list(state=primary, logical_run_id=logical_run_id)
         return [r.to_dict() for r in records]
@@ -343,6 +396,15 @@ class Kernel:  # implements KernelAPI
         *,
         physical_attempt_id: str,
     ) -> AsyncIterator[KernelEvent]:
+        """Subscribe to a run's event stream (see :class:`KernelAPI`).
+
+        Args:
+            physical_attempt_id: The attempt to subscribe to.
+
+        Returns:
+            An async iterator yielding :class:`KernelEvent` for this attempt;
+            the subscriber queue is unregistered when iteration stops.
+        """
         self._registry.get(physical_attempt_id)
         queue: asyncio.Queue[KernelEvent] = asyncio.Queue()
         self._event_subscribers.setdefault(physical_attempt_id, []).append(queue)
@@ -360,6 +422,14 @@ class Kernel:  # implements KernelAPI
         return _iter()
 
     async def health(self) -> Dict[str, Any]:
+        """Run a kernel self-check (see :class:`KernelAPI`).
+
+        Performs no external probes — those live in ``multiverse doctor``.
+
+        Returns:
+            A snapshot of liveness, version, run counters, journal position,
+            and executor identity.
+        """
         n = len(self._registry.records)
         active = sum(
             1
@@ -385,6 +455,21 @@ class Kernel:  # implements KernelAPI
         status: str,
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Record a projection plugin's sync status (see :class:`KernelAPI`).
+
+        Validates the plugin and status, journals the status, and broadcasts
+        it. Projections are a derived read surface, never the source of run
+        truth.
+
+        Args:
+            plugin: Projection plugin name (e.g. ``"mlflow"``, ``"optuna"``).
+            physical_attempt_id: The attempt whose projection status changed.
+            status: One of the plugin's allowed status names.
+            details: Optional free-form details about the sync.
+
+        Raises:
+            ValueError: If the plugin or status name is not allowed.
+        """
         record = self._registry.get(physical_attempt_id)
         assert_projection_status_valid(plugin, status)
         record.projections[plugin] = status
@@ -412,6 +497,13 @@ class Kernel:  # implements KernelAPI
     # ------------------------------------------------------------------
 
     async def _drive_execution(self, record: RunRecord) -> None:
+        """Run the executor and convert an uncaught crash into a journaled
+        terminal state.
+
+        A crash mid-promotion or mid-evaluation routes to RECOVERY_PENDING
+        (user adoption required) rather than a bare FAILED, preserving the
+        partially-built workspace as recovery evidence.
+        """
         try:
             await self._executor.execute(record=record, kernel=self)
         except asyncio.CancelledError:
@@ -451,6 +543,7 @@ class Kernel:  # implements KernelAPI
                 pass
 
     async def _broadcast(self, event: KernelEvent) -> None:
+        """Fan an event out to every subscriber of its attempt."""
         for queue in self._event_subscribers.get(event.physical_attempt_id, []):
             await queue.put(event)
 

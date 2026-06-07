@@ -5,9 +5,9 @@ The strings we care about are a small enumerated set; everything else is
 collapsed to ``UNKNOWN`` and treated as a terminal failure by the
 executor (we never optimistically retry on an unrecognized state).
 
-``terminal_state_for`` maps a Slurm state onto the kernel's
-``PrimaryState`` so the executor's classification step is one lookup, no
-branching ladder.
+The ``is_terminal`` / ``is_failure`` properties drive the executor's
+classification step as set-membership lookups rather than a branching
+ladder.
 """
 
 from __future__ import annotations
@@ -39,10 +39,16 @@ class SlurmJobState(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
+        """True for any state other than ``PENDING``/``RUNNING``."""
         return self not in _NON_TERMINAL
 
     @property
     def is_failure(self) -> bool:
+        """True for terminal states the executor treats as a failure.
+
+        ``UNKNOWN`` is included: an unparseable state is never
+        optimistically retried.
+        """
         return self in _FAILURE
 
 
@@ -94,8 +100,10 @@ class SlurmJobInfo:
 
     @property
     def is_terminal(self) -> bool:
+        """True when the observed state is terminal."""
         return self.state.is_terminal
 
     @property
     def oom_killed(self) -> bool:
+        """True when Slurm classified the job as out-of-memory."""
         return self.state is SlurmJobState.OUT_OF_MEMORY

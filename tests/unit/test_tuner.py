@@ -26,6 +26,101 @@ def _write_metrics(tmp_path, name, payload):
     return str(tmp_path / name)
 
 
+class _RecordingTrial:
+    """Minimal Optuna-trial stand-in that records suggest_* call kwargs.
+
+    ``_sample_param`` only delegates to the trial's suggest_* methods, so we can
+    exercise its distribution routing without a real Optuna study.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def suggest_int(self, name, low, high, **kwargs):
+        self.calls.append(("int", name, low, high, kwargs))
+        return low
+
+    def suggest_float(self, name, low, high, **kwargs):
+        self.calls.append(("float", name, low, high, kwargs))
+        return low
+
+    def suggest_categorical(self, name, choices):
+        self.calls.append(("categorical", name, choices))
+        return choices[0]
+
+
+def test_sample_param_float_routes_to_suggest_float_with_log():
+    # GUI float sweep widget emits {"type": "float", ..., "log": bool}; the
+    # tuner must accept it (Bug 2 compatibility), not raise.
+    from multiverse.runner.tuner import _sample_param
+
+    trial = _RecordingTrial()
+    _sample_param(trial, "lr", {"type": "float", "low": 1e-4, "high": 1e-1, "log": True})
+
+    assert trial.calls == [("float", "lr", 1e-4, 1e-1, {"log": True})]
+
+
+def test_sample_param_float_linear_passes_log_false():
+    from multiverse.runner.tuner import _sample_param
+
+    trial = _RecordingTrial()
+    _sample_param(trial, "dropout", {"type": "float", "low": 0.0, "high": 0.5})
+
+    assert trial.calls == [("float", "dropout", 0.0, 0.5, {"log": False})]
+
+
+def test_sample_param_int_log_omits_step():
+    # Optuna forbids a custom step together with log=True, so the log path must
+    # pass log=True and omit step entirely.
+    from multiverse.runner.tuner import _sample_param
+
+    trial = _RecordingTrial()
+    _sample_param(trial, "n", {"type": "int", "low": 2, "high": 64, "log": True})
+
+    assert trial.calls == [("int", "n", 2, 64, {"log": True})]
+
+
+def test_sample_param_int_linear_uses_step():
+    from multiverse.runner.tuner import _sample_param
+
+    trial = _RecordingTrial()
+    _sample_param(trial, "k", {"type": "int", "low": 2, "high": 8})
+
+    assert trial.calls == [("int", "k", 2, 8, {"step": 1})]
+
+
+def test_sample_param_rejects_unknown_type():
+    from multiverse.runner.tuner import _sample_param
+
+    with pytest.raises(ValueError):
+        _sample_param(_RecordingTrial(), "x", {"type": "mystery"})
+
+
+def test_build_trial_job_merges_params_and_isolates_artifacts():
+    # Shared by both trial runners (default kernel-spawning + GUI in-process):
+    # sampled params override base model_params, mode is forced to run, and the
+    # trial gets its own artifact dir + trial/study env stamps.
+    from multiverse.runner.tuner import build_trial_job
+
+    base = {
+        "model_params": {"epochs": 3, "n_latent": 0},
+        "mode": "sweep",
+        "artifact_dir_name": "exp_ds_model_hash",
+        "output_path": "/art/exp_ds_model_hash",
+        "_exec": {"state_root": "/state"},
+    }
+    trial = build_trial_job(base, {"n_latent": 8}, 2, study_name="study_x")
+
+    assert trial["model_params"] == {"epochs": 3, "n_latent": 8}
+    assert trial["mode"] == "run"
+    assert trial["artifact_dir_name"] == "exp_ds_model_hash_trial2"
+    assert trial["output_path"] == "/art/exp_ds_model_hash_trial2"
+    assert trial["container_env_extra"]["MULTIVERSE_TRIAL_NUMBER"] == "2"
+    assert trial["container_env_extra"]["MULTIVERSE_STUDY_NAME"] == "study_x"
+    # The private execution context never leaks into the trial job.
+    assert "_exec" not in trial
+
+
 def test_objective_samples_runs_and_extracts_metric(tmp_path):
     from multiverse.runner.tuner import objective
 

@@ -38,12 +38,32 @@ from ..promotion import StoreLayout
 
 
 def _state_root_for_output(output_root: Path) -> Path:
+    """Derive the state root (journal, index, store) for an output directory.
+
+    Args:
+        output_root: User-supplied ``--output`` directory for artifact bundles.
+
+    Returns:
+        The ``.mvd-state`` subdirectory that holds the journal, run index, and
+        artifact store for this invocation.
+    """
     return output_root / ".mvd-state"
 
 
 def _store_for_output(
     *, state_root: Path, artifact_root: Path | None = None
 ) -> StoreLayout:
+    """Build and materialize the artifact store layout under ``state_root``.
+
+    Args:
+        state_root: Root of the mvd state tree; the store lives at
+            ``state_root/store``.
+        artifact_root: Override for where promoted artifact bundles land. When
+            ``None`` the store's default artifacts root is used.
+
+    Returns:
+        An ensured :class:`StoreLayout` (directories created on disk).
+    """
     kwargs: Dict[str, Path] = {}
     if artifact_root is not None:
         kwargs["artifacts_root"] = artifact_root
@@ -53,12 +73,23 @@ def _store_for_output(
 def _build_docker_kernel(
     *, state_root: Path, artifact_root: Path | None, accept_degraded: bool
 ) -> "Kernel":
-    """Assemble a Docker-backed kernel (journal, store, engine, executor).
+    """Assemble a Docker-backed mvd kernel (journal, store, engine, executor).
 
-    Single source of the Docker executor wiring: both the batch driver
+    Single source of the ``MvdDockerExecutor`` wiring: both the batch driver
     (:func:`_drive_jobs`) and the per-trial sweep runner
     (:func:`_execute_single_attempt`) build their kernel here so the
-    host→container handoff cannot drift between the two paths.
+    host->container handoff cannot drift between the two paths.
+
+    Args:
+        state_root: Root of the mvd state tree (journal, index, store).
+        artifact_root: Override directory for promoted artifact bundles, or
+            ``None`` to use the store default.
+        accept_degraded: Image-identity policy. ``True`` admits locally-built
+            images without a registry digest (researcher default); ``False`` is
+            strict/publication mode.
+
+    Returns:
+        A wired :class:`Kernel` ready to accept ``submit_run`` calls.
     """
     boot = BootContext.new(mvd_version="0.1.0-mvd")
     config = KernelConfig(state_root=state_root, accept_degraded=accept_degraded)
@@ -97,8 +128,23 @@ def _build_docker_kernel(
 def _build_slurm_kernel(
     *, state_root: Path, artifact_root: Path | None, accept_degraded: bool
 ) -> "Kernel":
-    """Assemble a Slurm-backed kernel — the Slurm counterpart of
-    :func:`_build_docker_kernel`, sharing the same journal/store layout."""
+    """Assemble a Slurm-backed mvd kernel.
+
+    The Slurm counterpart of :func:`_build_docker_kernel`, sharing the same
+    journal/store layout but wiring a :class:`MvdSlurmExecutor` over a
+    ``RealSlurmEngine``. Slurm imports are deferred to the call site so the
+    Docker path never pulls in Slurm dependencies.
+
+    Args:
+        state_root: Root of the mvd state tree (journal, index, store).
+        artifact_root: Override directory for promoted artifact bundles, or
+            ``None`` to use the store default.
+        accept_degraded: Image-identity policy; Slurm defaults to strict
+            (``False``) since it relies on the dual-digest pair.
+
+    Returns:
+        A wired :class:`Kernel` ready to accept ``submit_run`` calls.
+    """
     from ..mvd import Kernel as _Kernel
     from ..mvd import KernelConfig as _KernelConfig
     from ..mvd.slurm_executor import MvdSlurmExecutor
@@ -397,6 +443,25 @@ async def _drive_jobs(
     artifact_root: Path | None = None,
     accept_degraded: bool = False,
 ) -> int:
+    """Submit a batch of non-sweep jobs through one Docker kernel and await them.
+
+    All jobs are submitted up front, then each kernel-owned execution task is
+    awaited to a terminal state and projected into the run index. Returns 0 iff
+    every job reached ``ARTIFACT_SUCCESS``.
+
+    Args:
+        state_root: Root of the mvd state tree (journal, index, store).
+        pending_jobs: Planned jobs to run; entries marked ``_skipped`` (resumed)
+            are passed over.
+        manifest_text: Raw manifest YAML, hashed into the submit options so runs
+            carry their manifest provenance.
+        seed: Effective execution seed, or ``None`` to let the executor default.
+        artifact_root: Override directory for promoted artifact bundles.
+        accept_degraded: Image-identity policy passed to the kernel.
+
+    Returns:
+        ``0`` if all submitted jobs succeeded, ``1`` if any failed.
+    """
     kernel = _build_docker_kernel(
         state_root=state_root,
         artifact_root=artifact_root,
@@ -561,6 +626,23 @@ async def _drive_jobs_slurm(
     artifact_root: Path | None = None,
     accept_degraded: bool = False,
 ) -> int:
+    """Submit a batch of non-sweep jobs through one Slurm kernel and await them.
+
+    The Slurm counterpart of :func:`_drive_jobs`; uses
+    :func:`_options_for_slurm_job` to build the nested ``slurm`` option block.
+
+    Args:
+        state_root: Root of the mvd state tree (journal, index, store).
+        pending_jobs: Planned jobs to run; entries marked ``_skipped`` are
+            passed over.
+        manifest_text: Raw manifest YAML, hashed into the submit options.
+        seed: Effective execution seed, or ``None`` for the executor default.
+        artifact_root: Override directory for promoted artifact bundles.
+        accept_degraded: Image-identity policy passed to the kernel.
+
+    Returns:
+        ``0`` if all submitted jobs succeeded, ``1`` if any failed.
+    """
     kernel = _build_slurm_kernel(
         state_root=state_root,
         artifact_root=artifact_root,
@@ -782,6 +864,17 @@ def _options_for_slurm_job(
 
 
 def _project_snapshot_to_index(state_root: Path, snap: Dict[str, Any]) -> None:
+    """Upsert one run snapshot into the SQLite run index, best-effort.
+
+    The index is a rebuildable projection, so any failure (read-only or corrupt
+    DB) is swallowed: the journal and artifact store stay authoritative and
+    ``multiverse rebuild-index`` can recreate the DB.
+
+    Args:
+        state_root: Root of the mvd state tree; the index lives at
+            ``state_root/<INDEX_FILENAME>``.
+        snap: Kernel run snapshot, including any ``projections`` to record.
+    """
     try:
         with open_index(state_root / INDEX_FILENAME) as index:
             index.upsert_run(snap)
@@ -831,6 +924,7 @@ def _options_for_job(
 
 
 def _job_name(job: Dict[str, Any]) -> str:
+    """Return a human-readable label for a job (its ``name`` or dataset_model)."""
     return (
         job.get("name")
         or f"{job.get('dataset_name', '?')}_{job.get('model_slug') or job.get('model_name', '?')}"
@@ -857,9 +951,12 @@ def _build_engine():
 
 
 def _observer():
-    """Production observer. Uses psutil if available; otherwise reports
-    generous synthetic free memory so the broker admits in test
-    environments."""
+    """Construct the production resource-broker host observer.
+
+    Uses psutil to report real host memory when available; otherwise falls back
+    to generous synthetic free memory so the broker still admits runs in test
+    environments without psutil installed.
+    """
     try:
         import psutil  # type: ignore
 
