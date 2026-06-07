@@ -3,7 +3,7 @@
 **Status:** Accepted (initial version)
 **Date:** 2026-05-27
 **Supersedes:** none
-**Related strategy:** [STRATEGY.md §R15](../../STRATEGY.md)
+**Related strategy:** STRATEGY.md §R15 (internal engineering document; not published in this site)
 
 This ADR is the binding implementation reference for the `mvd` local-job-daemon
 work. The strategy document describes the *intent* of the platform; this ADR

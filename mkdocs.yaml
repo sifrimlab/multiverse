@@ -1,7 +1,10 @@
-site_name: mvexp Documentation
+site_name: Multiverse Documentation
 site_description: Reproducible benchmarking for multimodal single-cell integration
-site_author: mvexp contributors
-repo_name: mvexp
+site_author: Multiverse contributors
+site_url: https://sifrimlab.github.io/multiverse/
+repo_name: multiverse
+repo_url: https://github.com/sifrimlab/multiverse
+edit_uri: edit/main/docs/
 
 docs_dir: docs
 site_dir: site
