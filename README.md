@@ -1,14 +1,25 @@
-# multiverse
+<!-- PROJECT SHIELDS -->
+[![Contributors][contributors-shield]][contributors-url]
+[![Forks][forks-shield]][forks-url]
+[![Stargazers][stars-shield]][stars-url]
+[![Issues][issues-shield]][issues-url]
+[![MIT Liscence][license-shield]][license-url]
+
+<!-- PROJECT LOGO -->
+<p align="center">
+  <img src="logo_multiverse.png" alt="Logo" width="400">
+</p>
+
 
 **Reproducible benchmarking for multimodal single-cell integration, without making bioinformaticians become infrastructure engineers.**
 
-multiverse is an MLOps platform for academic biological integration studies. You bring the scientific objects you already use in notebooks: `AnnData`, `MuData`, batch annotations, cell-type labels, and model questions. multiverse handles the repetitive infrastructure around registration, model execution, parameter tracking, artifacts, Optuna sweeps, and MLflow comparison.
+Multiverse is an MLOps platform for academic biological integration studies. You bring the scientific objects you already use in notebooks: `AnnData`, `MuData`, batch annotations, cell-type labels, and model questions. multiverse handles the repetitive infrastructure around registration, model execution, parameter tracking, artifacts, Optuna sweeps, and MLflow comparison.
 
 The goal is simple: make it easier to run a defensible benchmark and easier to explain exactly what you did in a paper.
 
 ## Who This Is For
 
-multiverse is designed for researchers who are comfortable with Scanpy, Seurat, MuData, and Jupyter, but do not want every benchmark to become a Docker and orchestration project.
+Multiverse is designed for researchers who are comfortable with Scanpy, Seurat, MuData, and Jupyter, but do not want every benchmark to become a Docker and orchestration project.
 
 You should be able to answer scientific questions such as:
 
@@ -240,3 +251,16 @@ model artifacts are archived with the analysis.
 ## License
 
 Distributed under the MIT License. See `LICENSE` for details.
+
+
+<!-- MARKDOWN LINKS & IMAGES -->
+[contributors-shield]: https://img.shields.io/github/contributors/sifrimlab/multiverse.svg?style=for-the-badge
+[contributors-url]: https://github.com/sifrimlab/multiverse/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/sifrimlab/multiverse.svg?style=for-the-badge
+[forks-url]: https://github.com/sifrimlab/multiverse/network/members
+[stars-shield]: https://img.shields.io/github/stars/sifrimlab/multiverse.svg?style=for-the-badge
+[stars-url]: https://github.com/sifrimlab/multiverse/stargazers
+[issues-shield]: https://img.shields.io/github/issues/sifrimlab/multiverse.svg?style=for-the-badge
+[issues-url]: https://github.com/sifrimlab/multi-verse/issues
+[license-shield]: https://img.shields.io/badge/license-MIT-green?style=for-the-badge
+[license-url]: https://github.com/sifrimlab/multiverse/LICENSE
