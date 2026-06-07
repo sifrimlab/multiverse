@@ -285,7 +285,9 @@ def preprocess_mudata(
 
             hvg_flavor = (
                 "seurat"
-                if ( preprocess_params.get("log_normalization", False)
+                if (
+                    modality.lower() == "rna"
+                    and preprocess_params.get("log_normalization", False)
                 )
                 else "seurat_v3"
             )
