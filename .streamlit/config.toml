@@ -1,0 +1,12 @@
+# Streamlit settings for local dev and IDE port forwarding (Cursor/VS Code remote).
+# Without relaxed CORS/XSRF, the browser shell loads but the app stays blank because
+# the /stream WebSocket handshake is rejected.
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
+enableCORS = false
+enableXsrfProtection = false
+enableWebsocketCompression = false

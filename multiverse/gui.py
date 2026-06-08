@@ -1458,7 +1458,7 @@ def _render_configure_tab() -> None:
         st.session_state["job_matrix_signature"] = editor_signature
         bump_editor_version()
     editor_key = (
-        f"job_matrix_editor_v{int(st.session_state.get("editor_version", 0) or 0)}"
+        f"job_matrix_editor_v{int(st.session_state.get('editor_version', 0) or 0)}"
     )
 
     edited = st.data_editor(

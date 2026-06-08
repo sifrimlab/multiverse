@@ -32,7 +32,15 @@ setup:
 .PHONY: gui
 gui:
 	@echo "Starting Multiverse GUI (Streamlit) on port $(STREAMLIT_PORT)..."
-	uv run python -m streamlit run multiverse/gui.py --server.port $(STREAMLIT_PORT)
+	@pid=$$(lsof -tiTCP:$(STREAMLIT_PORT) -sTCP:LISTEN 2>/dev/null); \
+	if [ -n "$$pid" ]; then \
+		echo "Stopping existing listener on port $(STREAMLIT_PORT) (pid $$pid)..."; \
+		kill $$pid 2>/dev/null || true; \
+		sleep 1; \
+	fi
+	uv run python -m streamlit run multiverse/gui.py \
+		--server.port $(STREAMLIT_PORT) \
+		--server.address 0.0.0.0
 
 # bootstrap: one-shot first-run initialisation after git clone.
 # Installs deps, creates the SQLite registry, and registers all built-in models.
@@ -196,11 +204,13 @@ build-sif:
 
 .PHONY: register-models
 register-models:
-	@echo "Registering all built-in models..."
-	uv run multiverse register-model --slug pca
-	uv run multiverse register-model --slug mofa
-	uv run multiverse register-model --slug multivi
-	uv run multiverse register-model --slug mowgli
-	uv run multiverse register-model --slug cobolt
-	uv run multiverse register-model --slug totalvi
-	uv run multiverse register-model --slug mofa-cpu
+	@echo "Scanning store/models/ for model.yaml manifests..."
+	@found=0; \
+	for yaml in store/models/*/model.yaml; do \
+		[ -f "$$yaml" ] || continue; \
+		slug=$$(basename $$(dirname "$$yaml")); \
+		echo "  → registering '$$slug'"; \
+		uv run multiverse register-model --slug "$$slug" || true; \
+		found=$$((found + 1)); \
+	done; \
+	echo "Done — $$found model(s) processed."
